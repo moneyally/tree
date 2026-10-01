@@ -150,6 +150,36 @@ mutants, 50 caught, 6 missed, 86 unviable. Of the 6:
   `(recipients + added) / 100` -> `(recipients * added) / 100` differs only
   above 100 devices, where both cost more than one token.
 
+### Stage-1 stack, part 1 (`claude/cli` … `claude/reports`)
+
+`cargo mutants --in-diff` over everything the stack changed in `tree-core`,
+`tree-server` and `tree-client` up to the reports branch: 758 mutants, 544
+caught, 163 unviable, 51 missed (runs on 2026-10-01; a disk-full moment
+spoiled 8 results, which were run again). The 51 were re-run on the code
+after the new tests: 53 of 64 matching mutants caught, and the rest are
+handled below.
+
+- fixed by new tests (most): group-context commits holding anything but
+  Tree's settings (`group_context_holds_only_tree_settings`, an insider
+  admin with raw MLS; verified to fail when the check is disabled),
+  `wire::peek` in the core (`peek_classifies_real_messages`), MemberId hex
+  parsing, settings size and name limits, attachment constants and redacted
+  `Debug`, proof-of-work bit counting, per-group storage keys, safety-number
+  format, verification code per group, group ids, settings surviving a
+  restart, exact report limits, random 32-byte franking keys, lookup and
+  upload rate costs, `Config::from_env`, `forget_messages` and purge counts;
+- equivalent:
+  - `safety::digits` `|` -> `^`: the low byte is zero after the shift;
+  - `wire::peek` `> 33` -> `>= 33`: 33 bytes leave no MLS bytes, which fail
+    to parse either way;
+  - `Session::own_changeable` `>` -> `>=`: differs only in the exact second
+    the edit window ends;
+  - `Session::change` `==` -> `!=` in "keep user-scope settings": the
+    device's own caller cannot apply any other scope (refused earlier), so
+    the branch is never reached with another scope;
+  - `purge_expired`: `+` -> `-`/`*` at the orphan-blob term, which is 0
+    whenever messages are deleted with their last delivery (always now).
+
 ## Findings from this pass
 
 See `SECURITY_FINDINGS.md`. At PR #3: F-005 and F-006 fixed with regression

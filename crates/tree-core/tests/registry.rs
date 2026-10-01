@@ -286,3 +286,80 @@ fn unknown_keys() {
     r.set_server_flag("x.y", State::Released);
     assert!(r.status("x.y").is_err());
 }
+
+/// Security and moderation features can never be put behind a paid plan
+/// ("security is not sold"); other features can.
+#[test]
+fn security_is_never_plan_gated() {
+    let mut r = Registry::standard();
+    for key in ["user.app_lock", "user.message_requests", "chat.screenshot_block", "server.signups"] {
+        let f = standard_features().into_iter().find(|f| f.key == key).unwrap();
+        let err = r.define(Feature { plan: Plan::Pro, ..f.clone() }).unwrap_err();
+        assert_eq!(err.code(), "LOCKED_ALWAYS", "{key}");
+        assert_eq!(r.apply(key, None, if f.scope == Scope::User { USER } else { ADMIN }).unwrap().state, State::Applied, "{key} still free");
+        r.define(f).unwrap(); // the free definition is fine
+    }
+    let pref = Feature { key: "user.auto_download", scope: Scope::User, default: State::Applied, lock: Lock::None, plan: Plan::Pro, stage: 1 };
+    r.define(pref).unwrap();
+    assert_eq!(r.apply("user.auto_download", None, USER), Err(FeatureError::PlanRequired));
+}
+
+/// Bot settings can only be changed by the bot owner.
+#[test]
+fn bot_settings_need_the_owner() {
+    let mut r = Registry::standard();
+    r.define(Feature { key: "bot.inline", scope: Scope::Bot, default: State::Released, lock: Lock::None, plan: Plan::Free, stage: 2 })
+        .unwrap();
+    for who in [USER, PRO_USER] {
+        assert_eq!(r.apply("bot.inline", None, who), Err(FeatureError::NotAdmin));
+        assert_eq!(r.release("bot.inline", who), Err(FeatureError::NotAdmin));
+    }
+    assert_eq!(r.status("bot.inline").unwrap().state, State::Released);
+    let owner = ADMIN;
+    assert_eq!(r.apply("bot.inline", Some("search".into()), owner).unwrap().state, State::Applied);
+    assert_eq!(r.release("bot.inline", owner).unwrap().state, State::Released);
+}
+
+/// A chat admin releasing a user preference for the chat locks it for
+/// users (LOCKED_BY_CHAT) until the chat applies it again; the user's own
+/// choice is kept underneath.
+#[test]
+fn chat_release_locks_user_preference() {
+    let mut r = Registry::standard();
+    r.apply("user.read_receipts", Some("mine".into()), USER).unwrap();
+    assert_eq!(r.release_for_chat("user.read_receipts", USER), Err(FeatureError::NotAdmin));
+    let s = r.release_for_chat("user.read_receipts", ADMIN).unwrap();
+    assert_eq!((s.state, s.locked_by), (State::Released, Some(LockReason::Chat)));
+    for who in ALL {
+        assert_eq!(r.apply("user.read_receipts", None, who), Err(FeatureError::LockedByChat));
+        assert_eq!(r.release("user.read_receipts", who), Err(FeatureError::LockedByChat));
+    }
+    assert_eq!(r.list(Scope::User).iter().find(|s| s.key == "user.read_receipts").unwrap().locked_by, Some(LockReason::Chat));
+    // idempotent
+    assert_eq!(r.release_for_chat("user.read_receipts", ADMIN).unwrap().locked_by, Some(LockReason::Chat));
+    assert_eq!(r.apply_for_chat("user.read_receipts", USER), Err(FeatureError::NotAdmin));
+    let s = r.apply_for_chat("user.read_receipts", ADMIN).unwrap();
+    assert_eq!((s.state, s.option.as_deref(), s.locked_by), (State::Applied, Some("mine"), None));
+    assert_eq!(r.apply_for_chat("user.read_receipts", ADMIN).unwrap().locked_by, None);
+    assert!(r.release("user.read_receipts", USER).is_ok());
+}
+
+/// A chat cannot lock security, moderation, billing, chat or locked
+/// features, and the server lock wins over the chat lock.
+#[test]
+fn chat_lock_limits() {
+    let mut r = Registry::standard();
+    for key in ["user.app_lock", "user.report", "user.message_requests", "points.send_to_user", "chat.reactions", "user.key_change_warning"] {
+        let e = r.release_for_chat(key, ADMIN).unwrap_err();
+        assert_eq!(e.code(), "LOCKED_ALWAYS", "{key}");
+        assert_eq!(r.apply_for_chat(key, ADMIN).unwrap_err().code(), "LOCKED_ALWAYS", "{key}");
+    }
+    assert!(matches!(r.release_for_chat("x.y", ADMIN), Err(FeatureError::Unknown(_))));
+    r.set_server_flag("user.typing", State::Released);
+    assert_eq!(r.release_for_chat("user.typing", ADMIN), Err(FeatureError::LockedByServer));
+    r.set_server_flag("user.typing", State::Applied);
+    r.release_for_chat("user.typing", ADMIN).unwrap();
+    r.set_server_flag("user.typing", State::Released);
+    assert_eq!(r.status("user.typing").unwrap().locked_by, Some(LockReason::Server));
+    assert_eq!(r.apply("user.typing", None, USER), Err(FeatureError::LockedByServer));
+}

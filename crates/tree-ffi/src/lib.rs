@@ -297,9 +297,15 @@ impl From<CommitOutcome> for Commit {
 #[derive(uniffi::Object)]
 pub struct TreeSession {
     inner: Mutex<Session>,
+    waiter: (tree_client::Api, tree_client::Creds),
 }
 
 impl TreeSession {
+    fn wrap(s: Session) -> std::sync::Arc<Self> {
+        let waiter = s.waiter();
+        std::sync::Arc::new(Self { inner: Mutex::new(s), waiter })
+    }
+
     fn s(&self) -> MutexGuard<'_, Session> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -310,15 +316,13 @@ impl TreeSession {
     /// A new account on this device. `pow_bits` as the server requires (20).
     #[uniffi::constructor]
     pub fn create(path: String, passphrase: String, name: String, server: String, pow_bits: u32) -> R<std::sync::Arc<Self>> {
-        let s = Session::create(&path, &passphrase, &name, &server, pow_bits)?;
-        Ok(std::sync::Arc::new(Self { inner: Mutex::new(s) }))
+        Ok(Self::wrap(Session::create(&path, &passphrase, &name, &server, pow_bits)?))
     }
 
     /// Opens an existing profile (resubmits pending commits).
     #[uniffi::constructor]
     pub fn open(path: String, passphrase: String) -> R<std::sync::Arc<Self>> {
-        let (s, _) = Session::open(&path, &passphrase)?;
-        Ok(std::sync::Arc::new(Self { inner: Mutex::new(s) }))
+        Ok(Self::wrap(Session::open(&path, &passphrase)?.0))
     }
 
     /// A new device for the account behind the recovery phrase.
@@ -332,8 +336,7 @@ impl TreeSession {
         revoke_others: bool,
         pow_bits: u32,
     ) -> R<std::sync::Arc<Self>> {
-        let s = Session::recover(&path, &passphrase, &name, &server, &phrase, revoke_others, pow_bits)?;
-        Ok(std::sync::Arc::new(Self { inner: Mutex::new(s) }))
+        Ok(Self::wrap(Session::recover(&path, &passphrase, &name, &server, &phrase, revoke_others, pow_bits)?))
     }
 
     pub fn name(&self) -> String {
@@ -351,8 +354,14 @@ impl TreeSession {
 
     // --- sync ---
 
+    /// Long-polls up to `wait` seconds until something is in the mailbox,
+    /// without blocking other calls on this session; then call `sync(0)`.
+    pub fn wait(&self, wait: u64) -> R<bool> {
+        Ok(self.waiter.0.wait_pending(&self.waiter.1, wait)?)
+    }
+
     /// Receives and processes everything waiting (long-polls up to `wait`
-    /// seconds).
+    /// seconds; holds the session meanwhile, prefer `wait` + `sync(0)`).
     pub fn sync(&self, wait: u64) -> R<Vec<TreeEvent>> {
         Ok(self.s().sync(wait)?.into_iter().map(Into::into).collect())
     }

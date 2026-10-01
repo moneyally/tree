@@ -17,6 +17,7 @@ use sha2::{Digest, Sha256};
 use crate::Error;
 
 /// A registered device: its ids and its request-signing key.
+#[derive(Clone)]
 pub struct Creds {
     pub account_id: String,
     pub device_id: String,
@@ -45,6 +46,7 @@ impl Reply {
 }
 
 /// One server.
+#[derive(Clone)]
 pub struct Api {
     base: String,
     http: Http,
@@ -340,6 +342,13 @@ impl Api {
             out.push((field(m, "id")?, unb64(m["body"].as_str().unwrap_or(""))?));
         }
         Ok(out)
+    }
+
+    /// Waits up to `wait` seconds for the mailbox to be non-empty, without
+    /// taking anything (the caller then syncs). Lets an app long-poll while
+    /// other calls on its session proceed.
+    pub fn wait_pending(&self, c: &Creds, wait: u64) -> Result<bool, Error> {
+        Ok(!self.fetch(c, wait)?.is_empty())
     }
 
     pub fn ack(&self, c: &Creds, ids: &[String]) -> Result<(), Error> {

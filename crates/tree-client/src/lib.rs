@@ -296,6 +296,12 @@ impl Session {
     pub fn name(&self) -> &str {
         self.client.name()
     }
+
+    /// A copy of the server connection and credentials, for waiting on the
+    /// mailbox ([`Api::wait_pending`]) outside a lock on the session.
+    pub fn waiter(&self) -> (Api, Creds) {
+        (self.api.clone(), self.creds.clone())
+    }
     pub fn account_id(&self) -> &str {
         &self.creds.account_id
     }

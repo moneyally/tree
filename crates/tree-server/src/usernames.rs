@@ -84,7 +84,7 @@ pub async fn release(State(state): State<AppState>, req: Signed<crate::auth::NoB
 /// `POST /v1/usernames/lookup` — account id behind a name, if discoverable.
 pub async fn lookup(State(state): State<AppState>, req: Signed<LookupReq>) -> ApiResult<Json<Value>> {
     let hash = hash32(&req.body.hash)?;
-    state.rate_device(&req.device.device_id, LOOKUP_COST - 1.0)?;
+    req.device.charge_outreach(&state, LOOKUP_COST - 1.0)?;
     let account: Option<String> = sqlx::query("SELECT account_id FROM usernames WHERE hash = ? AND discoverable = 1")
         .bind(&hash)
         .fetch_optional(&state.db)

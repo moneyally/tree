@@ -152,15 +152,18 @@ async fn flags_require_operator_and_lock_signups() {
         [
             "server.bot_platform",
             "server.calls",
+            "server.new_account_limits",
             "server.public_spaces",
+            "server.report_limits",
             "server.signups"
         ]
     );
+    // All start applied (the test harness released the new-account limits).
     assert!(v["features"]
         .as_array()
         .unwrap()
         .iter()
-        .all(|f| f["state"] == "applied"));
+        .all(|f| f["state"] == "applied" || f["key"] == "server.new_account_limits"));
 
     // Operator token required.
     let (st, v) = api.admin(None, "server.signups", "release").await;

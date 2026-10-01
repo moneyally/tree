@@ -33,6 +33,10 @@ impl Env {
         };
         let rt = tokio::runtime::Runtime::new().unwrap();
         let server = rt.block_on(tree_server::start(cfg)).unwrap();
+        // Test accounts are all new; the server's new-account limits are
+        // tested in tree-server and switched off here.
+        rt.block_on(tree_server::features::set_applied(&server.state.db, tree_server::features::NEW_ACCOUNT_LIMITS, false))
+            .unwrap();
         let url = format!("http://{}", server.addr);
         std::mem::forget(server); // runs until the runtime is dropped
         Self { dir, url, db, _rt: rt }

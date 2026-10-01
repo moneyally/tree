@@ -52,6 +52,9 @@ pub async fn send(
     if recipients.is_empty() {
         return Err(ApiError::bad_request("recipients is empty"));
     }
+    if recipients.len() > req.device.max_fanout && req.device.max_fanout < cfg.max_recipients {
+        return Err(ApiError::forbidden("LIMITED", format!("this account may send to at most {} devices at once for now", req.device.max_fanout)));
+    }
     if recipients.len() > cfg.max_recipients {
         return Err(ApiError::too_large(format!(
             "at most {} recipients",
@@ -91,7 +94,7 @@ pub async fn send(
         Err(why) => return Err(ApiError::bad_request(format!("body: {why}"))),
     }
     // Fan-out to many mailboxes costs more.
-    state.rate_device(&req.device.device_id, (unique.len() / 100) as f64)?;
+    req.device.charge_outreach(&state, (unique.len() / 100) as f64)?;
 
     let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
     let d = deliver(&mut tx, cfg, &bytes, unique).await?;

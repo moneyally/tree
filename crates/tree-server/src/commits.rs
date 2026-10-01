@@ -81,6 +81,9 @@ pub async fn submit(State(state): State<AppState>, req: Signed<CommitReq>) -> Ap
     let recipients = unique_ids(recipients, "recipient")?;
     let added = unique_ids(added, "added device")?;
     let removed = unique_ids(removed, "removed device")?;
+    if recipients.len() + added.len() > req.device.max_fanout && req.device.max_fanout < cfg.max_recipients {
+        return Err(ApiError::forbidden("LIMITED", format!("this account may reach at most {} devices at once for now", req.device.max_fanout)));
+    }
     if recipients.len() + added.len() > cfg.max_recipients || removed.len() > cfg.max_recipients {
         return Err(ApiError::too_large(format!("at most {} devices", cfg.max_recipients)));
     }
@@ -124,7 +127,7 @@ pub async fn submit(State(state): State<AppState>, req: Signed<CommitReq>) -> Ap
         }
     };
     let hash: [u8; 32] = Sha256::digest(&body).into();
-    state.rate_device(&sender, ((recipients.len() + added.len()) / 100) as f64)?;
+    req.device.charge_outreach(&state, ((recipients.len() + added.len()) / 100) as f64)?;
 
     let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
     let last: Option<i64> = sqlx::query("SELECT last_epoch FROM groups WHERE group_id = ?")

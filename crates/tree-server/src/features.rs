@@ -17,9 +17,11 @@ pub const SIGNUPS: &str = "server.signups";
 pub const BOT_PLATFORM: &str = "server.bot_platform";
 pub const CALLS: &str = "server.calls";
 pub const PUBLIC_SPACES: &str = "server.public_spaces";
+pub const NEW_ACCOUNT_LIMITS: &str = "server.new_account_limits";
+pub const REPORT_LIMITS: &str = "server.report_limits";
 
 /// Server flags known to this build. All start applied.
-pub const SERVER_FLAGS: &[&str] = &[SIGNUPS, BOT_PLATFORM, CALLS, PUBLIC_SPACES];
+pub const SERVER_FLAGS: &[&str] = &[SIGNUPS, BOT_PLATFORM, CALLS, PUBLIC_SPACES, NEW_ACCOUNT_LIMITS, REPORT_LIMITS];
 
 const APPLIED: &str = "applied";
 const RELEASED: &str = "released";
@@ -36,6 +38,17 @@ pub async fn seed(db: &SqlitePool) -> Result<(), sqlx::Error> {
             .execute(db)
             .await?;
     }
+    Ok(())
+}
+
+/// Sets a flag directly (for tests and tooling; operators use the API).
+pub async fn set_applied(db: &SqlitePool, key: &str, applied: bool) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE features SET state = ?, changed_at = ? WHERE key = ?")
+        .bind(if applied { APPLIED } else { RELEASED })
+        .bind(now_secs())
+        .bind(key)
+        .execute(db)
+        .await?;
     Ok(())
 }
 

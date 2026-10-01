@@ -53,6 +53,11 @@ pub async fn boot(tweak: impl FnOnce(&mut Config)) -> TestServer {
     };
     tweak(&mut cfg);
     let server = tree_server::start(cfg).await.expect("server starts");
+    // Every test account is new; the new-account limits are tested on their
+    // own (tests/antispam.rs) and switched off elsewhere.
+    tree_server::features::set_applied(&server.state.db, tree_server::features::NEW_ACCOUNT_LIMITS, false)
+        .await
+        .unwrap();
     let api = Api {
         http: reqwest::Client::new(),
         base: format!("http://{}", server.addr),

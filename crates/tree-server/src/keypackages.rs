@@ -116,7 +116,7 @@ pub async fn claim(
     req: Signed<ClaimReq>,
 ) -> ApiResult<Json<ClaimResp>> {
     check_id(&req.body.account_id, "account_id")?;
-    state.rate_device(&req.device.device_id, CLAIM_EXTRA_COST)?;
+    req.device.charge_outreach(&state, CLAIM_EXTRA_COST)?;
 
     let devices: Vec<String> =
         sqlx::query("SELECT id FROM devices WHERE account_id = ? ORDER BY id")

@@ -164,3 +164,46 @@ mod tests {
         assert!(rc.insert([7; 64], 200, 101));
     }
 }
+
+
+/// Anti-spam limits of an account (design: "new accounts cannot mass-send;
+/// accounts with accumulating spam reports are limited automatically").
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AccountLimits {
+    /// Every request costs this many rate tokens.
+    pub cost_factor: f64,
+    /// Devices one message or commit may go to.
+    pub max_fanout: Option<usize>,
+}
+
+/// Accounts this young (created today or yesterday) are new.
+pub const NEW_ACCOUNT_DAYS: i64 = 1;
+pub const NEW_FACTOR: f64 = 5.0;
+pub const NEW_FANOUT: usize = 50;
+/// Distinct reporters with verified reports in the last week that limit an account.
+pub const REPORTERS: i64 = 3;
+pub const REPORT_WINDOW_DAYS: i64 = 7;
+pub const REPORTED_FACTOR: f64 = 10.0;
+pub const REPORTED_FANOUT: usize = 20;
+
+pub async fn account_limits(state: &crate::AppState, account: &str, created_day: i64) -> Result<AccountLimits, sqlx::Error> {
+    use crate::features::{is_applied, NEW_ACCOUNT_LIMITS, REPORT_LIMITS};
+    let today = crate::util::today();
+    let mut l = AccountLimits { cost_factor: 1.0, max_fanout: None };
+    if today - created_day <= NEW_ACCOUNT_DAYS && is_applied(&state.db, NEW_ACCOUNT_LIMITS).await? {
+        l = AccountLimits { cost_factor: NEW_FACTOR, max_fanout: Some(NEW_FANOUT) };
+    }
+    if is_applied(&state.db, REPORT_LIMITS).await? {
+        let reporters: i64 = sqlx::query_scalar(
+            "SELECT COUNT(DISTINCT reporter_account) FROM reports WHERE reported_account = ? AND verified = 1 AND created_day >= ?",
+        )
+        .bind(account)
+        .bind(today - REPORT_WINDOW_DAYS)
+        .fetch_one(&state.db)
+        .await?;
+        if reporters >= REPORTERS {
+            l = AccountLimits { cost_factor: REPORTED_FACTOR, max_fanout: Some(REPORTED_FANOUT) };
+        }
+    }
+    Ok(l)
+}

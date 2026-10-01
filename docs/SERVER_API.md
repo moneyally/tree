@@ -25,6 +25,7 @@ Some errors add fields (named with the endpoint).
 | `LOCKED_BY_SERVER` | 403 | the feature is released by the operator (e.g. signups) |
 | `NOT_ELIGIBLE` | 403 | commit from a device the server does not know as a member of the group |
 | `SUSPENDED` | 403 | the account is suspended by the operator (every signed request) |
+| `LIMITED` | 403 | a message or commit to more devices than the account may reach for now (new account, or recent verified reports; PROTOCOL.md 8.9) |
 | `RECOVERY_REFUSED` | 403 | no account holds this recovery key, or the recovery signature is wrong |
 | `NOT_FOUND` | 404 | no such endpoint, account or device |
 | `UNKNOWN_FEATURE` | 404 | unknown feature key |
@@ -415,7 +416,8 @@ Every flag has apply and release. Both are idempotent and return the current sta
 
 `200` → `{ "features": [{ "key": "server.signups", "state": "applied", "changed_at": 1790834908 }, ...] }`
 
-Flags: `server.signups`, `server.bot_platform`, `server.calls`, `server.public_spaces`.
+Flags: `server.signups`, `server.bot_platform`, `server.calls`, `server.public_spaces`,
+`server.new_account_limits`, `server.report_limits` (anti-spam, PROTOCOL.md 8.9).
 
 ### `POST /v1/features/{key}/apply`, `POST /v1/features/{key}/release`
 

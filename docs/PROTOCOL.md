@@ -1044,6 +1044,21 @@ over its own authenticated connection and decrypts locally. Code:
   operator's credentials; that gateway receives the same `wake` only.
   Setting one up is part of deployment (HANDOFF 3.5, needs the owner).
 
+### 8.9 Anti-spam limits
+
+Two operator flags, both applied by default (`crates/tree-server/src/limits.rs`):
+
+| Flag | Who | Limit |
+| --- | --- | --- |
+| `server.new_account_limits` | accounts created today or yesterday | requests that reach others (send, commit, key-package claim, username lookup, invite-link join) cost 5 times the rate tokens; at most 50 devices per message or commit |
+| `server.report_limits` | accounts with verified reports from 3 or more different accounts in the last 7 days | 10 times the tokens; at most 20 devices per message or commit |
+
+These limit, they do not suspend: suspension stays a human decision.
+Verified reports need genuine messages (8.5), so a group of people cannot
+limit an account that sent them nothing. Reading the mailbox is never
+limited. Paid or attested sign-up (design) and the stranger deposit (stage
+3) are not implemented.
+
 ---
 
 ## 9. Security claims

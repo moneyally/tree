@@ -76,7 +76,7 @@ in section 5.
 | `@username` (hash only, rate-limited search) | done | PROTOCOL.md 8.4; `/v1/usernames/*`; CLI `username`, `find`, `invite <group> @name`. Username links / QR: missing |
 | Message request inbox for strangers, blocking | done (on the device) | APP_PROTOCOL.md 5: requests, decline, block, `user.message_requests` / `stranger_block` / `group_add`; the server still delivers (it cannot know contacts) |
 | Report service (reporter's device submits) | done | `/v1/franking`, `/v1/reports`, operator review and resolve, account suspension (apply/release, `403 SUSPENDED`) |
-| Spam limits for new accounts | partial | per-device rate limits and signup limits exist; no new-account sending limit |
+| Spam limits for new accounts | done | PROTOCOL.md 8.9: new accounts and accounts with verified reports from 3+ people pay more per outreach and reach fewer devices; operator flags with apply/release |
 | File service (encrypted blobs only) | done | `/v1/attachments`, files on disk, 30-day purge; 100 MiB per file (design: 2 GB free; needs chunked upload) |
 | Push relay without content | done (server) | PROTOCOL.md 8.8: `wake` only, coalesced, allowed gateway hosts only; CLI `push`. Platform push gateways (vendor credentials) come with deployment |
 | Docker Compose + Caddy TLS, one region | partial | files in `deploy/`; manual steps and a manual-only GitHub Actions deploy (`.github/workflows/deploy.yml`, needs the owner's secrets) ready; never deployed (HANDOFF 3.5) |

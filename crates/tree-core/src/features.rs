@@ -403,6 +403,10 @@ pub fn standard_features() -> Vec<Feature> {
         feat("user.default_folders", User, Applied, 1),
         // server flags
         feat("server.signups", Server, Applied, 1),
+        // Anti-spam (design: limits for new accounts and for accounts with
+        // verified reports); operators may release them.
+        feat("server.new_account_limits", Server, Applied, 1),
+        feat("server.report_limits", Server, Applied, 1),
         feat("server.bot_platform", Server, Applied, 2),
         feat("server.calls", Server, Applied, 3),
     ];

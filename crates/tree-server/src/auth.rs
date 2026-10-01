@@ -226,6 +226,22 @@ macro_rules! json_body {
 pub struct DeviceCtx {
     pub device_id: String,
     pub account_id: String,
+    /// Fan-out allowed per request for this account (anti-spam limits).
+    pub max_fanout: usize,
+    /// Multiplier on the rate cost of requests that reach other people.
+    pub cost_factor: f64,
+}
+
+impl DeviceCtx {
+    /// Charges an outreach request (send, commit, claim, lookup, join):
+    /// `extra` tokens on top of the request's own, times the account's factor.
+    pub fn charge_outreach(&self, state: &crate::AppState, extra: f64) -> ApiResult<()> {
+        let cost = (1.0 + extra) * self.cost_factor - 1.0;
+        if cost > 0.0 {
+            state.rate_device(&self.device_id, cost)?;
+        }
+        Ok(())
+    }
 }
 
 /// Extractor: verifies the request signature, applies the per-device rate
@@ -243,7 +259,9 @@ impl<T: SignedBody + Send> FromRequest<AppState> for Signed<T> {
         let (parts, bytes) = read_body(req, T::max_len(&state.cfg)).await?;
         let device_id = auth.device.clone().unwrap_or_default();
 
-        let row = sqlx::query("SELECT account_id, auth_pub FROM devices WHERE id = ?")
+        let row = sqlx::query(
+            "SELECT d.account_id, d.auth_pub, a.created_day FROM devices d JOIN accounts a ON a.id = d.account_id WHERE d.id = ?",
+        )
             .bind(&device_id)
             .fetch_optional(&state.db)
             .await?
@@ -259,12 +277,16 @@ impl<T: SignedBody + Send> FromRequest<AppState> for Signed<T> {
         if crate::reports::is_suspended(&state.db, &account_id).await? {
             return Err(ApiError::forbidden("SUSPENDED", "this account is suspended"));
         }
+        let created_day: i64 = row.try_get("created_day")?;
+        let limits = crate::limits::account_limits(state, &account_id, created_day).await?;
 
         let body = T::parse(&bytes)?;
         Ok(Signed {
             device: DeviceCtx {
                 device_id,
                 account_id,
+                max_fanout: limits.max_fanout.unwrap_or(state.cfg.max_recipients),
+                cost_factor: limits.cost_factor,
             },
             body,
         })

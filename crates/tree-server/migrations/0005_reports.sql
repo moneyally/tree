@@ -20,6 +20,7 @@ CREATE TABLE reports (
     resolved_day     INTEGER             -- deleted RESOLVED_KEEP_DAYS later
 );
 CREATE INDEX reports_reporter ON reports(reporter_account, created_day);
+CREATE INDEX reports_reported ON reports(reported_account, created_day);
 
 -- Suspended accounts may not send, commit, claim or upload.
 CREATE TABLE suspensions (

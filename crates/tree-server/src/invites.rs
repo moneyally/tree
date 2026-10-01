@@ -120,7 +120,7 @@ pub async fn join(State(state): State<AppState>, req: Signed<JoinReq>) -> ApiRes
         return Err(ApiError::bad_request("token must be 16 bytes"));
     }
     // Guessing links is pointless at 128 bits, but each try still costs.
-    state.rate_device(&req.device.device_id, 5.0)?;
+    req.device.charge_outreach(&state, 5.0)?;
     let h = token_hash(&token);
     let gone = || ApiError::not_found("this invite link is invalid, expired or used up");
     let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;

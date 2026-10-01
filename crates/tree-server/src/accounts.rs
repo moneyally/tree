@@ -264,6 +264,30 @@ pub async fn remove_device(
     Ok(Json(serde_json::json!({ "removed": device_id })))
 }
 
+/// `DELETE /v1/accounts` — deletes the caller's account: every device with
+/// its mailbox and key packages, the username, the recovery key, push
+/// endpoints and invite links (all by cascade). Required by the app stores.
+pub async fn delete_account(State(state): State<AppState>, req: Signed<NoBody>) -> ApiResult<Json<serde_json::Value>> {
+    let account_id = &req.device.account_id;
+    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
+    let devices: Vec<String> = sqlx::query("DELETE FROM devices WHERE account_id = ? RETURNING id")
+        .bind(account_id)
+        .fetch_all(&mut *tx)
+        .await?
+        .iter()
+        .map(|r| r.try_get("id"))
+        .collect::<Result<_, _>>()?;
+    sqlx::query("DELETE FROM accounts WHERE id = ?").bind(account_id).execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM blobs WHERE NOT EXISTS (SELECT 1 FROM deliveries d WHERE d.blob_id = blobs.id)")
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    for d in &devices {
+        state.wake(d);
+    }
+    Ok(Json(serde_json::json!({ "deleted": true, "devices": devices.len() })))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

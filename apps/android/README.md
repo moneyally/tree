@@ -12,7 +12,7 @@ Toolchain (Linux, used here):
 
 ```sh
 mkdir -p /opt/android-sdk && cd /opt/android-sdk
-curl -sSO https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip
+# download the Linux "command-line tools only" archive from the official Android SDK page, then:
 unzip -q commandlinetools-linux-*.zip && mkdir -p cmdline-tools/latest && mv cmdline-tools/bin cmdline-tools/lib cmdline-tools/latest/
 yes | cmdline-tools/latest/bin/sdkmanager --sdk_root=/opt/android-sdk --licenses
 cmdline-tools/latest/bin/sdkmanager --sdk_root=/opt/android-sdk "platforms;android-35" "build-tools;35.0.0" "ndk;27.3.13750724"

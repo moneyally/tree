@@ -904,3 +904,33 @@ async fn rate_limits() {
     ts2.stop().await;
     ts.stop().await;
 }
+
+/// Deleting an account removes everything that belongs to it.
+#[tokio::test]
+async fn account_deletion() {
+    let ts = boot(|_| {}).await;
+    let api = &ts.api;
+    let a = api.signup().await;
+    let a2 = api.add_device(&a).await;
+    let b = api.signup().await;
+    api.call(&a, Method::POST, "/v1/usernames/apply", Some(json!({ "hash": b64(&[5u8; 32]) }))).await;
+    api.send_raw(&b, &[&a.device_id], &app(b"x")).await;
+    let (st, v) = api.call(&a, Method::DELETE, "/v1/accounts", None).await;
+    assert_eq!((st, v["devices"].as_u64()), (StatusCode::OK, Some(2)), "{v}");
+    assert_eq!(api.call(&a2, Method::GET, "/v1/devices", None).await.0, StatusCode::UNAUTHORIZED);
+    let db = &ts.server.state.db;
+    let left: (i64,) = sqlx::query_as(
+        "SELECT (SELECT COUNT(*) FROM accounts WHERE id = ?1) + (SELECT COUNT(*) FROM devices WHERE account_id = ?1) \
+         + (SELECT COUNT(*) FROM usernames WHERE account_id = ?1)",
+    )
+    .bind(&a.account_id)
+    .fetch_one(db)
+    .await
+    .unwrap();
+    assert_eq!(left.0, 0, "account, devices and username are gone");
+    let n: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM blobs").fetch_one(db).await.unwrap();
+    assert_eq!(n.0, 0, "undelivered messages to the account are gone");
+    // The name is free again.
+    assert_eq!(api.call(&b, Method::POST, "/v1/usernames/apply", Some(json!({ "hash": b64(&[5u8; 32]) }))).await.0, StatusCode::OK);
+    ts.stop().await;
+}

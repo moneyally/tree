@@ -17,9 +17,9 @@ LOWER = {
 CASED = {"d041924c15885af6"}  # a common English word; blocked only when capitalized
 
 ROOT = pathlib.Path(__file__).resolve().parents[4]
-PUBLIC = ["README.md", "SECURITY.md", "CLAUDE.md", "HANDOFF.md", "THIRD_PARTY_LICENSES.md", "docs", ".claude", "crates"]
-SKIP_DIRS = {"target", ".git"}
-EXT = {".md", ".rs", ".toml", ".py", ".txt", ".kt", ".swift", ".ts"}
+PUBLIC = ["README.md", "SECURITY.md", "CLAUDE.md", "HANDOFF.md", "THIRD_PARTY_LICENSES.md", "docs", ".claude", "crates", "apps", "bindings", "deploy", "scripts", "formal", ".github"]
+SKIP_DIRS = {"target", ".git", "build", ".gradle", ".kotlin", "jniLibs", "generated"}
+EXT = {".md", ".rs", ".toml", ".py", ".txt", ".kt", ".kts", ".swift", ".ts", ".sh", ".yml", ".xml", ".pv"}
 
 
 def h(word: str) -> str:

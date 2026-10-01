@@ -63,6 +63,7 @@ class AppModel(
 
     var session: TreeSession? = null
         private set
+    private var profilePath: String? = null
     private var loop: Job? = null
     private val unread = mutableMapOf<String, Int>()
 
@@ -86,12 +87,22 @@ class AppModel(
     }
 
     suspend fun createAccount(path: String, passphrase: String, name: String, server: String, powBits: UInt = 20u): Boolean =
-        signIn { TreeSession.create(path, passphrase, name, server, powBits) }
+        signIn(path) { TreeSession.create(path, passphrase, name, server, powBits) }
 
     suspend fun openProfile(path: String, passphrase: String): Boolean =
-        signIn { TreeSession.open(path, passphrase) }
+        signIn(path) { TreeSession.open(path, passphrase) }
 
-    private suspend fun signIn(make: () -> TreeSession): Boolean {
+    /** Deletes the account everywhere and this device's profile; back to sign-up. */
+    suspend fun deleteAccount(): Boolean {
+        val path = profilePath ?: return false
+        call { it.deleteAccount(path) } ?: return false
+        stop()
+        session = null
+        _state.value = UiState()
+        return true
+    }
+
+    private suspend fun signIn(path: String, make: () -> TreeSession): Boolean {
         val s = try {
             withContext(io) { make() }
         } catch (e: TreeException) {
@@ -99,6 +110,7 @@ class AppModel(
             return false
         }
         session = s
+        profilePath = path
         _state.update { it.copy(signedIn = true, name = s.name(), account = s.accountId(), error = null) }
         refresh()
         return true

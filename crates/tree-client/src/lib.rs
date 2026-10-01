@@ -472,6 +472,30 @@ impl Session {
         Ok(n)
     }
 
+    /// Deletes the account: tells every group this device is leaving (so
+    /// admins remove it), deletes the account and all its devices on the
+    /// server, then the encrypted profile on this device (`path`, the same
+    /// path the profile was created or opened with). Nothing of the account
+    /// remains on the server except reports others filed about it.
+    pub fn delete_account(mut self, path: &str) -> Result<(), Error> {
+        for gid in self.group_ids()? {
+            if self.group(&gid)?.is_member() {
+                // Best effort: a group we cannot reach still loses us when
+                // the server deletes our devices.
+                let _ = self.leave(&gid);
+            }
+        }
+        self.api.delete_account(&self.creds)?;
+        drop(self);
+        for p in [path.to_string(), format!("{path}.hdr"), format!("{path}-wal"), format!("{path}-shm"), format!("{path}-journal")] {
+            match std::fs::remove_file(&p) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(Error::Usage(format!("{p}: {e}"))),
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
     /// Registers the endpoint a push gateway gave this app (UnifiedPush
     /// style), or clears it. The server then sends only the word `wake`
     /// there when something arrives (PROTOCOL.md 8.8); the app syncs.

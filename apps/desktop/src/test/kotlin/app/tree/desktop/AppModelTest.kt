@@ -95,6 +95,11 @@ class AppModelTest {
         val again = AppModel(this, Dispatchers.IO)
         assertTrue(!again.openProfile("$dir/bob.db", "wrong"))
         assertEquals(Strings.t("wrong_pass"), again.state.value.error)
+        // Account deletion: back to the start, the profile file is gone.
+        assertTrue(bob.deleteAccount())
+        assertTrue(!bob.state.value.signedIn)
+        assertTrue(!java.io.File("$dir/bob.db").exists())
+        alice.syncNow()
         alice.stop(); bob.stop()
     }
 }

@@ -4,6 +4,7 @@
 //! thread. Group and member ids cross the boundary as lowercase hex.
 //! Nothing here adds behaviour; it only converts types.
 
+use std::ops::{Deref, DerefMut};
 use std::sync::{Mutex, MutexGuard};
 
 use tree_client::{CommitOutcome, Event, FileInfo, GroupStatus, MemberId, Session, TextOptions, Words};
@@ -318,18 +319,36 @@ impl From<CommitOutcome> for Commit {
 /// One profile (device) of a Tree account.
 #[derive(uniffi::Object)]
 pub struct TreeSession {
-    inner: Mutex<Session>,
+    /// `None` once the account was deleted.
+    inner: Mutex<Option<Session>>,
     waiter: (tree_client::Api, tree_client::Creds),
+}
+
+/// The session behind the lock (panics if the account was deleted: the app
+/// must drop the object then; UniFFI turns the panic into an error).
+struct Live<'a>(MutexGuard<'a, Option<Session>>);
+
+impl Deref for Live<'_> {
+    type Target = Session;
+    fn deref(&self) -> &Session {
+        self.0.as_ref().expect("the account was deleted")
+    }
+}
+
+impl DerefMut for Live<'_> {
+    fn deref_mut(&mut self) -> &mut Session {
+        self.0.as_mut().expect("the account was deleted")
+    }
 }
 
 impl TreeSession {
     fn wrap(s: Session) -> std::sync::Arc<Self> {
         let waiter = s.waiter();
-        std::sync::Arc::new(Self { inner: Mutex::new(s), waiter })
+        std::sync::Arc::new(Self { inner: Mutex::new(Some(s)), waiter })
     }
 
-    fn s(&self) -> MutexGuard<'_, Session> {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    fn s(&self) -> Live<'_> {
+        Live(self.inner.lock().unwrap_or_else(|e| e.into_inner()))
     }
 }
 
@@ -460,6 +479,15 @@ impl TreeSession {
 
     pub fn refresh_keys(&self, group: String) -> R<Commit> {
         Ok(self.s().refresh_keys(&unhex(&group, "group")?)?.into())
+    }
+
+    /// Deletes the account everywhere and this device's profile at `path`
+    /// (the path it was created or opened with). The object is unusable
+    /// afterwards.
+    pub fn delete_account(&self, path: String) -> R<()> {
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let s = g.take().ok_or_else(|| TreeError::Usage { reason: "already deleted".into() })?;
+        Ok(s.delete_account(&path)?)
     }
 
     /// After a suspected compromise: new keys in every group now. (Regular

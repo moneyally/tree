@@ -79,3 +79,29 @@ fn a_lost_phone_is_replaced_with_the_phrase() {
     assert!(!st.active && st.pending.is_none());
     assert!(Session::recover(&env.profile("late"), "pw", "x", &env.url, again.words(), false, 8).is_err());
 }
+
+#[test]
+fn deleting_the_account_leaves_nothing_behind() {
+    let env = Env::new("delete");
+    let mut alice = env.device("alice");
+    let mut bob = env.device("bob");
+    bob.add_contact(alice.account_id()).unwrap();
+    alice.set_username("gone_soon", true).unwrap();
+    let g = alice.create_group().unwrap();
+    alice.invite(&g, bob.account_id()).unwrap();
+    bob.sync(0).unwrap();
+    // bob (no admin) deletes his account: alice is asked to remove him.
+    let path = env.profile("bob");
+    let bob_account = bob.account_id().to_string();
+    bob.delete_account(&path).unwrap();
+    assert!(!std::path::Path::new(&path).exists() && !std::path::Path::new(&format!("{path}.hdr")).exists());
+    let ev = alice.sync(0).unwrap();
+    assert!(ev.iter().any(|e| matches!(e, Event::LeaveRequested { .. })), "{ev:?}");
+    assert!(alice.invite(&g, &bob_account).is_err(), "no such account any more");
+    // alice deletes hers; the username is free again.
+    let apath = env.profile("alice");
+    alice.delete_account(&apath).unwrap();
+    let mut carol = env.device("carol");
+    carol.set_username("gone_soon", true).unwrap();
+    assert!(carol.find("@gone_soon").unwrap().is_some());
+}

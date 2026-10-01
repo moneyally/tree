@@ -185,6 +185,12 @@ impl Api {
         Ok(Creds { account_id: field(&v, "account_id")?, device_id: field(&v, "device_id")?, key: key.clone() })
     }
 
+    /// Deletes the whole account on the server.
+    pub fn delete_account(&self, c: &Creds) -> Result<(), Error> {
+        self.call(c, Method::DELETE, "/v1/accounts", None)?.ok()?;
+        Ok(())
+    }
+
     /// Sets (`Some`) or clears (`None`) this device's push endpoint
     /// (PROTOCOL.md 8.8).
     pub fn set_push(&self, c: &Creds, endpoint: Option<&str>) -> Result<(), Error> {

@@ -43,6 +43,7 @@ commands:
   remove <group> <member-id>             remove a member (device)
   refresh <group>                        refresh this device's keys
   refresh-all                            refresh keys in every group (suspected compromise)
+  delete-account                         delete the account everywhere (TREE_CONFIRM=delete)
   leave <group>                          ask the others to remove this device
   code <group>                           verification code of the group state
   contacts                               known accounts and whether verified
@@ -393,6 +394,14 @@ fn run(args: Vec<String>) -> Result<(), String> {
             println!("{}", outcome(s.remove(&hex_arg(g)?, &[id]).map_err(e)?));
         }
         ["refresh", g] => println!("{}", outcome(s.refresh_keys(&hex_arg(g)?).map_err(e)?)),
+        ["delete-account"] => {
+            if std::env::var("TREE_CONFIRM").as_deref() != Ok("delete") {
+                return Err("this deletes the account everywhere; run again with TREE_CONFIRM=delete".into());
+            }
+            s.delete_account(&profile).map_err(e)?;
+            println!("account deleted, profile removed");
+            return Ok(());
+        }
         ["refresh-all"] => {
             let done = s.refresh_all().map_err(e)?;
             println!("keys refreshed in {} group(s)", done.len());

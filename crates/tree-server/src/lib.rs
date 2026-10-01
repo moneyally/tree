@@ -210,7 +210,7 @@ pub async fn open_db(url: &str) -> Result<SqlitePool, BoxError> {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
-        .route("/v1/accounts", post(accounts::signup))
+        .route("/v1/accounts", post(accounts::signup).delete(accounts::delete_account))
         .route(
             "/v1/devices",
             post(accounts::add_device).get(accounts::list_devices),

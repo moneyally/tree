@@ -264,6 +264,15 @@ private fun Settings(model: AppModel, state: UiState) {
     val scope = rememberCoroutineScope()
     var phrase by remember { mutableStateOf<String?>(null) }
     var username by remember { mutableStateOf("") }
+    var confirmDelete by remember { mutableStateOf(false) }
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            confirmButton = { TextButton(onClick = { confirmDelete = false; scope.launch { model.deleteAccount() } }) { Text(Strings.t("delete_account")) } },
+            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel") } },
+            text = { Text(Strings.t("delete_confirm")) },
+        )
+    }
     remember { scope.launch { model.loadFeatures() } }
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         Text("${state.name}  ·  ${state.account}")
@@ -276,6 +285,7 @@ private fun Settings(model: AppModel, state: UiState) {
             Text(Strings.t("recovery_note"))
             SelectionContainer { Text(it, style = MaterialTheme.typography.titleMedium) }
         }
+        TextButton(onClick = { confirmDelete = true }) { Text(Strings.t("delete_account")) }
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
         // Every user setting with apply / release; locked ones say why.
         LazyColumn {

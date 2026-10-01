@@ -87,6 +87,14 @@ Proof-of-work: `SHA-256("tree-signup-v1" || auth_pub (32 bytes) || pow_nonce as
 Errors: `LOCKED_BY_SERVER` (flag `server.signups` released), `RATE_LIMITED`
 (per client address, memory only), `POW_INVALID`, `UNAUTHORIZED`, `ALREADY_EXISTS`.
 
+### `DELETE /v1/accounts` — delete my account
+
+Signed by any device of the account. Deletes the account and every device
+with its mailbox and key packages, its username, recovery key, push
+endpoints and invite links. `200 { "deleted": true, "devices": n }`. A
+suspended account cannot do this (`403 SUSPENDED`; whether it should:
+변호사 확인 필요). Reports others filed about the account are kept.
+
 ### `POST /v1/devices` — add a device to my account
 
 ```json

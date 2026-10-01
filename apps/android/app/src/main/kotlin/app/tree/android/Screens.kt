@@ -201,6 +201,15 @@ private fun ChatScreen(model: AppModel, state: UiState, chat: Chat) {
 private fun SettingsScreen(model: AppModel, state: UiState) {
     val scope = rememberCoroutineScope()
     var phrase by remember { mutableStateOf<String?>(null) }
+    var confirmDelete by remember { mutableStateOf(false) }
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            confirmButton = { TextButton(onClick = { confirmDelete = false; scope.launch { model.deleteAccount() } }) { Text(Strings.t("delete_account")) } },
+            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel") } },
+            text = { Text(Strings.t("delete_confirm")) },
+        )
+    }
     LazyColumn(Modifier.fillMaxSize().padding(16.dp)) {
         item {
             Text("${state.name} · ${state.account}")
@@ -211,6 +220,7 @@ private fun SettingsScreen(model: AppModel, state: UiState) {
                 Text(Strings.t("recovery_note"))
                 SelectionContainer { Text(it, style = MaterialTheme.typography.titleMedium) }
             }
+            TextButton(onClick = { confirmDelete = true }) { Text(Strings.t("delete_account")) }
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
         }
         items(state.features, key = { it.key }) { f ->

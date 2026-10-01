@@ -32,10 +32,14 @@ cargo test -p tree-core                 # security checks
 
 ```
 crates/tree-core   end-to-end encryption, groups, feature registry
-docs/              threat model, features, security findings
+crates/tree-server server: mailboxes and one-time key packages (ciphertext only)
+deploy/            Docker image and compose file for running the server
+docs/              threat model, server API, security findings
 ```
 
-Coming next: server (mailbox and key packages), Android app, desktop app, iOS app.
+The server API is described in [docs/SERVER_API.md](docs/SERVER_API.md).
+
+Coming next: Android app, desktop app, iOS app.
 
 ## Security
 

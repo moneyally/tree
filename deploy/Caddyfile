@@ -1,0 +1,7 @@
+# TLS certificates are obtained automatically for TREE_DOMAIN.
+# Access logs are deliberately NOT enabled: they would write client addresses to disk.
+
+{$TREE_DOMAIN} {
+	reverse_proxy tree-server:8080
+	header -Server
+}

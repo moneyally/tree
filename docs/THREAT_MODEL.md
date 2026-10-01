@@ -28,5 +28,6 @@ who leaks a conversation can prove it is genuine.
 
 ## Out of scope for now
 
-Metadata protection beyond padding, contact discovery (there is none: no phone
-numbers), and the server, which does not exist yet.
+Metadata protection beyond padding and contact discovery (there is none: no phone
+numbers). What the server stores, and what it does not, is listed in
+[SERVER_API.md](SERVER_API.md).

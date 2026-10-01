@@ -39,8 +39,8 @@ use crate::{error::TreeError, provider::TreeProvider};
 
 /// Version of Tree's own tables (`PRAGMA user_version`).
 /// 1: `tree_meta`, `tree_groups`. 2: + `tree_group_state`.
-/// 3: + `tree_app`, `tree_messages`.
-const TREE_SCHEMA_VERSION: i64 = 3;
+/// 3: + `tree_app`, `tree_messages`. 4: + `tree_messages.franking`.
+const TREE_SCHEMA_VERSION: i64 = 4;
 
 /// Tree tables added after version 1 (all idempotent, so any older
 /// database is brought up to date by running them).
@@ -59,6 +59,7 @@ const TREE_TABLES_V2: &str =
          deleted     INTEGER NOT NULL DEFAULT 0,
          expires_at  INTEGER,
          reactions   TEXT NOT NULL DEFAULT '{}',
+         franking    BLOB,
          PRIMARY KEY (group_id, id)
      ) WITHOUT ROWID;
      CREATE INDEX IF NOT EXISTS tree_messages_time ON tree_messages(group_id, received_at);
@@ -225,6 +226,9 @@ impl StoredProvider {
         migrate(&mut conn)?;
         if version < TREE_SCHEMA_VERSION {
             conn.execute_batch(TREE_TABLES_V2).map_err(storage_err)?;
+            if version == 3 {
+                conn.execute_batch("ALTER TABLE tree_messages ADD COLUMN franking BLOB").map_err(storage_err)?;
+            }
             conn.pragma_update(None, "user_version", TREE_SCHEMA_VERSION).map_err(storage_err)?;
         }
         Ok(Self { crypto: RustCrypto::default(), storage: SqlStorage { conn } })

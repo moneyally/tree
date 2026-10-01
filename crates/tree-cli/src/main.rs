@@ -23,6 +23,7 @@ commands:
   send <group> <text>                    send a message (prints its id)
   edit <group> <id> <text> | delete <group> <id> | react <group> <id> <emoji>
   history <group> | search <text>        messages kept on this device
+  report <group> <reason> <id>...        report messages of one sender to the operator
   send-file <group> <path>               send an encrypted attachment
   download <file-id> <path>              fetch, check and save a received attachment
   sync [wait-seconds]                    receive and print
@@ -257,6 +258,10 @@ fn run(args: Vec<String>) -> Result<(), String> {
         ["delete", g, id] => {
             s.delete_for_all(&hex_arg(g)?, id).map_err(e)?;
             println!("deleted for everyone");
+        }
+        ["report", g, reason, ids @ ..] if !ids.is_empty() => {
+            let r = s.report(&hex_arg(g)?, ids, reason).map_err(e)?;
+            println!("report {} filed ({})", r.id, if r.verified { "verified" } else { "NOT verified" });
         }
         ["react", g, id, emoji] => {
             s.react(&hex_arg(g)?, id, emoji, false).map_err(e)?;

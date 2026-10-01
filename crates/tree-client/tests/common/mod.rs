@@ -6,6 +6,9 @@ use std::path::PathBuf;
 use tree_client::Session;
 use tree_server::Config;
 
+/// Operator token of the test server.
+pub const ADMIN_TOKEN: &str = "test-operator";
+
 pub struct Env {
     pub dir: PathBuf,
     pub url: String,
@@ -25,6 +28,7 @@ impl Env {
             bind_addr: "127.0.0.1:0".parse().unwrap(),
             pow_bits: 8,
             attachment_dir: dir.join("attachments"),
+            admin_token_sha256: Some(sha2::Digest::finalize(<sha2::Sha256 as sha2::Digest>::new_with_prefix(ADMIN_TOKEN)).into()),
             ..Config::default()
         };
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -37,6 +41,16 @@ impl Env {
     pub fn device(&self, name: &str) -> Session {
         let p = self.profile(name);
         Session::create(&p, &format!("{name} passphrase"), name, &self.url, 8).unwrap()
+    }
+
+    /// An operator request (`X-Tree-Admin`).
+    pub fn operator(&self, method: reqwest::Method, path: &str) -> (u16, serde_json::Value) {
+        let r = reqwest::blocking::Client::new()
+            .request(method, format!("{}{path}", self.url))
+            .header("X-Tree-Admin", ADMIN_TOKEN)
+            .send()
+            .unwrap();
+        (r.status().as_u16(), r.json().unwrap_or_default())
     }
 
     pub fn profile(&self, name: &str) -> String {

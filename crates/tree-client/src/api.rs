@@ -237,6 +237,17 @@ impl Api {
         self.call(c, Method::POST, &format!("/v1/usernames/{action}"), body)?.ok()
     }
 
+    /// A franking tag for a commitment: (tag base64, minute).
+    pub fn frank(&self, c: &Creds, com: &[u8; 32]) -> Result<(String, i64), Error> {
+        let v = self.call(c, Method::POST, "/v1/franking", Some(&json!({ "com": b64(com) })))?.ok()?;
+        Ok((v["tag"].as_str().unwrap_or_default().to_string(), v["minute"].as_i64().unwrap_or(0)))
+    }
+
+    /// Files a report (PROTOCOL.md 8.5).
+    pub fn report(&self, c: &Creds, req: &Value) -> Result<Value, Error> {
+        self.call(c, Method::POST, "/v1/reports", Some(req))?.ok()
+    }
+
     pub fn send(&self, c: &Creds, recipients: &[String], body: &[u8]) -> Result<Value, Error> {
         let req = json!({ "recipients": recipients, "body": b64(body) });
         self.call(c, Method::POST, "/v1/messages", Some(&req))?.ok()

@@ -9,6 +9,7 @@
 //! * [`commits`] — commit ordering: first commit per group and epoch wins
 //! * [`usernames`] — @usernames, stored as hashes only
 //! * [`attachments`] — encrypted attachments (ciphertext blobs)
+//! * [`reports`] — reports with message franking, account suspension
 //! * [`features`] — operator flags with apply/release
 //!
 //! Privacy: no IP addresses, message bodies or key packages are logged. Logs
@@ -25,6 +26,7 @@ pub mod features;
 pub mod keypackages;
 pub mod limits;
 pub mod messages;
+pub mod reports;
 pub mod usernames;
 pub mod util;
 pub mod wire;
@@ -66,6 +68,7 @@ pub struct Inner {
     pub device_limiter: RateLimiter<String>,
     pub signup_limiter: RateLimiter<[u8; 16]>,
     pub waiters: Waiters,
+    pub franking: tokio::sync::OnceCell<[u8; 32]>,
 }
 
 impl Deref for AppState {
@@ -82,6 +85,7 @@ impl AppState {
             signup_limiter: RateLimiter::new(cfg.signup_per_hour / 3600.0, cfg.signup_burst),
             replay: ReplayCache::new(),
             waiters: Waiters::default(),
+            franking: tokio::sync::OnceCell::new(),
             db,
             cfg,
         }))
@@ -92,6 +96,11 @@ impl AppState {
         self.device_limiter
             .take(&device_id.to_string(), cost)
             .map_err(ApiError::rate_limited)
+    }
+
+    /// The server's franking key (created in the database on first use).
+    pub async fn franking_key(&self) -> ApiResult<[u8; 32]> {
+        Ok(*self.franking.get_or_try_init(|| reports::franking_key(&self.db)).await?)
     }
 
     /// Client address for the signup limit. Used only in memory.
@@ -196,6 +205,10 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/usernames/apply", post(usernames::apply))
         .route("/v1/usernames/release", post(usernames::release))
         .route("/v1/usernames/lookup", post(usernames::lookup))
+        .route("/v1/franking", post(reports::frank))
+        .route("/v1/reports", post(reports::report).get(reports::list))
+        .route("/v1/reports/{id}/resolve", post(reports::resolve))
+        .route("/v1/accounts/{id}/suspend/{action}", post(reports::suspend))
         .route("/v1/features", get(features::list))
         .route("/v1/features/{key}/apply", post(features::apply))
         .route("/v1/features/{key}/release", post(features::release))

@@ -158,6 +158,23 @@ fn schema_v1_is_upgraded() {
     assert_eq!(c.provider.load_group_state(b"g").unwrap(), Some(b"state".to_vec()));
     assert_eq!(c.provider.load_group_state(b"other").unwrap(), None);
     drop(c);
+    // Version 3 had `tree_messages` without `franking`.
+    let path = dir.0.join("v3.db");
+    drop(Client::create(&path, "pw", "a").unwrap());
+    {
+        let c = Client::open(&path, "pw").unwrap();
+        let conn = &c.provider.storage.conn;
+        conn.execute_batch("ALTER TABLE tree_messages DROP COLUMN franking").unwrap();
+        conn.pragma_update(None, "user_version", 3).unwrap();
+    }
+    let c = Client::open(&path, "pw").unwrap();
+    let conn = &c.provider.storage.conn;
+    let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+    assert_eq!(v, TREE_SCHEMA_VERSION);
+    let n: i64 = conn.query_row("SELECT COUNT(*) FROM pragma_table_info('tree_messages') WHERE name = 'franking'", [], |r| r.get(0)).unwrap();
+    assert_eq!(n, 1);
+    drop(c);
+    drop(Client::open(&path, "pw").unwrap()); // and opening again is fine
     for bad in [0, TREE_SCHEMA_VERSION + 1] {
         let path = dir.0.join(format!("v{bad}.db"));
         drop(Client::create(&path, "pw", "a").unwrap());

@@ -45,6 +45,10 @@ pub enum Payload {
     Leave,
     /// An encrypted attachment (PROTOCOL.md 6.12).
     File(FileInfo),
+    /// A chat message (`text`, `edit` or `file`) with its franking
+    /// (PROTOCOL.md 8.5): `p` is the inner payload exactly as encoded, `k`
+    /// the franking key, `tag` the server's tag made at minute `m`.
+    Franked { p: String, k: String, tag: String, m: i64 },
 }
 
 /// Where an attachment is and how to open it. Only ever inside an
@@ -73,6 +77,11 @@ pub struct FileInfo {
 impl Payload {
     pub fn encode(&self) -> Vec<u8> {
         serde_json::to_vec(self).expect("serialisable")
+    }
+
+    /// Payloads that are franked when sent (content a member could report).
+    pub fn is_franked_kind(&self) -> bool {
+        matches!(self, Payload::Text { .. } | Payload::Edit { .. } | Payload::File(_))
     }
 
     pub fn decode(bytes: &[u8]) -> Option<Self> {

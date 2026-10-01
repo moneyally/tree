@@ -1,4 +1,4 @@
-//! Message history on the device (`tree_messages`, schema v3).
+//! Message history on the device (`tree_messages`, schema v4).
 //!
 //! Plaintext history is exactly what forward secrecy does not protect
 //! (PROTOCOL.md 6.3 item 6), so it lives only in the encrypted database,
@@ -33,9 +33,13 @@ pub struct StoredMessage {
     pub expires_at: Option<i64>,
     /// Emoji -> member ids (hex) that reacted with it.
     pub reactions: BTreeMap<String, Vec<String>>,
+    /// What lets this device report the message (PROTOCOL.md 8.5): the
+    /// payload as received with its franking key and server tag. Erased
+    /// with the message.
+    pub franking: Option<Vec<u8>>,
 }
 
-const COLS: &str = "group_id, id, sender, received_at, kind, text, data, edited_at, deleted, expires_at, reactions";
+const COLS: &str = "group_id, id, sender, received_at, kind, text, data, edited_at, deleted, expires_at, reactions, franking";
 
 fn from_row(r: &Row<'_>) -> rusqlite::Result<StoredMessage> {
     let reactions: String = r.get(10)?;
@@ -51,6 +55,7 @@ fn from_row(r: &Row<'_>) -> rusqlite::Result<StoredMessage> {
         deleted: r.get::<_, i64>(8)? != 0,
         expires_at: r.get(9)?,
         reactions: serde_json::from_str(&reactions).unwrap_or_default(),
+        franking: r.get(11)?,
     })
 }
 
@@ -67,8 +72,8 @@ impl Client<StoredProvider> {
             let n = self
                 .conn()
                 .execute(
-                    &format!("INSERT OR IGNORE INTO tree_messages ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"),
-                    params![m.group_id, m.id, m.sender, m.received_at, m.kind, m.text, m.data, m.edited_at, m.deleted, m.expires_at, reactions],
+                    &format!("INSERT OR IGNORE INTO tree_messages ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)"),
+                    params![m.group_id, m.id, m.sender, m.received_at, m.kind, m.text, m.data, m.edited_at, m.deleted, m.expires_at, reactions, m.franking],
                 )
                 .map_err(storage_err)?;
             Ok(n == 1)
@@ -82,13 +87,14 @@ impl Client<StoredProvider> {
             .map_err(storage_err)
     }
 
-    /// Replaces the text of a message (an edit already checked by the caller).
-    pub fn edit_message(&self, group_id: &[u8], id: &str, text: &str, at: i64) -> Result<(), TreeError> {
+    /// Replaces the text of a message (an edit already checked by the
+    /// caller), with the edit's franking record.
+    pub fn edit_message(&self, group_id: &[u8], id: &str, text: &str, at: i64, franking: Option<&[u8]>) -> Result<(), TreeError> {
         self.provider.atomically(|| {
             self.conn()
                 .execute(
-                    "UPDATE tree_messages SET text = ?3, edited_at = ?4 WHERE group_id = ?1 AND id = ?2 AND deleted = 0",
-                    params![group_id, id, text, at],
+                    "UPDATE tree_messages SET text = ?3, edited_at = ?4, franking = ?5 WHERE group_id = ?1 AND id = ?2 AND deleted = 0",
+                    params![group_id, id, text, at, franking],
                 )
                 .map(|_| ())
                 .map_err(storage_err)
@@ -101,7 +107,7 @@ impl Client<StoredProvider> {
         self.provider.atomically(|| {
             self.conn()
                 .execute(
-                    "UPDATE tree_messages SET text = NULL, data = NULL, deleted = 1, reactions = '{}' WHERE group_id = ?1 AND id = ?2",
+                    "UPDATE tree_messages SET text = NULL, data = NULL, franking = NULL, deleted = 1, reactions = '{}' WHERE group_id = ?1 AND id = ?2",
                     params![group_id, id],
                 )
                 .map(|_| ())

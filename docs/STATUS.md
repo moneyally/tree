@@ -55,7 +55,7 @@ in section 5.
 | Safety number / QR comparison, key change warning | done | PROTOCOL.md 5.4 (Q4 decided); pinning on first use, warning on any new device key; CLI `safety`, `verify` |
 | Device link with confirmation code on both devices | missing | permanent lock in the registry, no code (multi-device is stage 3) |
 | Per-file encryption for attachments | done | PROTOCOL.md 6.12: AES-256-GCM STREAM per file, key in the message, ciphertext and plaintext hashes as key commitment; `chat.media` enforced; CLI `send-file`, `download` |
-| Message franking for reports | missing | |
+| Message franking for reports | done | PROTOCOL.md 8.5: HMAC commitment per message, server tag bound to the account; every text, edit and file is franked; CLI `report` |
 | Admin roles inside the group (admins, kick) | done | PROTOCOL.md 6.11: admins, name and chat settings in the MLS group context; non-admin settings changes and removals rejected by every device; CLI `make-admin`, `name`, `group-apply` |
 | Invite links with expiry / use count | missing | |
 | Official test vectors before merging crypto | partial | the libraries carry their own; Tree has no vector file of its own yet |
@@ -74,8 +74,8 @@ in section 5.
 | Minimal logs (no IP, no sender, day / minute granularity) | done | SERVER_API.md "What the server stores" |
 | Operator feature flags + audit trail | done | own implementation; section 4.4 |
 | `@username` (hash only, rate-limited search) | done | PROTOCOL.md 8.4; `/v1/usernames/*`; CLI `username`, `find`, `invite <group> @name`. Username links / QR: missing |
-| Message request inbox for strangers, blocking | done (on the device) | APP_PROTOCOL.md 3: requests, decline, block, `user.message_requests` / `stranger_block` / `group_add`; the server still delivers (it cannot know contacts) |
-| Report service (reporter's device submits) | missing | |
+| Message request inbox for strangers, blocking | done (on the device) | APP_PROTOCOL.md 5: requests, decline, block, `user.message_requests` / `stranger_block` / `group_add`; the server still delivers (it cannot know contacts) |
+| Report service (reporter's device submits) | done | `/v1/franking`, `/v1/reports`, operator review and resolve, account suspension (apply/release, `403 SUSPENDED`) |
 | Spam limits for new accounts | partial | per-device rate limits and signup limits exist; no new-account sending limit |
 | File service (encrypted blobs only) | done | `/v1/attachments`, files on disk, 30-day purge; 100 MiB per file (design: 2 GB free; needs chunked upload) |
 | Push relay without content | missing | |

@@ -74,7 +74,17 @@ impl Session {
         Ok(if on { opt.and_then(|o| o.parse::<i64>().ok()).filter(|s| *s > 0).map(|s| now() + s) } else { None })
     }
 
-    fn store(&mut self, gid: &[u8], id: &str, sender: &MemberId, kind: &str, text: Option<String>, data: Option<Vec<u8>>) -> Result<bool, Error> {
+    #[allow(clippy::too_many_arguments)]
+    fn store(
+        &mut self,
+        gid: &[u8],
+        id: &str,
+        sender: &MemberId,
+        kind: &str,
+        text: Option<String>,
+        data: Option<Vec<u8>>,
+        franking: Option<Vec<u8>>,
+    ) -> Result<bool, Error> {
         let expires_at = self.expiry(gid)?;
         Ok(self.client.store_message(&StoredMessage {
             group_id: gid.to_vec(),
@@ -88,6 +98,7 @@ impl Session {
             deleted: false,
             expires_at,
             reactions: Default::default(),
+            franking,
         })?)
     }
 
@@ -100,7 +111,7 @@ impl Session {
         let id = new_id();
         self.send_payload(gid, &Payload::Text { id: id.clone(), text: text.to_string() })?;
         let me = self.member_id();
-        self.store(gid, &id, &me, "text", Some(text.to_string()), None)?;
+        self.store(gid, &id, &me, "text", Some(text.to_string()), None, None)?;
         Ok(id)
     }
 
@@ -126,7 +137,7 @@ impl Session {
             return Err(Error::Usage("only text can be edited".into()));
         }
         self.send_payload(gid, &Payload::Edit { id: id.into(), text: text.into() })?;
-        Ok(self.client.edit_message(gid, id, text, now())?)
+        Ok(self.client.edit_message(gid, id, text, now(), None)?)
     }
 
     /// Deletes one of this device's own messages for everyone (chat.delete_for_all).
@@ -178,7 +189,7 @@ impl Session {
         // The sender keeps no reference to a view-once file.
         let data = (!view_once).then(|| serde_json::to_vec(&info).expect("JSON"));
         let me = self.member_id();
-        self.store(gid, &info.msg_id, &me, "file", Some(info.name.clone()), data)?;
+        self.store(gid, &info.msg_id, &me, "file", Some(info.name.clone()), data, None)?;
         Ok(info)
     }
 
@@ -240,13 +251,21 @@ impl Session {
 
     /// Handles a message-type payload from member `from` (blocked senders
     /// were filtered already).
-    pub(crate) fn on_message(&mut self, gid: &[u8], from: MemberId, p: Payload, events: &mut Vec<Event>) -> Result<(), Error> {
+    /// `franking` is the record that lets this device report the message.
+    pub(crate) fn on_message(
+        &mut self,
+        gid: &[u8],
+        from: MemberId,
+        p: Payload,
+        franking: Option<Vec<u8>>,
+        events: &mut Vec<Event>,
+    ) -> Result<(), Error> {
         let refuse = |events: &mut Vec<Event>, why: &str| events.push(Event::Dropped { reason: why.to_string() });
         let request = matches!(self.group_status(gid)?, GroupStatus::Request { .. });
         let name = self.names(gid)?.get(&from.to_hex()).cloned();
         match p {
             Payload::Text { id, text } => {
-                if !self.store(gid, &id, &from, "text", Some(text.clone()), None)? {
+                if !self.store(gid, &id, &from, "text", Some(text.clone()), None, franking)? {
                     refuse(events, "duplicate message id");
                     return Ok(());
                 }
@@ -254,7 +273,7 @@ impl Session {
             }
             Payload::Edit { id, text } => match self.changeable_by(gid, &id, &from, "chat.edit")? {
                 Ok(m) if m.kind == "text" => {
-                    self.client.edit_message(gid, &id, &text, now())?;
+                    self.client.edit_message(gid, &id, &text, now(), franking.as_deref())?;
                     events.push(Event::Edited { group: gid.to_vec(), id, from, text });
                 }
                 Ok(_) => refuse(events, "only text can be edited"),
@@ -294,7 +313,7 @@ impl Session {
                     return Ok(());
                 }
                 let data = serde_json::to_vec(&file).expect("JSON");
-                if !self.store(gid, &file.msg_id, &from, "file", Some(file.name.clone()), Some(data))? {
+                if !self.store(gid, &file.msg_id, &from, "file", Some(file.name.clone()), Some(data), franking)? {
                     refuse(events, "duplicate message id");
                     return Ok(());
                 }

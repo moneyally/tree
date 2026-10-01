@@ -396,6 +396,7 @@ fn msg(g: &[u8], id: &str, at: i64, text: &str) -> tree_core::storage::messages:
         deleted: false,
         expires_at: None,
         reactions: Default::default(),
+        franking: Some(b"fr".to_vec()),
     }
 }
 
@@ -420,9 +421,11 @@ fn message_history() {
     let prev = c.messages(g, 2, Some(103)).unwrap();
     assert_eq!(prev.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec!["m1", "m2"]);
 
-    c.edit_message(g, "m1", "edited", 200).unwrap();
+    c.edit_message(g, "m1", "edited", 200, Some(b"fr2")).unwrap();
     let m1 = c.message(g, "m1").unwrap().unwrap();
     assert_eq!((m1.text.as_deref(), m1.edited_at), (Some("edited"), Some(200)));
+    assert_eq!(m1.franking.as_deref(), Some(&b"fr2"[..]), "the edit's franking record replaces the original's");
+    assert_eq!(c.message(g, "m0").unwrap().unwrap().franking.as_deref(), Some(&b"fr"[..]));
 
     c.react(g, "m2", "aa", "👍", false).unwrap();
     c.react(g, "m2", "bb", "👍", false).unwrap();
@@ -435,8 +438,8 @@ fn message_history() {
 
     c.delete_message(g, "m3").unwrap();
     let m3 = c.message(g, "m3").unwrap().unwrap();
-    assert!(m3.deleted && m3.text.is_none());
-    c.edit_message(g, "m3", "back from the dead", 300).unwrap();
+    assert!(m3.deleted && m3.text.is_none() && m3.franking.is_none());
+    c.edit_message(g, "m3", "back from the dead", 300, None).unwrap();
     assert!(c.message(g, "m3").unwrap().unwrap().text.is_none(), "a deleted message stays deleted");
     c.react(g, "m3", "aa", "x", false).unwrap();
     assert!(c.message(g, "m3").unwrap().unwrap().reactions.is_empty());

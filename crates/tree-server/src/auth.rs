@@ -255,6 +255,10 @@ impl<T: SignedBody + Send> FromRequest<AppState> for Signed<T> {
 
         auth.verify(state, &key, &parts.method, &parts.uri, &bytes)?;
         state.rate_device(&device_id, 1.0)?;
+        // A suspended account can do nothing until an operator releases it.
+        if crate::reports::is_suspended(&state.db, &account_id).await? {
+            return Err(ApiError::forbidden("SUSPENDED", "this account is suspended"));
+        }
 
         let body = T::parse(&bytes)?;
         Ok(Signed {

@@ -18,6 +18,14 @@ RESULT event(HonestEpoch(g_1,es_5)) && attacker(exporter(es_5,envlabel,g_1)) ==>
 RESULT not attacker(m0[]) is true.
 RESULT not attacker(m1[]) is true.
 RESULT not attacker(m2[]) is false.
+== franking.pv
+RESULT event(Verified(a_2,g_2,p_2)) ==> event(Franked(a_2,g_2,p_2)) || event(AttackerAccount(a_2)) is true.
+RESULT not attacker(ks[]) is true.
+RESULT not event(VerifiedHonest(a_2)) is false.
+== franking_tag_without_account.pv
+RESULT event(Verified(a_2,g_2,p_2)) ==> event(Franked(a_2,g_2,p_2)) || event(AttackerAccount(a_2)) is false.
+RESULT not attacker(ks[]) is true.
+RESULT not event(VerifiedHonest(a_2)) is false.
 == pcs.pv
 RESULT not attacker(secretOther[]) is false.
 RESULT not attacker(secretOwn[]) is true.

@@ -21,6 +21,7 @@ Schema version: `PRAGMA user_version`.
 | 1 | `tree_meta`, `tree_groups` + OpenMLS tables |
 | 2 | `tree_group_state` (HANDOFF 3.1) |
 | 3 | `tree_app` (app data), `tree_messages` (history). Versions 1 and 2 are upgraded on open (all later tables are created idempotently); newer versions are refused |
+| 4 | `tree_messages.franking` (report records). Version 3 gets the column added on open |
 
 ### 1.1 Key header `<db>.hdr` (not secret)
 
@@ -50,6 +51,7 @@ CREATE TABLE tree_messages (
     deleted     INTEGER NOT NULL DEFAULT 0,
     expires_at  INTEGER,             -- disappearing messages
     reactions   TEXT NOT NULL DEFAULT '{}',  -- JSON emoji -> member ids
+    franking    BLOB,                -- JSON {payload, key, tag, minute} to report it (v4); NULL when deleted
     PRIMARY KEY (group_id, id)
 ) WITHOUT ROWID;
 ```
@@ -215,3 +217,19 @@ CREATE TABLE attachments (id TEXT PRIMARY KEY, size INTEGER NOT NULL, created_at
 
 The ciphertext itself is a file named by the id in `ATTACHMENT_DIR`. Deleted
 with the row after the mailbox TTL.
+
+### 2.4 Reports (migration `0005_reports.sql`, PROTOCOL.md 8.5)
+
+```sql
+CREATE TABLE server_secrets (name TEXT PRIMARY KEY, value BLOB NOT NULL);  -- 'franking': 32 random bytes
+CREATE TABLE reports (
+    id TEXT PRIMARY KEY, reported_account TEXT NOT NULL, reporter_account TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    messages TEXT NOT NULL,          -- JSON [{payload, verified}]: plaintext the reporter chose to send
+    verified INTEGER NOT NULL, created_day INTEGER NOT NULL,
+    resolved INTEGER NOT NULL DEFAULT 0, resolution TEXT
+);
+CREATE TABLE suspensions (account_id TEXT PRIMARY KEY, since_day INTEGER NOT NULL, reason TEXT);
+```
+
+`server_secrets` is a secret: back it up with the database, never log it.

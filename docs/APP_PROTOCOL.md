@@ -23,6 +23,7 @@ One JSON object per application message, UTF-8, field `t` names the type:
 | `roster` | `devices`: member id (hex) -> device id; `names` (optional): member id -> name; `accounts` (optional): member id -> account id | who is reachable at which server device, the sender's view of names, and which account each device belongs to | the member that just added devices (others may too) |
 | `leave` | — | the sender asks to be removed (PROTOCOL.md 6.5) | any member |
 | `file` | `msg_id`, `view_once` (optional), `id`, `key` (base64), `nonce` (base64, 7 bytes), `size`, `ct_sha256`, `pt_sha256` (hex), `name`, `mime` | an encrypted attachment (PROTOCOL.md 6.12) | any member, if `chat.media` is applied (and `chat.view_once` for view-once) |
+| `franked` | `p` (the inner `text`, `edit` or `file` payload as a JSON string), `k` (base64), `tag` (base64), `m` (minute) | how every `text`, `edit` and `file` is sent: the inner payload with its franking (PROTOCOL.md 8.5); the receiver keeps `p`, `k`, `tag`, `m` to be able to report it | any member |
 
 ```json
 {"t":"text","text":"안녕"}
@@ -30,6 +31,10 @@ One JSON object per application message, UTF-8, field `t` names the type:
 {"t":"roster","devices":{"0678…":"TRUiLpZjKr-CUgfUf_ry8w"},"names":{"0678…":"alice"}}
 {"t":"leave"}
 ```
+
+A `franked` payload whose `p` is not a `text`, `edit` or `file` is dropped.
+Unfranked `text`, `edit` and `file` are still accepted (a report of them shows
+as unverified).
 
 Unknown types or malformed JSON are dropped and shown as "unsupported", never
 as text. Message padding (256 bytes) is applied by MLS below this layer.
@@ -81,7 +86,16 @@ settings bind honest devices, not a member who wants to keep evidence.
 History is kept in the encrypted device database (`tree_messages`) and can be
 searched on the device while `user.search_index` is applied.
 
-## 4. Requests, blocking, who may add me
+## 4. Reporting
+
+`Session::report(group, ids, reason)` sends the stored franking records of
+messages of one sender (never the device's own) with the sender's account
+(from the `roster` accounts) to `/v1/reports` (PROTOCOL.md 8.5) and returns
+the report id and whether the server verified every message. A message
+deleted for everyone or expired has no record left and is reported as
+unverified text, or not at all once its row is gone.
+
+## 5. Requests, blocking, who may add me
 
 A welcome is always processed (MLS needs it), but the group starts as a
 request until the adder's account is known from its `roster`. Then
@@ -104,7 +118,7 @@ User settings (`apply` / `release` of user-scope features) are kept in the
 device database and checked against the registry (permanent locks such as
 `user.key_change_warning` cannot be released).
 
-## 5. Client behaviour (`tree_client::Session`)
+## 6. Client behaviour (`tree_client::Session`)
 
 | Step | Behaviour |
 | --- | --- |
@@ -119,7 +133,7 @@ device database and checked against the registry (permanent locks such as
 Not yet: holding expiry (7 days), retry limits for commits, contacts and
 safety numbers, message history.
 
-## 6. What the client stores
+## 7. What the client stores
 
 In the same encrypted database as the core (`tree_app` table, SCHEMA.md):
 
@@ -138,4 +152,4 @@ In the same encrypted database as the core (`tree_app` table, SCHEMA.md):
 | `feature/<key>` | the user's setting: applied or released, option |
 | `profile/username` | the own @username |
 | `file/<attachment id>` | a received `file` reference and its group (deleted after a view-once download) |
-| table `tree_messages` | message history (SCHEMA.md 1.2) |
+| table `tree_messages` | message history with franking records (SCHEMA.md 1.2) |

@@ -56,6 +56,8 @@ control, so that a "true" cannot come from a model in which nothing happens.
 | `pcs.pv` | (d) C5. After compromise of B's decryption state: A's own refresh does not heal B's compromise; B's refresh does, also for the following epoch | other-refresh secret learned; own-refresh secrets secret; reachability ok |
 | `pcs_signing_key_leaked.pv` | (d') C5 condition 3: compromise also reveals B's signature key | next-epoch secret learned (attack) |
 | `forward_secrecy_chain.pv` | (e) C4 inside one sender chain: compromise after two messages were decrypted | first two messages secret; third (not yet decrypted) learned |
+| `franking.pv` | (h) Reports (PROTOCOL.md 8.5). A verified report against an honest account names exactly a group and payload that account franked: no framing, no altered text, no moved message, even when the reporter holds its own accounts and receives every franked message; the server key stays secret | 2 x true; reachability: an honest account's message is verified |
+| `franking_tag_without_account.pv` | negative control: the server tag does not bind the account | framing found (attack) |
 
 ### Output summary (ProVerif 2.05, 2026-10-01)
 
@@ -84,6 +86,12 @@ RESULT not attacker(secretOwnNext[]) is true.
 RESULT not event(ReachA3) is false.
 == pcs_signing_key_leaked.pv
 RESULT not attacker(secretOwnNext[]) is false.  (others as in pcs.pv)
+== franking.pv
+RESULT event(Verified(a,g,p)) ==> event(Franked(a,g,p)) || event(AttackerAccount(a)) is true.
+RESULT not attacker(ks[]) is true.
+RESULT not event(VerifiedHonest(a)) is false.
+== franking_tag_without_account.pv
+RESULT event(Verified(a,g,p)) ==> ... is false.  (others as in franking.pv)
 == removal_secrecy.pv
 RESULT not attacker(pre[]) is false.
 RESULT not attacker(secretA1[]) is true.

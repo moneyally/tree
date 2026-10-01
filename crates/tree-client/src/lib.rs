@@ -7,6 +7,7 @@
 //! or in `tree-core`.
 
 pub mod api;
+pub mod franking;
 pub mod messages;
 pub mod payload;
 pub mod requests;
@@ -619,11 +620,18 @@ impl Session {
 
     /// Returns how many devices the message was delivered to.
     pub(crate) fn send_payload(&mut self, gid: &[u8], p: &Payload) -> Result<usize, Error> {
-        let bytes = self.with(gid, |g, c| g.send(c, &p.encode()))?;
         let to = self.other_devices(gid)?;
         if to.is_empty() {
             return Ok(0);
         }
+        let encoded = if p.is_franked_kind() {
+            let inner = String::from_utf8(p.encode()).expect("JSON is UTF-8");
+            let r = self.frank(gid, &inner)?;
+            Payload::Franked { p: r.payload, k: r.key, tag: r.tag, m: r.minute }.encode()
+        } else {
+            p.encode()
+        };
+        let bytes = self.with(gid, |g, c| g.send(c, &encoded))?;
         let v: Value = self.api.send(&self.creds, &to, &bytes)?;
         Ok(v["delivered"].as_u64().unwrap_or(0) as usize)
     }
@@ -735,7 +743,20 @@ impl Session {
 
     fn on_payload(&mut self, gid: &[u8], from: MemberId, body: &[u8], events: &mut Vec<Event>) -> Result<(), Error> {
         let me = self.member_id().to_hex();
-        match Payload::decode(body) {
+        let (payload, franking) = match Payload::decode(body) {
+            Some(Payload::Franked { p, k, tag, m }) => match Payload::decode(p.as_bytes()) {
+                Some(inner) if inner.is_franked_kind() => {
+                    let rec = franking::Record { payload: p, key: k, tag, minute: m };
+                    (Some(inner), Some(rec.encode()))
+                }
+                _ => {
+                    events.push(Event::Dropped { reason: "malformed franked payload".into() });
+                    return Ok(());
+                }
+            },
+            other => (other, None),
+        };
+        match payload {
             Some(p @ (Payload::Text { .. } | Payload::Edit { .. } | Payload::Delete { .. } | Payload::React { .. } | Payload::File(_))) => {
                 if let Some(a) = self.map(&accounts_key(gid))?.get(&from.to_hex()) {
                     if self.is_blocked(a)? {
@@ -743,7 +764,7 @@ impl Session {
                         return Ok(());
                     }
                 }
-                self.on_message(gid, from, p, events)?;
+                self.on_message(gid, from, p, franking, events)?;
             }
             Some(Payload::Roster { devices, names, accounts }) => {
                 // Only entries for current members are taken; names only as
@@ -794,7 +815,7 @@ impl Session {
                 events.push(Event::Profile { group: gid.to_vec(), member: from, name });
             }
             Some(Payload::Leave) => events.push(Event::LeaveRequested { group: gid.to_vec(), member: from }),
-            None => events.push(Event::Dropped { reason: format!("unsupported message from {}", &from.to_hex()[..8]) }),
+            Some(Payload::Franked { .. }) | None => events.push(Event::Dropped { reason: format!("unsupported message from {}", &from.to_hex()[..8]) }),
         }
         Ok(())
     }

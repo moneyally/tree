@@ -24,6 +24,7 @@ Some errors add fields (named with the endpoint).
 | `TIMESTAMP_SKEW` | 401 | `X-Tree-Timestamp` more than 300 s away from server time |
 | `LOCKED_BY_SERVER` | 403 | the feature is released by the operator (e.g. signups) |
 | `NOT_ELIGIBLE` | 403 | commit from a device the server does not know as a member of the group |
+| `SUSPENDED` | 403 | the account is suspended by the operator (every signed request) |
 | `NOT_FOUND` | 404 | no such endpoint, account or device |
 | `UNKNOWN_FEATURE` | 404 | unknown feature key |
 | `METHOD_NOT_ALLOWED` | 405 | wrong HTTP method |
@@ -273,6 +274,41 @@ another account holds it (also when that account hid it).
 `{ "hash": "<32 bytes>" }` → `200 { "account_id": "..." }`, or `404 NOT_FOUND`
 if no account holds it or it is hidden. Costs 10 rate-limit tokens.
 
+## Reports (PROTOCOL.md 8.5)
+
+### `POST /v1/franking` — tag for a message commitment
+
+`{ "com": "<32 bytes>" }` → `200 { "tag": "<32 bytes>", "minute": 1790834880 }`.
+The tag binds `com` to the caller's account and the minute. Nothing is stored.
+
+### `POST /v1/reports` — report messages of one account
+
+```json
+{ "reported_account": "...", "reason": "harassment",
+  "messages": [{ "payload": "{\"t\":\"text\",...}", "key": "<32 bytes>", "tag": "<32 bytes>",
+                 "minute": 1790834880, "group_id": "<base64>" }] }
+```
+
+1 to 20 messages, payload ≤ 64 KiB each, reason ≤ 500 characters. `201` →
+`{ "id": "...", "verified": true }`; `verified` is true only if every message's
+tag checks out against `reported_account`. Costs 10 rate-limit tokens.
+
+### `GET /v1/reports` — operator: open reports
+
+Header `X-Tree-Admin`. `200` → `{ "reports": [{ "id", "reported_account",
+"reporter_account", "reason", "messages": [{ "payload", "verified" }],
+"verified", "created_day" }] }`, oldest first, at most 100.
+
+### `POST /v1/reports/{id}/resolve` — operator: close a report
+
+Header `X-Tree-Admin`; optional body `{ "resolution": "..." }`. `200`, or `404`.
+
+### `POST /v1/accounts/{id}/suspend/apply`, `.../suspend/release` — operator
+
+Header `X-Tree-Admin`; optional body `{ "resolution": "reason" }`. Idempotent.
+`200` → `{ "account_id": "...", "state": "applied" }`. While applied, every
+signed request of the account gets `403 SUSPENDED`.
+
 ## Operator feature flags
 
 Every flag has apply and release. Both are idempotent and return the current state.
@@ -310,6 +346,9 @@ Errors: `UNAUTHORIZED`, `UNKNOWN_FEATURE`.
 | message sender | **no** |
 | IP addresses | **no** (signup rate limit keeps them in memory only) |
 | operator flag changes | key, state, time, optional reason |
+| franking | the server key only; nothing per message |
+| reports | reported and reporting account, reason, the reported messages' plaintext as the reporter sent it, verified flags, day; until the operator deletes them |
+| suspensions | account id, day, optional reason; until released |
 
 Logs contain method, route template, status and latency only.
 

@@ -40,6 +40,12 @@ bob sync
 bob send "$G" "잘 받았어, 앨리스"
 alice sync
 
+step "bob reports a message; the server checks it really came from alice (franking)"
+SPAM=$(alice send "$G" "spam spam spam" | awk '{print $3}')
+bob sync
+bob report "$G" spam "$SPAM" | tee "$DIR/report.txt"
+grep -q "(verified)" "$DIR/report.txt"
+
 step "both compare the safety number (the same 60 digits on both sides)"
 alice safety "$BOB_ACCOUNT"
 ALICE_ACCOUNT=$(alice whoami | awk '/^account/ {print $2}')
@@ -57,7 +63,7 @@ bob sync
 alice send "$G" "밥은 이제 못 읽어"
 bob sync
 
-step "what the server database holds (searching for the plaintext)"
+step "what the server database holds (searching for the plaintext; only the reported message is there)"
 if grep -a -q -e "서버를 거쳐서" -e "alice" -e "bob_tree" "$DIR"/server.db* 2>/dev/null; then
   echo "!!! plaintext or name found on the server"; exit 1
 else

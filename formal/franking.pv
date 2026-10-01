@@ -1,0 +1,93 @@
+(* Tree Protocol v1 -- model (h): message franking for reports.
+
+   Construction (docs/PROTOCOL.md 8.5):
+     com = HMAC(k, group || payload)                 k fresh per message
+     tag = HMAC(K_server, com || account || minute)  account = the signed
+                                                     request's account
+   The report (account, group, payload, k, tag, minute) is accepted as
+   verified iff the server's recomputation matches.
+
+   Property checked:
+   (1) A verified report against an honest account names a payload and group
+       that this account really franked: a reporter (or anyone else) cannot
+       frame an honest account, change the text, or move it to another group.
+   (2) K_server stays secret.
+   Reachability: an honest account's franked message can be verified.
+
+   Abstractions:
+   - Dolev-Yao attacker controls the network, may hold any number of accounts
+     of its own (it gets tags for those), and is the reporter: honest senders
+     hand (payload, k, tag, minute) to it, as a malicious group member would
+     receive them. It also chooses every honest sender's group and payload.
+   - Request authentication (signed requests, PROTOCOL.md 8.1) is modelled
+     as a private channel per honest account; requests on the public channel
+     are served only for the attacker's accounts. Account ids are
+     hacc(n) for honest and att(x) for attacker accounts, so the two never
+     coincide (the server knows which device signed).
+   - HMAC is an ideal symbolic MAC (free function, no equations), so the
+     model relies on HMAC-SHA-256 being a PRF/MAC and a commitment
+     (collision resistance); it does not prove that.
+   - Replay is irrelevant: verifying the same report twice proves the same.
+*)
+
+free c: channel.
+
+type key.
+
+fun hmac(key, bitstring): bitstring.
+
+fun att(bitstring): bitstring.
+fun hacc(bitstring): bitstring [private].
+reduc forall x: bitstring; isHonest(hacc(x)) = true [private].
+
+event Franked(bitstring, bitstring, bitstring).
+event AttackerAccount(bitstring).
+event Verified(bitstring, bitstring, bitstring).
+event VerifiedHonest(bitstring).
+
+query a: bitstring, g: bitstring, p: bitstring;
+  event(Verified(a, g, p)) ==> event(Franked(a, g, p)) || event(AttackerAccount(a)).
+
+free ks: key [private].
+query attacker(ks).
+
+query a: bitstring; event(VerifiedHonest(a)).
+
+(* The server's tag endpoint, for an honest account's own requests. *)
+let tagHonest(a: bitstring, auth: channel) =
+  in(auth, (com: bitstring, m: bitstring));
+  out(auth, hmac(ks, (com, a, m))).
+
+(* The same endpoint for requests the attacker signs with its own accounts. *)
+let tagAttacker =
+  in(c, (x: bitstring, com: bitstring, m: bitstring));
+  event AttackerAccount(att(x));
+  out(c, hmac(ks, (com, att(x), m))).
+
+(* An honest sender franks a message the attacker chooses and hands the
+   franked message to the attacker (a group member, later the reporter). *)
+let sender(a: bitstring, auth: channel) =
+  in(c, (g: bitstring, p: bitstring, m: bitstring));
+  new k: key;
+  let com = hmac(k, (g, p)) in
+  out(auth, (com, m));
+  in(auth, t: bitstring);
+  event Franked(a, g, p);
+  out(c, (g, p, k, t, m)).
+
+(* The report endpoint. *)
+let verifier =
+  in(c, (a: bitstring, g: bitstring, p: bitstring, k: key, t: bitstring, m: bitstring));
+  if t = hmac(ks, (hmac(k, (g, p)), a, m)) then
+  event Verified(a, g, p);
+  if isHonest(a) = true then event VerifiedHonest(a).
+
+let honestAccount =
+  new n: bitstring;
+  let a = hacc(n) in
+  new auth: channel;
+  out(c, a);
+  ((!tagHonest(a, auth)) | (!sender(a, auth))).
+
+process
+  (!honestAccount) | (!tagAttacker) | (!verifier)

@@ -883,6 +883,50 @@ rate-limit tokens each, and an account can hide its name from lookups
 (`user.discoverable` released) while keeping it reserved. Non-ASCII names
 are not supported in v1.
 
+### 8.5 Reports with message franking, account suspension
+
+The server never sees messages, so a report is a member's device handing
+over messages it decrypted, by the user's choice (`user.report` is always
+on). Franking lets the server check that a reported message is genuine and
+was sent by the reported account, without storing anything per message
+(`crates/tree-server/src/reports.rs`, `crates/tree-client/src/franking.rs`):
+
+1. **Sender.** For every `text`, `edit` and `file` payload `P` (exact JSON
+   bytes), a fresh random 32-byte key `k` and
+   `com = HMAC-SHA-256(k, "tree/franking/v1" || u32(len(group_id)) || group_id || P)`.
+   `POST /v1/franking {com}` returns
+   `tag = HMAC-SHA-256(K_server, "tree/franking-tag/v1" || com || u32(len(account)) || account || i64(minute))`
+   and `minute`, where `account` is the signed request's account. The server
+   learns only that this account franked something at this minute, which it
+   already knows from the send; `com` is random to it. Nothing is stored.
+2. **Message.** The sender sends `{"t":"franked","p":P,"k":k,"tag":tag,"m":minute}`
+   inside MLS (APP_PROTOCOL.md 1). The receiver takes `P` as the message and
+   keeps `(P, k, tag, minute)` with it in its encrypted history
+   (`tree_messages.franking`); it is erased with the message (deletion for
+   everyone, disappearing messages).
+3. **Report.** `POST /v1/reports` with the reported account, a reason and
+   up to 20 messages `(P, k, tag, minute, group_id)`, all of one sender. The
+   server recomputes `com` and `tag` and stores the report with the plaintext
+   and a `verified` flag per message for operator review.
+4. **Operator.** Lists open reports, resolves them, and can suspend an
+   account (`apply` / `release`): every signed request of a suspended
+   account is refused with `403 SUSPENDED`.
+
+What a valid tag proves: the reported account's device asked for a tag on
+exactly `P` for this group. A reporter cannot frame another account (the
+tag binds the account), alter the text (binds `P` through `com`) or move it
+to another group. What it does not prove: who else saw it, or that the
+sender's client was honest about anything else. A sender that does not
+frank (a modified client) makes its own messages unverifiable, which the
+operator sees; the report still carries the text the reporter's device
+received. `K_server` is 32 random bytes created on first start in the
+server database (`server_secrets`); losing it makes older tags unverifiable,
+nothing more. HMAC-SHA-256 as commitment and MAC follows the published
+franking constructions; nothing new is built here. Symbolic model:
+`formal/franking.pv` (no framing, altering or moving of a verified message;
+server key secret), with a negative control showing why the tag must bind the
+account.
+
 ---
 
 ## 9. Security claims

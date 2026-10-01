@@ -1,0 +1,46 @@
+== commit_ordering.pv
+RESULT event(Merged(a,s,c1)) && event(Merged(b,s,c2)) ==> c1 = c2 is true.
+RESULT event(Merged(a,s,x)) ==> event(Accepted(s,x)) is true.
+RESULT not event(Reach3(a)) is false.
+== commit_ordering_merge_early.pv
+RESULT event(Merged(a,s,c1)) && event(Merged(b,s,c2)) ==> c1 = c2 is false.
+== envelope_seal.pv
+RESULT event(Accepted(g_1,es_5,m_4)) ==> event(Sealed(g_1,es_5,m_4)) || event(Leaked(g_1,es_5)) is true.
+RESULT event(ConsumeKey(g_1,es_5,m_4)) ==> event(Sealed(g_1,es_5,m_4)) || event(Leaked(g_1,es_5)) is true.
+RESULT not event(AcceptedHonest(g_1,es_5,m_4)) is false.
+RESULT event(HonestEpoch(g_1,es_5)) && attacker(exporter(es_5,envlabel,g_1)) ==> event(Leaked(g_1,es_5)) is true.
+== envelope_seal_check_after_mls.pv
+RESULT event(Accepted(g_1,es_5,m_4)) ==> event(Sealed(g_1,es_5,m_4)) || event(Leaked(g_1,es_5)) is true.
+RESULT event(ConsumeKey(g_1,es_5,m_4)) ==> event(Sealed(g_1,es_5,m_4)) || event(Leaked(g_1,es_5)) is false.
+RESULT not event(AcceptedHonest(g_1,es_5,m_4)) is false.
+RESULT event(HonestEpoch(g_1,es_5)) && attacker(exporter(es_5,envlabel,g_1)) ==> event(Leaked(g_1,es_5)) is true.
+== forward_secrecy_chain.pv
+RESULT not attacker(m0[]) is true.
+RESULT not attacker(m1[]) is true.
+RESULT not attacker(m2[]) is false.
+== pcs.pv
+RESULT not attacker(secretOther[]) is false.
+RESULT not attacker(secretOwn[]) is true.
+RESULT not attacker(secretOwnNext[]) is true.
+RESULT not event(ReachA3) is false.
+== pcs_signing_key_leaked.pv
+RESULT not attacker(secretOther[]) is false.
+RESULT not attacker(secretOwn[]) is true.
+RESULT not attacker(secretOwnNext[]) is false.
+RESULT not event(ReachA3) is false.
+== removal_secrecy.pv
+RESULT not attacker(pre[]) is false.
+RESULT not attacker(secretA1[]) is true.
+RESULT not attacker(secretB1[]) is true.
+RESULT not attacker(secretA2[]) is true.
+RESULT not attacker(secretB2[]) is true.
+RESULT not event(ReachA2) is false.
+RESULT not event(ReachB2) is false.
+== removal_secrecy_send_in_past_epoch.pv
+RESULT not attacker(pre[]) is false.
+RESULT not attacker(secretA1[]) is true.
+RESULT not attacker(secretB1[]) is false.
+RESULT not attacker(secretA2[]) is true.
+RESULT not attacker(secretB2[]) is true.
+RESULT not event(ReachA2) is false.
+RESULT not event(ReachB2) is false.

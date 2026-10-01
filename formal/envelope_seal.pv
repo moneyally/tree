@@ -1,0 +1,98 @@
+(* Tree Protocol v1 -- model (a): outer envelope seal.
+
+   Construction (docs/PROTOCOL.md, section "Outer envelope seal"):
+     K   = MLS-Exporter("tree/envelope/v1", group_id, 32)   (RFC 9420, 8.5)
+     tag = HMAC-SHA-256(K, mls_bytes)
+     envelope = 0x01 || tag || mls_bytes
+   The receiver recomputes the tag and compares it BEFORE handing mls_bytes
+   to MLS (where a message key would be consumed).
+
+   Properties checked:
+   (1) A non-member cannot get a forged or modified message accepted past
+       the seal: every envelope accepted by an honest member in (group g,
+       epoch secret es) carries MLS bytes that an honest member sealed in the
+       same group and epoch -- unless that epoch's secret was given to the
+       attacker (the attacker was a member in that epoch).
+   (2) Same property for the point where MLS consumes a key ("ConsumeKey"):
+       forged input never reaches MLS processing.
+   (3) The envelope key of an epoch whose secret is not leaked stays secret.
+
+   Abstractions:
+   - Dolev-Yao attacker: reads, drops, reorders, replays and injects all
+     network traffic (this includes the server).
+   - HMAC is an ideal symbolic MAC (a free function, no equations), i.e. the
+     model relies on HMAC-SHA-256 being a PRF/MAC; it does not prove that.
+   - The MLS exporter is a one-way free function exporter(es, label, gid) of
+     the epoch's exporter secret es. MLS itself is not modelled: es is a fresh
+     name known only to members of that epoch (assumption from MLS security).
+   - Unbounded groups and unbounded epochs per group. In some epochs the
+     attacker is a member: their es is published ("Leaked"). The attacker
+     also chooses group ids and can create its own groups.
+   - The byte layout 0x01 || 32-byte tag || body is modelled as a tuple;
+     a fixed version byte and fixed tag length make the encoding injective.
+   - Replay is NOT excluded by the seal (a replayed envelope has a valid
+     tag); MLS rejects replays by generation. Replay is outside this model,
+     so the properties are non-injective correspondences.
+*)
+
+free c: channel.
+
+type key.
+type label.
+
+const v1: bitstring.
+const envlabel: label.
+
+fun exporter(key, label, bitstring): key.
+fun hmac(key, bitstring): bitstring.
+
+event Sealed(bitstring, key, bitstring).
+event Accepted(bitstring, key, bitstring).
+event ConsumeKey(bitstring, key, bitstring).
+event Leaked(bitstring, key).
+event HonestEpoch(bitstring, key).
+
+query g: bitstring, es: key, m: bitstring;
+  event(Accepted(g, es, m)) ==> event(Sealed(g, es, m)) || event(Leaked(g, es)).
+
+query g: bitstring, es: key, m: bitstring;
+  event(ConsumeKey(g, es, m)) ==> event(Sealed(g, es, m)) || event(Leaked(g, es)).
+
+(* Non-vacuity: an honest epoch accepts a message (expected: false =
+   reachable). *)
+event AcceptedHonest(bitstring, key, bitstring).
+query g: bitstring, es: key, m: bitstring; event(AcceptedHonest(g, es, m)).
+
+(* Envelope keys of honest epochs stay secret. *)
+query g: bitstring, es: key;
+  event(HonestEpoch(g, es)) && attacker(exporter(es, envlabel, g)) ==> event(Leaked(g, es)).
+
+(* An honest member seals an MLS message chosen by the attacker: this gives
+   the attacker a seal oracle for arbitrary content, which is stronger than
+   reality (members seal only their own MLS output). *)
+let Sender(g: bitstring, es: key) =
+  in(c, m: bitstring);
+  event Sealed(g, es, m);
+  out(c, (v1, hmac(exporter(es, envlabel, g), m), m)).
+
+let Receiver(g: bitstring, es: key, honest: bool) =
+  in(c, (=v1, t: bitstring, m: bitstring));
+  if t = hmac(exporter(es, envlabel, g), m) then
+  event Accepted(g, es, m);
+  (* only now is the MLS message processed and a message key consumed *)
+  event ConsumeKey(g, es, m);
+  if honest then event AcceptedHonest(g, es, m).
+
+let Epoch(g: bitstring) =
+  new es: key;
+  ( event HonestEpoch(g, es);
+    (!Sender(g, es) | !Receiver(g, es, true)) )
+  |
+  (* an epoch in which the attacker is (or was) a member *)
+  ( new es2: key;
+    event Leaked(g, es2);
+    out(c, es2);
+    (!Sender(g, es2) | !Receiver(g, es2, false)) ).
+
+process
+  !(in(c, g: bitstring); !Epoch(g))

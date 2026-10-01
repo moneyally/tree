@@ -2,14 +2,21 @@
 
 ## Security goals
 
-| Goal | How |
-| --- | --- |
-| Confidentiality of messages | MLS (RFC 9420), hybrid ML-KEM-768 + X25519 key exchange |
-| Integrity and authenticity | MLS signatures + AEAD, outer envelope seal |
-| Forward secrecy | message keys deleted after use |
-| Post-compromise security | periodic key refresh (`Group::refresh_keys`) |
-| Harvest-now-decrypt-later resistance | post-quantum hybrid key exchange, 256-bit symmetric keys |
-| Removed members lose access | new epoch after every removal |
+Short overview. The precise statements, adversaries, assumptions and
+exceptions are the numbered claims C1-C11 in [PROTOCOL.md](PROTOCOL.md),
+section 9; this table does not replace them.
+
+| Goal | How | Claim |
+| --- | --- | --- |
+| Confidentiality of messages | MLS (RFC 9420), hybrid ML-KEM-768 + X25519 key exchange | C2, C8 |
+| Integrity and authenticity | MLS signatures + AEAD; outer envelope seal against non-members | C1, C3 |
+| Forward secrecy | message keys deleted after use; exactly which messages a device compromise exposes is in C4 | C4 |
+| Post-compromise security | the compromised device's own commit (key refresh) or its removal by an honest member, after the attacker lost access; not against an attacker who uses the signature key | C5 |
+| Harvest-now-decrypt-later resistance | post-quantum hybrid key exchange, 256-bit symmetric keys; signatures are not post-quantum | C8 |
+| Removed members lose access | new epoch after every removal; messages of the removal epoch stay readable to the removed member | C6 |
+
+Recovery (recovery phrase, PIN, passkeys) has its own threat model:
+[RECOVERY_THREAT_MODEL.md](RECOVERY_THREAT_MODEL.md).
 
 **Not provided:** deniability. MLS messages carry sender signatures, so a member
 who leaks a conversation can prove it is genuine.
@@ -22,7 +29,7 @@ who leaks a conversation can prove it is genuine.
 | The Tree server (breach, insider, legal compulsion) | stores only ciphertext; outer seal blocks forged inputs | sees mailbox, approximate time; can drop messages |
 | Outsider who can write to a mailbox | outer envelope seal checked before MLS | none known |
 | Malicious group member | MLS authentication | can leak what they read; can make one message undecryptable (F-001); can get changes committed in an honest member's name or cut members off through proposals (F-007) |
-| Removed member with a modified client | new epoch keys after removal | none known (tested) |
+| Removed member with a modified client | new epoch keys after removal | none known for later epochs (attack-scenario tests; formal model `formal/removal_secrecy.pv` under abstractions); can burn keys of messages from epochs it knew while they are in the past-epoch window |
 | Device thief | encrypted local storage (below); (planned) hardware-wrapped keys | an unlocked phone; a weak passphrase until the hardware keystore is used |
 | Spyware on the device | out of scope | no messenger can protect a compromised OS |
 
@@ -78,5 +85,6 @@ Residual risks:
 ## Out of scope for now
 
 Metadata protection beyond padding and contact discovery (there is none: no phone
-numbers). What the server stores, and what it does not, is listed in
-[SERVER_API.md](SERVER_API.md).
+numbers). What the server sees at stage 1 is classified item by item in
+[PROTOCOL.md](PROTOCOL.md), section 11. What the server stores, and what it does
+not, is listed in [SERVER_API.md](SERVER_API.md).

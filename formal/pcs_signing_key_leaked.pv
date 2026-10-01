@@ -1,0 +1,81 @@
+(* Tree Protocol v1 -- model (d'), companion of pcs.pv.
+
+   Identical to pcs.pv except that the compromise also reveals B's
+   SIGNATURE key sskB. Tree v1 key refreshes keep the same signature key
+   (the leaf keeps its credential), so the attacker can sign a "refresh by B"
+   commit of its own, with a leaf key and commit secret it chose. A cannot
+   tell it from B's genuine refresh.
+
+   Expected result: attacker(secretOwnNext) is TRUE -- an active attacker
+   holding B's signature key is not healed by key refreshes. Healing then
+   requires removing B's device and adding a new device identity
+   (docs/PROTOCOL.md, claim C5).
+*)
+
+free c: channel.
+
+type key.
+type skey.
+type pkey.
+type sskey.
+type spkey.
+
+fun pk(skey): pkey.
+fun aenc(pkey, bitstring): bitstring.
+reduc forall sk: skey, m: bitstring; adec(sk, aenc(pk(sk), m)) = m.
+
+fun spk(sskey): spkey.
+fun sign(bitstring, sskey): bitstring.
+reduc forall m: bitstring, k: sskey; checksign(sign(m, k), spk(k)) = m.
+reduc forall m: bitstring, k: sskey; getmsg(sign(m, k)) = m.
+
+fun kdf(key, bitstring): key.
+fun mk(key, bitstring): key.
+fun senc(key, bitstring): bitstring.
+reduc forall k: key, m: bitstring; sdec(k, senc(k, m)) = m.
+fun eid(key): bitstring.
+
+const refreshA, refreshB: bitstring.
+
+free secretOther, secretOwn, secretOwnNext: bitstring [private].
+
+query attacker(secretOther).
+query attacker(secretOwn).
+query attacker(secretOwnNext).
+
+(* Non-vacuity: A reaches epoch 3 (expected: false = reachable). *)
+event ReachA3.
+query event(ReachA3).
+
+process
+  new e1: key;
+  new skA: skey; new skB: skey;
+  new sskA: sskey; new sskB: sskey;
+  out(c, (pk(skA), pk(skB), spk(sskA), spk(sskB)));
+  (* compromise of B's decryption state in epoch 1 *)
+  out(c, (e1, skB, sskB));
+  (
+    (* (i) A refreshes; commit secret encrypted to B's current (compromised) key *)
+    new csA: bitstring;
+    let e2i = kdf(e1, csA) in
+    out(c, sign((eid(e1), refreshA, aenc(pk(skB), csA)), sskA));
+    !new g: bitstring; out(c, (g, senc(mk(e2i, g), secretOther)))
+  ) | (
+    (* (ii) B refreshes with a fresh leaf key; commit secret encrypted to A *)
+    new skB2: skey;
+    new csB: bitstring;
+    let e2 = kdf(e1, csB) in
+    out(c, sign((eid(e1), refreshB, pk(skB2), aenc(pk(skA), csB)), sskB));
+    ( (!new g: bitstring; out(c, (g, senc(mk(e2, g), secretOwn))))
+    | ( (* A, in epoch 2, accepts only B's signed refresh *)
+        in(c, x: bitstring) [precise];
+        let (=eid(e1), =refreshB, pkB2: pkey, encB: bitstring) = checksign(x, spk(sskB)) in
+        let csB' = adec(skA, encB) in
+        let e2' = kdf(e1, csB') in
+        (* A's next refresh: epoch 2 -> 3, commit secret to B's NEW key *)
+        new csA3: bitstring;
+        let e3 = kdf(e2', csA3) in
+        out(c, sign((eid(e2'), refreshA, aenc(pkB2, csA3)), sskA));
+        event ReachA3;
+        !new g: bitstring; out(c, (g, senc(mk(e3, g), secretOwnNext))) ) )
+  )

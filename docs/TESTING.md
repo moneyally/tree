@@ -1,5 +1,11 @@
 # Testing
 
+These are attack-scenario tests on the reference implementation. They find
+bugs and pin known limitations; they do not prove that Tree is secure. Security
+claims and their assumptions are in [PROTOCOL.md](PROTOCOL.md) (section 9);
+the formal models in [`formal/`](../formal/README.md) check parts of them
+under stated abstractions.
+
 ## Run the tests
 
 ```sh

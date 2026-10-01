@@ -5,6 +5,8 @@
 //! * [`client`] — a device identity: signing key, credential, key packages.
 //! * [`group`]  — an end-to-end encrypted conversation (1:1 is a two-member group).
 //! * [`features`] — the feature registry: every feature has apply/release.
+//! * [`storage`] — the encrypted on-device database (SQLCipher) that keeps
+//!   identity and groups across restarts.
 //!
 //! Wire formats are plain bytes so that any transport (server mailbox,
 //! file, QR code) can carry them.
@@ -13,10 +15,14 @@ pub mod client;
 pub mod error;
 pub mod features;
 pub mod group;
+pub mod provider;
+pub mod storage;
 
 pub use client::Client;
 pub use error::TreeError;
 pub use group::{Group, Incoming};
+pub use provider::TreeProvider;
+pub use storage::{KdfParams, KeySource, Passphrase, StoredProvider};
 
 use openmls::prelude::Ciphersuite;
 
@@ -36,7 +42,8 @@ pub const TREE_CIPHERSUITE: Ciphersuite =
 pub const TREE_CIPHERSUITE: Ciphersuite =
     Ciphersuite::MLS_128_DHKEMX25519_CHACHA20POLY1305_SHA256_Ed25519;
 
-/// Crypto provider used by default (RustCrypto primitives).
+/// Crypto provider used by default (RustCrypto primitives), in memory only.
+/// For state that survives restarts see [`Client::create`] / [`Client::open`].
 pub type DefaultProvider = openmls_rust_crypto::OpenMlsRustCrypto;
 
 /// Alternative provider built on formally verified libcrux primitives.

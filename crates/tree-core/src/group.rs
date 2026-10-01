@@ -9,6 +9,7 @@ use openmls_traits::OpenMlsProvider;
 use crate::{
     client::Client,
     error::{group_err, TreeError},
+    provider::TreeProvider,
 };
 
 /// A conversation this device belongs to.
@@ -121,7 +122,7 @@ impl Group {
 
     /// Adds a device by its key package. The caller sends `commit` to the
     /// existing members and `welcome` to the new device.
-    pub fn add<P: OpenMlsProvider>(
+    pub fn add<P: TreeProvider>(
         &mut self,
         me: &Client<P>,
         key_package: &[u8],
@@ -134,20 +135,22 @@ impl Group {
             return Err(TreeError::InvalidKeyPackage("ciphersuite mismatch".into()));
         }
 
-        let (commit, welcome, _info) = self
-            .mls
-            .add_members(&me.provider, &me.signer, core::slice::from_ref(&kp))
-            .map_err(group_err)?;
-        // Seal with the CURRENT epoch (what existing members hold), then merge.
-        let commit = self.seal(me, commit.to_bytes().map_err(group_err)?)?;
-        self.mls.merge_pending_commit(&me.provider).map_err(group_err)?;
+        me.provider.atomically(|| {
+            let (commit, welcome, _info) = self
+                .mls
+                .add_members(&me.provider, &me.signer, core::slice::from_ref(&kp))
+                .map_err(group_err)?;
+            // Seal with the CURRENT epoch (what existing members hold), then merge.
+            let commit = self.seal(me, commit.to_bytes().map_err(group_err)?)?;
+            self.mls.merge_pending_commit(&me.provider).map_err(group_err)?;
 
-        Ok(AddOutput { commit, welcome: welcome.to_bytes().map_err(group_err)? })
+            Ok(AddOutput { commit, welcome: welcome.to_bytes().map_err(group_err)? })
+        })
     }
 
     /// Removes a member by name. Their future reading ability ends with
     /// the new epoch this commit creates.
-    pub fn remove<P: OpenMlsProvider>(
+    pub fn remove<P: TreeProvider>(
         &mut self,
         me: &Client<P>,
         name: &str,
@@ -158,48 +161,59 @@ impl Group {
             .find(|m| m.credential.serialized_content() == name.as_bytes())
             .map(|m| m.index)
             .ok_or_else(|| TreeError::UnknownMember(name.to_string()))?;
-        let (commit, _welcome, _info) = self
-            .mls
-            .remove_members(&me.provider, &me.signer, &[index])
-            .map_err(group_err)?;
-        let commit = self.seal(me, commit.to_bytes().map_err(group_err)?)?;
-        self.mls.merge_pending_commit(&me.provider).map_err(group_err)?;
-        Ok(commit)
+        me.provider.atomically(|| {
+            let (commit, _welcome, _info) = self
+                .mls
+                .remove_members(&me.provider, &me.signer, &[index])
+                .map_err(group_err)?;
+            let commit = self.seal(me, commit.to_bytes().map_err(group_err)?)?;
+            self.mls.merge_pending_commit(&me.provider).map_err(group_err)?;
+            Ok(commit)
+        })
     }
 
     /// Refreshes this device's keys. Run periodically (e.g. daily) and after
     /// any suspicion of compromise: an attacker who copied old state loses
     /// access once this commit is processed (post-compromise security).
-    pub fn refresh_keys<P: OpenMlsProvider>(&mut self, me: &Client<P>) -> Result<Vec<u8>, TreeError> {
-        let bundle = self
-            .mls
-            .self_update(&me.provider, &me.signer, LeafNodeParameters::default())
-            .map_err(group_err)?;
-        let commit = self.seal(me, bundle.into_commit().to_bytes().map_err(group_err)?)?;
-        self.mls.merge_pending_commit(&me.provider).map_err(group_err)?;
-        Ok(commit)
+    pub fn refresh_keys<P: TreeProvider>(&mut self, me: &Client<P>) -> Result<Vec<u8>, TreeError> {
+        me.provider.atomically(|| {
+            let bundle = self
+                .mls
+                .self_update(&me.provider, &me.signer, LeafNodeParameters::default())
+                .map_err(group_err)?;
+            let commit = self.seal(me, bundle.into_commit().to_bytes().map_err(group_err)?)?;
+            self.mls.merge_pending_commit(&me.provider).map_err(group_err)?;
+            Ok(commit)
+        })
     }
 
     /// Encrypts a chat message for everyone in the group.
-    pub fn send<P: OpenMlsProvider>(&mut self, me: &Client<P>, body: &[u8]) -> Result<Vec<u8>, TreeError> {
+    pub fn send<P: TreeProvider>(&mut self, me: &Client<P>, body: &[u8]) -> Result<Vec<u8>, TreeError> {
         if !self.mls.is_active() {
             return Err(TreeError::NotAMember);
         }
-        let out = self
-            .mls
-            .create_message(&me.provider, &me.signer, body)
-            .map_err(group_err)?;
-        self.seal(me, out.to_bytes().map_err(group_err)?)
+        me.provider.atomically(|| {
+            let out = self
+                .mls
+                .create_message(&me.provider, &me.signer, body)
+                .map_err(group_err)?;
+            self.seal(me, out.to_bytes().map_err(group_err)?)
+        })
     }
 
     /// Decrypts and authenticates anything received for this group.
     /// Anything tampered with, replayed, from a non-member, or for another
     /// group is rejected.
-    pub fn receive<P: OpenMlsProvider>(&mut self, me: &Client<P>, bytes: &[u8]) -> Result<Incoming, TreeError> {
+    pub fn receive<P: TreeProvider>(&mut self, me: &Client<P>, bytes: &[u8]) -> Result<Incoming, TreeError> {
         if !self.mls.is_active() {
             return Err(TreeError::NotAMember);
         }
+        // Checked before anything is written.
         let body = self.open_envelope(me, bytes)?;
+        me.provider.atomically(|| self.process(me, body))
+    }
+
+    fn process<P: TreeProvider>(&mut self, me: &Client<P>, body: &[u8]) -> Result<Incoming, TreeError> {
         let msg = MlsMessageIn::tls_deserialize_exact(body)
             .map_err(|e| TreeError::Malformed(format!("{e:?}")))?;
         let protocol = msg

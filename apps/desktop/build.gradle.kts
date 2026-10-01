@@ -23,6 +23,8 @@ val bindings by tasks.registering(Exec::class) {
     workingDir = repoRoot
     val out = generated.get().asFile
     outputs.dir(out)
+    // The library is cargo's output, not a Gradle input: regenerate every build.
+    outputs.upToDateWhen { false }
     commandLine(
         File(cargoTarget, "uniffi-bindgen").path, "generate",
         "--library", File(cargoTarget, "libtree_ffi.so").path,

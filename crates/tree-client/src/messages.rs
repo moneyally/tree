@@ -83,6 +83,24 @@ impl Session {
         Ok((st.state == State::Applied, st.option))
     }
 
+    /// Every chat setting of the group as the admins left it (defaults
+    /// where they changed nothing), for a group settings screen. Permanent
+    /// locks (`chat.e2e`) carry their reason.
+    pub fn chat_features(&mut self, gid: &[u8]) -> Result<Vec<tree_core::features::Status>, Error> {
+        let set = self.group_settings(gid)?.features;
+        Ok(Registry::standard()
+            .list(tree_core::features::Scope::Chat)
+            .into_iter()
+            .map(|mut st| {
+                if let Some(s) = set.get(st.key) {
+                    st.state = if s.applied { State::Applied } else { State::Released };
+                    st.option = s.option.clone();
+                }
+                st
+            })
+            .collect())
+    }
+
     fn chat_allows(&mut self, gid: &[u8], key: &str) -> Result<bool, Error> {
         Ok(self.chat_feature(gid, key)?.0)
     }

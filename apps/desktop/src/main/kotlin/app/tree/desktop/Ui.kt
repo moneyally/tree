@@ -151,9 +151,53 @@ private fun JoinLink(model: AppModel) {
     }
 }
 
+/** Safety numbers of the other members, with "mark verified". */
+@Composable
+private fun SafetyPanel(model: AppModel, state: UiState) {
+    val scope = rememberCoroutineScope()
+    var shown by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var verified by remember { mutableStateOf(false) }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(Strings.t("safety") + ":")
+        state.members.filter { state.names[it.id] != "" && it.account != null }.forEach { m ->
+            TextButton(onClick = {
+                scope.launch {
+                    val acc = m.account!!
+                    shown = model.safetyNumber(acc)?.let { acc to it }
+                    verified = model.isVerified(acc)
+                }
+            }) { Text(state.names[m.id] ?: m.id.take(6)) }
+        }
+    }
+    shown?.let { (acc, digits) ->
+        Text(Strings.t("compare"), style = MaterialTheme.typography.bodySmall)
+        SelectionContainer { Text(digits, style = MaterialTheme.typography.titleMedium) }
+        if (verified) Text("✓ " + Strings.t("verified"))
+        else TextButton(onClick = { scope.launch { verified = model.markVerified(acc) } }) { Text(Strings.t("verify")) }
+    }
+}
+
+/** Admins: every chat setting with apply / release. */
+@Composable
+private fun GroupSettingsPanel(model: AppModel, state: UiState, group: String) {
+    val scope = rememberCoroutineScope()
+    Text(Strings.t("group_settings"), style = MaterialTheme.typography.titleSmall)
+    state.chatFeatures.forEach { f ->
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(f.key + (f.option?.let { " ($it)" } ?: ""), Modifier.weight(1f))
+            Switch(
+                checked = f.applied,
+                enabled = f.lockedBy == null,
+                onCheckedChange = { on -> scope.launch { model.setChatFeature(group, f.key, on, f.option) } },
+            )
+        }
+    }
+}
+
 @Composable
 private fun ChatView(model: AppModel, state: UiState, chat: Chat) {
     val scope = rememberCoroutineScope()
+    var settingsOpen by remember(chat.id) { mutableStateOf(false) }
     var draft by remember(chat.id) { mutableStateOf("") }
     var who by remember(chat.id) { mutableStateOf("") }
     var link by remember(chat.id) { mutableStateOf<String?>(null) }
@@ -174,6 +218,9 @@ private fun ChatView(model: AppModel, state: UiState, chat: Chat) {
                 TextButton(onClick = { scope.launch { link = model.inviteLink(chat.id) } }) { Text(Strings.t("invite_link")) }
             }
             link?.let { SelectionContainer { Text(it) } }
+            SafetyPanel(model, state)
+            TextButton(onClick = { settingsOpen = !settingsOpen }) { Text(Strings.t("group_settings")) }
+            if (settingsOpen) GroupSettingsPanel(model, state, chat.id)
         }
         LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
             items(state.messages, key = { it.id }) { m ->
@@ -184,6 +231,14 @@ private fun ChatView(model: AppModel, state: UiState, chat: Chat) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     val who = state.names[m.sender]?.ifEmpty { Strings.t("me") } ?: m.sender.take(6)
                     Text("$who: $body", Modifier.weight(1f).padding(4.dp))
+                    if (m.kind == "file" && state.files.containsKey(m.id)) {
+                        TextButton(onClick = {
+                            val d = java.awt.FileDialog(null as java.awt.Frame?, Strings.t("save"), java.awt.FileDialog.SAVE)
+                            d.file = m.text ?: "file"
+                            d.isVisible = true
+                            if (d.file != null) scope.launch { model.saveFile(m.id, java.io.File(d.directory, d.file)) }
+                        }) { Text(Strings.t("save")) }
+                    }
                     TextButton(onClick = { scope.launch { model.report(chat.id, listOf(m.id), "user report") } }) {
                         Text(Strings.t("report"))
                     }
@@ -191,6 +246,11 @@ private fun ChatView(model: AppModel, state: UiState, chat: Chat) {
             }
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = {
+                val d = java.awt.FileDialog(null as java.awt.Frame?, Strings.t("attach"), java.awt.FileDialog.LOAD)
+                d.isVisible = true
+                if (d.file != null) scope.launch { model.sendFile(chat.id, java.io.File(d.directory, d.file)) }
+            }) { Text(Strings.t("attach")) }
             OutlinedTextField(draft, { draft = it }, label = { Text(Strings.t("message")) }, modifier = Modifier.weight(1f))
             Button(onClick = { scope.launch { if (model.send(chat.id, draft)) draft = "" } }) { Text(Strings.t("send")) }
         }

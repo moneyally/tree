@@ -47,6 +47,36 @@ class AppModelTest {
         assertEquals(listOf("안녕 밥"), bob.state.value.messages.map { it.text })
         assertEquals(0, bob.state.value.chats.single().unread)
 
+        // Safety numbers: the same 60 digits on both sides; mark verified.
+        val aliceAcc = alice.state.value.account
+        val bobAcc = bob.state.value.account
+        val n = assertNotNull(bob.safetyNumber(aliceAcc))
+        assertEquals(n, alice.safetyNumber(bobAcc))
+        assertTrue(!bob.isVerified(aliceAcc))
+        assertTrue(bob.markVerified(aliceAcc))
+        assertTrue(bob.isVerified(aliceAcc))
+        assertEquals(aliceAcc, bob.state.value.members.first { it.account == aliceAcc }.account)
+
+        // Files: sent, received, checked and saved.
+        val src = java.io.File("$dir/note.txt").apply { writeText("파일 내용") }
+        assertTrue(alice.sendFile(g, src))
+        bob.syncNow()
+        val fileMsg = bob.state.value.messages.last()
+        assertEquals("file", fileMsg.kind)
+        val dest = java.io.File("$dir/saved.txt")
+        assertTrue(bob.saveFile(fileMsg.id, dest))
+        assertEquals("파일 내용", dest.readText())
+
+        // Group settings: the admin releases voice messages for everyone.
+        alice.openChat(g)
+        assertTrue(alice.state.value.chatFeatures.single { it.key == "chat.voice" }.applied)
+        assertTrue(alice.setChatFeature(g, "chat.voice", false))
+        assertTrue(!alice.state.value.chatFeatures.single { it.key == "chat.voice" }.applied)
+        bob.syncNow()
+        assertTrue(!bob.state.value.chatFeatures.single { it.key == "chat.voice" }.applied)
+        assertTrue(!bob.setChatFeature(g, "chat.voice", true), "bob is not an admin")
+        bob.clearMessages()
+
         // Settings come from the registry; permanent ones say why.
         bob.loadFeatures()
         val warn = bob.state.value.features.single { it.key == "user.key_change_warning" }

@@ -211,6 +211,8 @@ pub struct Member {
     pub name: Option<String>,
     pub duplicate_name: bool,
     pub admin: bool,
+    /// For `safety_number` / `verify`.
+    pub account: Option<String>,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -427,7 +429,14 @@ impl TreeSession {
         let admins = s.group_settings(&gid)?.admins;
         Ok(s.members(&gid)?
             .into_iter()
-            .map(|m| Member { admin: admins.contains(&m.id), id: m.id.to_hex(), device: m.device, name: m.name, duplicate_name: m.duplicate_name })
+            .map(|m| Member {
+                admin: admins.contains(&m.id),
+                id: m.id.to_hex(),
+                device: m.device,
+                name: m.name,
+                duplicate_name: m.duplicate_name,
+                account: m.account,
+            })
             .collect())
     }
 
@@ -469,6 +478,12 @@ impl TreeSession {
     /// Admins: apply or release a chat setting for everyone.
     pub fn set_chat_feature(&self, group: String, key: String, apply: bool, option: Option<String>) -> R<Commit> {
         Ok(self.s().set_chat_feature(&unhex(&group, "group")?, &key, apply, option)?.into())
+    }
+
+    /// The group's chat settings for a settings screen (admins change them
+    /// with `set_chat_feature`).
+    pub fn chat_features(&self, group: String) -> R<Vec<Feature>> {
+        Ok(self.s().chat_features(&unhex(&group, "group")?)?.into_iter().map(Into::into).collect())
     }
 
     pub fn screenshot_blocked(&self, group: String) -> R<bool> {

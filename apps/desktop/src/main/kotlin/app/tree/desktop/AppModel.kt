@@ -11,7 +11,9 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import uniffi.tree_ffi.Attachment
 import uniffi.tree_ffi.Feature
+import uniffi.tree_ffi.Member
 import uniffi.tree_ffi.Message
 import uniffi.tree_ffi.TreeEvent
 import uniffi.tree_ffi.TreeException
@@ -36,6 +38,11 @@ data class UiState(
     /** Member id -> display name in the open chat ("" = this device). */
     val names: Map<String, String> = emptyMap(),
     val features: List<Feature> = emptyList(),
+    /** Members of the open chat, and its chat settings. */
+    val members: List<Member> = emptyList(),
+    val chatFeatures: List<Feature> = emptyList(),
+    /** Files received in this session: message id -> reference. */
+    val files: Map<String, Attachment> = emptyMap(),
     val notice: String? = null,
     val error: String? = null,
 )
@@ -119,7 +126,10 @@ class AppModel(
     private fun onEvent(e: TreeEvent) {
         when (e) {
             is TreeEvent.Text -> if (e.group != _state.value.open) unread[e.group] = (unread[e.group] ?: 0) + 1
-            is TreeEvent.File -> if (e.group != _state.value.open) unread[e.group] = (unread[e.group] ?: 0) + 1
+            is TreeEvent.File -> {
+                if (e.group != _state.value.open) unread[e.group] = (unread[e.group] ?: 0) + 1
+                _state.update { it.copy(files = it.files + (e.file.msgId to e.file)) }
+            }
             is TreeEvent.KeyChanged -> _state.update { it.copy(notice = Strings.t("key_changed")) }
             else -> {}
         }
@@ -135,10 +145,11 @@ class AppModel(
         } ?: return
         val open = _state.value.open
         val messages = if (open != null) call { it.history(open, 200u) } ?: emptyList() else emptyList()
-        val names = if (open != null) {
-            call { s -> s.members(open).associate { m -> m.id to if (m.id == s.memberId()) "" else (m.name ?: m.id.take(6)) } } ?: emptyMap()
-        } else emptyMap()
-        _state.update { it.copy(chats = chats, messages = messages, names = names) }
+        val members = if (open != null) call { it.members(open) } ?: emptyList() else emptyList()
+        val me = session?.memberId()
+        val names = members.associate { m -> m.id to if (m.id == me) "" else (m.name ?: m.id.take(6)) }
+        val chatFeatures = if (open != null) call { it.chatFeatures(open) } ?: emptyList() else emptyList()
+        _state.update { it.copy(chats = chats, messages = messages, names = names, members = members, chatFeatures = chatFeatures) }
     }
 
     suspend fun openChat(group: String?) {
@@ -163,6 +174,29 @@ class AppModel(
     suspend fun report(group: String, ids: List<String>, reason: String): Boolean? = call { it.report(group, ids, reason) }?.verified
 
     suspend fun safetyNumber(account: String): String? = call { it.safetyNumber(account) }
+
+    /** After comparing the digits in person or on a call. */
+    suspend fun markVerified(account: String): Boolean = call { it.verify(account, null) } != null
+
+    suspend fun isVerified(account: String): Boolean = call { s -> s.contacts().any { it.account == account && it.verified } } ?: false
+
+    /** Admins: apply or release a chat setting for everyone in the group. */
+    suspend fun setChatFeature(group: String, key: String, on: Boolean, option: String? = null): Boolean =
+        (call { it.setChatFeature(group, key, on, option) }?.accepted == true).also { refresh() }
+
+    suspend fun sendFile(group: String, file: java.io.File): Boolean {
+        val bytes = withContext(io) { file.readBytes() }
+        val mime = withContext(io) { java.nio.file.Files.probeContentType(file.toPath()) } ?: "application/octet-stream"
+        return (call { it.sendFile(group, bytes, file.name, mime, false) } != null).also { refresh() }
+    }
+
+    /** Downloads, checks and decrypts a received file into `dest`. */
+    suspend fun saveFile(msgId: String, dest: java.io.File): Boolean {
+        val f = _state.value.files[msgId] ?: return false
+        val bytes = call { it.download(f) } ?: return false
+        withContext(io) { dest.writeBytes(bytes) }
+        return true
+    }
 
     suspend fun loadFeatures() {
         val f = call { it.features() } ?: return

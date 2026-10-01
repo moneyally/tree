@@ -206,6 +206,8 @@ pub struct MemberInfo {
     pub name: Option<String>,
     /// Another member uses the same name: tell them apart by id (F-008).
     pub duplicate_name: bool,
+    /// The member's account, if this device learned it (for safety numbers).
+    pub account: Option<String>,
 }
 
 /// Pinning rule (trust on first use): the first set of devices of an account
@@ -409,6 +411,7 @@ impl Session {
     pub fn members(&mut self, gid: &[u8]) -> Result<Vec<MemberInfo>, Error> {
         let roster = self.roster(gid)?;
         let names = self.names(gid)?;
+        let accounts = self.map(&accounts_key(gid))?;
         let ids = self.group(gid)?.members();
         let name_of = |id: &MemberId| names.get(&id.to_hex()).cloned();
         Ok(ids
@@ -416,7 +419,13 @@ impl Session {
             .map(|id| {
                 let name = name_of(id);
                 let duplicate_name = name.is_some() && ids.iter().filter(|o| name_of(o) == name).count() > 1;
-                MemberInfo { id: *id, device: roster.get(&id.to_hex()).cloned(), name, duplicate_name }
+                MemberInfo {
+                    id: *id,
+                    device: roster.get(&id.to_hex()).cloned(),
+                    name,
+                    duplicate_name,
+                    account: accounts.get(&id.to_hex()).cloned(),
+                }
             })
             .collect())
     }

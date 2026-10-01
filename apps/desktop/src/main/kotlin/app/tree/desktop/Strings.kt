@@ -41,6 +41,11 @@ object Strings {
         "edited" to "수정됨",
         "deleted" to "삭제된 메시지",
         "me" to "나",
+        "attach" to "파일",
+        "save" to "저장",
+        "group_settings" to "그룹 설정 (관리자)",
+        "verified" to "확인됨",
+        "compare" to "상대와 직접 만나거나 통화하며 이 숫자가 같은지 비교하세요.",
     )
 
     private val en = mapOf(
@@ -77,6 +82,11 @@ object Strings {
         "edited" to "edited",
         "deleted" to "Deleted message",
         "me" to "Me",
+        "attach" to "File",
+        "save" to "Save",
+        "group_settings" to "Group settings (admins)",
+        "verified" to "Verified",
+        "compare" to "Compare these digits with the other person in person or on a call.",
     )
 
     fun t(key: String): String = (if (lang == Lang.KO) ko[key] else null) ?: en[key] ?: key

@@ -79,6 +79,14 @@ fn formatting_mentions_voice_screenshots() {
     alice.send_file(&g, b"a normal file", "a.txt", "text/plain", false).unwrap();
     assert!(bob.sync(0).unwrap().iter().any(|e| matches!(e, Event::File { .. })), "other files still go");
 
+    // The settings screen lists every chat setting with the admins' values.
+    let list = bob.chat_features(&g).unwrap();
+    let get = |k: &str| list.iter().find(|s| s.key == k).unwrap().clone();
+    assert_eq!(get("chat.voice").state, tree_core::features::State::Released);
+    assert_eq!(get("chat.reactions").state, tree_core::features::State::Applied, "default");
+    assert!(get("chat.e2e").locked_by.is_some());
+    assert!(list.len() >= 10);
+
     // Screenshot block: per user, or for everyone by the admins.
     assert!(!bob.screenshot_blocked(&g).unwrap());
     bob.set_screenshot_block(&g, true).unwrap();

@@ -92,9 +92,18 @@ Owner already has a server. Do not ask for passwords or keys in chat. Options to
 (a) owner runs `deploy/README.md` steps himself; (b) a GitHub Actions deploy workflow using an SSH key the
 owner stores as a repository secret. Mark the access-log retention question "변호사 확인 필요".
 
-### 3.6 After that (stage 1 apps)
-Android + desktop: Kotlin + Compose Multiplatform with UniFFI bindings to tree-core; iOS: Swift + SwiftUI
-(needs macOS: GitHub Actions macOS runner + TestFlight). Check toolchains are installable first.
+Status: prepared, waiting for the owner's choice. `deploy/README.md` (a) and
+`.github/workflows/deploy.yml` (b, manual only, needs the owner's secrets) are both ready.
+
+### 3.6 After that (stage 1 apps) — IN PROGRESS
+Done on the branch stack (`claude/cli` … `claude/desktop`, see docs/STATUS.md): usernames,
+requests/blocking, safety numbers, admins and chat settings, files, history, reports with
+franking, recovery phrase, invite links, push wake-ups, UniFFI bindings (`crates/tree-ffi`),
+desktop app (`apps/desktop`, tested against a real server, screens rendered off-screen) and
+Android app (`apps/android`, APK builds; not run on a device: no emulator in the cloud box).
+Next: iOS (needs macOS), a push gateway with the platform push services (needs the owner),
+notifications, packaging/signing, external review. Toolchains used: JDK 21, Gradle 8.14,
+Android SDK 35 + NDK r27 in `/opt/android-sdk` (install steps in apps/android/README.md).
 
 ## 4. Open decisions for the owner
 - License: Apache-2.0 (current) or AGPL-3.0.

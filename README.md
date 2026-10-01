@@ -24,12 +24,26 @@ The Rust core (`crates/tree-core`) can:
 
 The server (`crates/tree-server`) orders commits and stores ciphertext only;
 the client library (`crates/tree-client`) and the `tree` command line
-(`crates/tree-cli`) chat through it.
+(`crates/tree-cli`) chat through it. On top of that:
+
+- @usernames (the server keeps only a hash), message requests and blocking
+- safety numbers (60 digits or a QR code) and key-change warnings
+- group admins, chat settings every device enforces (disappearing
+  messages, edit and delete windows, media, voice, reactions, mentions,
+  screenshot blocking), invite links with expiry and a use limit
+- encrypted attachments, message history and search on the device
+- reports with message franking (the server can check a reported message
+  is genuine without storing anything per message), account suspension
+- a recovery phrase (12 to 24 words, English or Korean)
+- push wake-ups that carry no content
+- app bindings (`crates/tree-ffi`), a desktop app and an Android app
 
 Try it:
 
 ```sh
 cargo build -p tree-server -p tree-cli && sh scripts/cli_demo.sh   # two people chat through a real server
+sh scripts/ffi_demo.sh                  # the app bindings, through a real server
+sh scripts/desktop_test.sh              # the desktop app's model and screens (needs a JDK and Gradle)
 cargo run -p tree-core --example demo   # three people chatting end to end (no server)
 cargo test -p tree-core                 # attack-scenario tests on the reference implementation
 formal/run.sh                           # formal models (needs ProVerif)
@@ -46,6 +60,9 @@ crates/tree-core   end-to-end encryption, groups, feature registry
 crates/tree-server server: mailboxes, one-time key packages, commit ordering (ciphertext only)
 crates/tree-client client logic for all apps: server API, sync, commits, rosters
 crates/tree-cli    `tree` command-line client
+crates/tree-ffi    bindings for the apps (Kotlin, Swift)
+apps/              desktop and Android apps (shared model in apps/shared)
+bindings/          binding demos (Python, Kotlin on the JVM)
 scripts/           demos
 deploy/            Docker image and compose file for running the server
 docs/              protocol specification, threat models, server API, security findings
@@ -54,8 +71,8 @@ formal/            ProVerif models of the parts Tree adds on top of MLS
 
 The server API is described in [docs/SERVER_API.md](docs/SERVER_API.md).
 
-Coming next: identity and safety basics (recovery phrase, safety numbers,
-usernames, blocking, reporting), then the Android, desktop and iOS apps.
+Coming next: the iOS app, running the server, notifications through a
+push gateway, an external security review.
 
 ## Security
 

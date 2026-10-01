@@ -18,6 +18,13 @@ conclusion first. Say "됐다" only for things actually run and checked.
    then review. Crypto changes must still pass `cargo test -p tree-core`.
 8. Anything legal or app-store related: mark "변호사 확인 필요", do not guess.
 
+## GitHub access
+- Access comes from this session itself. Never ask the owner for keys or tokens.
+- clone/pull/push: plain git (the session proxy authenticates). Work on `claude/<topic>` branches, never directly on `main`.
+- PRs: `python3 .claude/skills/tree-deploy/scripts/pr.py` (uses `GH_TOKEN`, a placeholder the proxy replaces). Steps in `.claude/skills/tree-deploy/SKILL.md`.
+- Repo not visible or push rejected: attach `moneyally/tree` with the `add_repo` tool (push access), retry once.
+- Merging to `main` deploys nothing yet (no server). Deploy steps go into the skill once the server exists.
+
 ## Stack
 Rust core + server + bot gateway; Android/desktop: Kotlin + Compose
 Multiplatform; iOS: Swift + SwiftUI; bindings via UniFFI; web console:

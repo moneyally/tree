@@ -169,7 +169,7 @@ pub async fn recover(
     }
     tx.commit().await?;
     for d in &revoked {
-        state.waiters.notify(d);
+        state.wake(d);
     }
     Ok((StatusCode::CREATED, Json(json!({ "account_id": account_id, "device_id": device_id, "revoked": revoked.len() }))))
 }

@@ -275,6 +275,23 @@ another account holds it (also when that account hid it).
 `{ "hash": "<32 bytes>" }` → `200 { "account_id": "..." }`, or `404 NOT_FOUND`
 if no account holds it or it is hidden. Costs 10 rate-limit tokens.
 
+## Push wake-ups (PROTOCOL.md 8.8)
+
+### `POST /v1/push` — set this device's endpoint
+
+`{ "endpoint": "https://<allowed gateway host>/..." }` → `200 { "state": "applied" }`.
+`400` if push is off, the host is not in `PUSH_ALLOWED_HOSTS`, the URL is not
+https, carries credentials or is longer than 1024 characters.
+
+### `DELETE /v1/push` — no wake-ups
+
+`200 { "state": "released" }`.
+
+When anything arrives in the device's mailbox (message, commit, welcome,
+invite request), the server POSTs the body `wake` (`text/plain`) to the
+endpoint, at most once per `PUSH_INTERVAL_SECS`, without following
+redirects. A `404` or `410` from the gateway deletes the endpoint.
+
 ## Invite links (PROTOCOL.md 8.7)
 
 ### `POST /v1/invites` — register a link
@@ -405,6 +422,7 @@ Errors: `UNAUTHORIZED`, `UNKNOWN_FEATURE`.
 | reports | reported and reporting account, reason, the reported messages' plaintext as the reporter sent it, verified flags, day; until the operator deletes them |
 | suspensions | account id, day, optional reason; until released |
 | recovery | the Ed25519 public key derived from the phrase, day set; never the phrase |
+| push | one endpoint URL per device, day set; wake-ups are not logged |
 | invite links | hash of the secret, owner account and device, expiry, use limit and count; until 7 days after expiry. Join requests: link hash, requesting account, time; until the owner's device handles them. Never the group |
 
 Logs contain method, route template, status and latency only.
@@ -427,4 +445,7 @@ Logs contain method, route template, status and latency only.
 | `RATE_PER_SEC` / `RATE_BURST` (per device) | `20` / `200` |
 | `SIGNUP_PER_HOUR` / `SIGNUP_BURST` (per address, IPv6 per /64) | `20` / `10` |
 | `TRUST_FORWARDED_FOR` | `false` (set `true` only behind a proxy that overwrites `X-Forwarded-For`) |
+| `PUSH_ALLOWED_HOSTS` | empty = push off; comma-separated gateway host names (e.g. a self-hosted UnifiedPush server) |
+| `PUSH_INTERVAL_SECS` | `5` (at most one wake-up per device this often) |
+| `PUSH_ALLOW_HTTP` | `false` (tests only) |
 | `RUST_LOG` | `info` |

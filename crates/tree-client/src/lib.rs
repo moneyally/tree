@@ -433,6 +433,13 @@ impl Session {
         Ok(n)
     }
 
+    /// Registers the endpoint a push gateway gave this app (UnifiedPush
+    /// style), or clears it. The server then sends only the word `wake`
+    /// there when something arrives (PROTOCOL.md 8.8); the app syncs.
+    pub fn set_push_endpoint(&self, endpoint: Option<&str>) -> Result<(), Error> {
+        self.api.set_push(&self.creds, endpoint)
+    }
+
     /// Makes a new recovery phrase for this account and registers its
     /// recovery key with the server (replacing any earlier phrase). The
     /// phrase is returned once to be shown to the user and is not stored.

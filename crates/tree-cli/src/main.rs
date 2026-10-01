@@ -18,6 +18,7 @@ commands:
                                          (TREE_RECOVERY_PHRASE or stdin); revoke = remove all other devices
   recovery-phrase [12|24] [ko]           make a new recovery phrase (replaces the old one)
   recovery-release                       no recovery for this account
+  push <endpoint-url> | push off          content-free wake-ups through a push gateway
   groups                                 list groups
   create-group                           start a group, print its id
   invite <group> <account-id|@name>      add every device of an account
@@ -159,6 +160,14 @@ fn run(args: Vec<String>) -> Result<(), String> {
             println!("{}", p.words());
             eprintln!("write these words down and keep them offline; they are shown only now.");
             eprintln!("whoever has them can take over this account. a new phrase replaces this one.");
+        }
+        ["push", "off"] => {
+            s.set_push_endpoint(None).map_err(e)?;
+            println!("push wake-ups off");
+        }
+        ["push", url] => {
+            s.set_push_endpoint(Some(url)).map_err(e)?;
+            println!("push wake-ups to {url}");
         }
         ["recovery-release"] => {
             s.release_recovery().map_err(e)?;

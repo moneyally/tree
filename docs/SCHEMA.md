@@ -234,6 +234,16 @@ CREATE TABLE suspensions (account_id TEXT PRIMARY KEY, since_day INTEGER NOT NUL
 
 `server_secrets` is a secret: back it up with the database, never log it.
 
+### 2.7 Push (migration `0008_push.sql`, PROTOCOL.md 8.8)
+
+```sql
+CREATE TABLE push_endpoints (
+    device_id TEXT PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
+    endpoint  TEXT NOT NULL,     -- URL at an allowed gateway host
+    set_day   INTEGER NOT NULL
+);
+```
+
 ### 2.6 Invite links (migration `0007_invites.sql`, PROTOCOL.md 8.7)
 
 ```sql

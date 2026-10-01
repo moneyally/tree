@@ -231,7 +231,7 @@ pub async fn submit(State(state): State<AppState>, req: Signed<CommitReq>) -> Ap
     tx.commit().await?;
 
     for dev in &d.delivered {
-        state.waiters.notify(dev);
+        state.wake(dev);
     }
     Ok(Json(CommitResp {
         accepted: true,

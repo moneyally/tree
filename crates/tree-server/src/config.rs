@@ -59,6 +59,14 @@ pub struct Config {
     /// `TRUST_FORWARDED_FOR`: take the client address from the last
     /// `X-Forwarded-For` entry (set only behind a reverse proxy that overwrites it).
     pub trust_forwarded_for: bool,
+    /// `PUSH_ALLOWED_HOSTS`: comma-separated push gateway host names devices
+    /// may register endpoints at (PROTOCOL.md 8.8). Empty = push off. Only
+    /// these hosts are ever contacted (no server-side request forgery).
+    pub push_allowed_hosts: Vec<String>,
+    /// `PUSH_ALLOW_HTTP`: accept `http://` endpoints (tests only).
+    pub push_allow_http: bool,
+    /// `PUSH_INTERVAL_SECS`: at most one wake-up per device this often.
+    pub push_interval_secs: u64,
 }
 
 impl Default for Config {
@@ -89,6 +97,9 @@ impl Default for Config {
             signup_per_hour: 20.0,
             signup_burst: 10.0,
             trust_forwarded_for: false,
+            push_allowed_hosts: Vec::new(),
+            push_allow_http: false,
+            push_interval_secs: 5,
         }
     }
 }
@@ -164,6 +175,14 @@ impl Config {
             signup_per_hour: env_parse("SIGNUP_PER_HOUR", d.signup_per_hour)?,
             signup_burst: env_parse("SIGNUP_BURST", d.signup_burst)?,
             trust_forwarded_for: env_parse("TRUST_FORWARDED_FOR", d.trust_forwarded_for)?,
+            push_allowed_hosts: std::env::var("PUSH_ALLOWED_HOSTS")
+                .unwrap_or_default()
+                .split(',')
+                .map(|h| h.trim().to_ascii_lowercase())
+                .filter(|h| !h.is_empty())
+                .collect(),
+            push_allow_http: env_parse("PUSH_ALLOW_HTTP", d.push_allow_http)?,
+            push_interval_secs: env_parse("PUSH_INTERVAL_SECS", d.push_interval_secs)?,
         };
         cfg.validate()?;
         Ok(cfg)
@@ -192,6 +211,9 @@ impl Config {
                 "SIGNUP_PER_HOUR must be > 0 and SIGNUP_BURST >= 1".into(),
             ));
         }
+        if self.push_interval_secs == 0 {
+            return Err(ConfigError("PUSH_INTERVAL_SECS must be positive".into()));
+        }
         if self.purge_interval_secs == 0 {
             return Err(ConfigError("PURGE_INTERVAL_SECS must be positive".into()));
         }
@@ -219,6 +241,7 @@ mod tests {
             |c| c.signup_per_hour = 0.0,
             |c| c.signup_burst = 0.5,
             |c| c.purge_interval_secs = 0,
+            |c| c.push_interval_secs = 0,
         ];
         for (i, f) in bad.into_iter().enumerate() {
             let mut c = Config::default();

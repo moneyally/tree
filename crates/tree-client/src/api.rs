@@ -182,6 +182,16 @@ impl Api {
         Ok(Creds { account_id: field(&v, "account_id")?, device_id: field(&v, "device_id")?, key: key.clone() })
     }
 
+    /// Sets (`Some`) or clears (`None`) this device's push endpoint
+    /// (PROTOCOL.md 8.8).
+    pub fn set_push(&self, c: &Creds, endpoint: Option<&str>) -> Result<(), Error> {
+        match endpoint {
+            Some(e) => self.call(c, Method::POST, "/v1/push", Some(&json!({ "endpoint": e })))?.ok()?,
+            None => self.call(c, Method::DELETE, "/v1/push", None)?.ok()?,
+        };
+        Ok(())
+    }
+
     /// Registers an invite link's hash (PROTOCOL.md 8.7).
     pub fn invite_create(&self, c: &Creds, hash: &[u8; 32], lifetime: i64, max_uses: u32) -> Result<Value, Error> {
         let body = json!({ "token_hash": b64(hash), "lifetime": lifetime, "max_uses": max_uses });

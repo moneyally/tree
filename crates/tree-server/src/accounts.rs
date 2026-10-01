@@ -260,7 +260,7 @@ pub async fn remove_device(
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
-    state.waiters.notify(&device_id);
+    state.wake(&device_id);
     Ok(Json(serde_json::json!({ "removed": device_id })))
 }
 

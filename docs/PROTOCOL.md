@@ -1002,6 +1002,27 @@ changes as usual); it cannot learn anything about the group before. Expired
 links stay 7 days on the server so requests made in time are still
 handled, then are purged.
 
+### 8.8 Push wake-ups without content
+
+Phones stop background connections, so the app needs a push to sync. Tree
+sends **no content in push**: a device registers an endpoint URL that a push
+gateway gave its app (UnifiedPush style), and when anything arrives in its
+mailbox the server POSTs the fixed body `wake` there. The app then syncs
+over its own authenticated connection and decrypts locally. Code:
+`crates/tree-server/src/push.rs`.
+
+- What the gateway learns: that this endpoint got a wake-up at this time.
+  Not the sender, group, size, type or content. Wake-ups are coalesced (at
+  most one per device per `PUSH_INTERVAL_SECS`, default 5 s), which also
+  blurs message counts.
+- Server-side request forgery: the server only accepts and only contacts
+  hosts listed in `PUSH_ALLOWED_HOSTS` (https only, no credentials in the
+  URL, no redirects followed, 10 s timeout). Push is off when the list is
+  empty.
+- The vendor push services of the phone platforms need a gateway with the
+  operator's credentials; that gateway receives the same `wake` only.
+  Setting one up is part of deployment (HANDOFF 3.5, needs the owner).
+
 ---
 
 ## 9. Security claims

@@ -150,7 +150,7 @@ pub async fn join(State(state): State<AppState>, req: Signed<JoinReq>) -> ApiRes
         sqlx::query("UPDATE invites SET uses = uses + 1 WHERE token_hash = ?").bind(&h[..]).execute(&mut *tx).await?;
     }
     tx.commit().await?;
-    state.waiters.notify(&owner_device);
+    state.wake(&owner_device);
     Ok((StatusCode::ACCEPTED, Json(json!({ "owner_account": owner_account }))))
 }
 
@@ -158,7 +158,7 @@ pub async fn join(State(state): State<AppState>, req: Signed<JoinReq>) -> ApiRes
 pub async fn requests(State(state): State<AppState>, req: Signed<NoBody>) -> ApiResult<Json<Value>> {
     let rows = sqlx::query(
         "SELECT r.id, r.token_hash, r.account_id FROM invite_requests r JOIN invites i ON i.token_hash = r.token_hash \
-         WHERE i.owner_device = ? ORDER BY r.created_at, r.id LIMIT 100",
+         WHERE i.owner_device = ? ORDER BY r.created_at, r.rowid LIMIT 100",
     )
     .bind(&req.device.device_id)
     .fetch_all(&state.db)

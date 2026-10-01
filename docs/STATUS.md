@@ -78,7 +78,7 @@ in section 5.
 | Report service (reporter's device submits) | done | `/v1/franking`, `/v1/reports`, operator review and resolve, account suspension (apply/release, `403 SUSPENDED`) |
 | Spam limits for new accounts | partial | per-device rate limits and signup limits exist; no new-account sending limit |
 | File service (encrypted blobs only) | done | `/v1/attachments`, files on disk, 30-day purge; 100 MiB per file (design: 2 GB free; needs chunked upload) |
-| Push relay without content | missing | |
+| Push relay without content | done (server) | PROTOCOL.md 8.8: `wake` only, coalesced, allowed gateway hosts only; CLI `push`. Platform push gateways (vendor credentials) come with deployment |
 | Docker Compose + Caddy TLS, one region | partial | files in `deploy/`; never deployed (HANDOFF 3.5) |
 | Stateless, partitionable by user-id hash | partial | the server keeps a replay cache and rate limits in memory (Q7) |
 

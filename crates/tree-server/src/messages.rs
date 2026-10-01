@@ -98,7 +98,7 @@ pub async fn send(
     tx.commit().await?;
 
     for id in &d.delivered {
-        state.waiters.notify(id);
+        state.wake(id);
     }
     Ok(Json(SendResp {
         delivered: d.delivered.len(),

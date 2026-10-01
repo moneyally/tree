@@ -8,6 +8,7 @@
 //! * [`messages`] — per-device mailboxes with long-poll
 //! * [`commits`] — commit ordering: first commit per group and epoch wins
 //! * [`invites`] — group invite links (hash of the secret, expiry, use limit)
+//! * [`push`] — content-free wake-ups to allowed push gateways
 //! * [`recovery`] — a new device joins its account with the recovery phrase
 //! * [`usernames`] — @usernames, stored as hashes only
 //! * [`attachments`] — encrypted attachments (ciphertext blobs)
@@ -29,6 +30,7 @@ pub mod invites;
 pub mod keypackages;
 pub mod limits;
 pub mod messages;
+pub mod push;
 pub mod recovery;
 pub mod reports;
 pub mod usernames;
@@ -73,6 +75,8 @@ pub struct Inner {
     pub signup_limiter: RateLimiter<[u8; 16]>,
     pub waiters: Waiters,
     pub franking: tokio::sync::OnceCell<[u8; 32]>,
+    /// Devices to wake through their push endpoint (see [`push`]).
+    pub push: Option<tokio::sync::mpsc::UnboundedSender<String>>,
 }
 
 impl Deref for AppState {
@@ -84,12 +88,17 @@ impl Deref for AppState {
 
 impl AppState {
     pub fn new(db: SqlitePool, cfg: Config) -> Self {
+        Self::with_push(db, cfg, None)
+    }
+
+    pub fn with_push(db: SqlitePool, cfg: Config, push: Option<tokio::sync::mpsc::UnboundedSender<String>>) -> Self {
         Self(Arc::new(Inner {
             device_limiter: RateLimiter::new(cfg.rate_per_sec, cfg.rate_burst),
             signup_limiter: RateLimiter::new(cfg.signup_per_hour / 3600.0, cfg.signup_burst),
             replay: ReplayCache::new(),
             waiters: Waiters::default(),
             franking: tokio::sync::OnceCell::new(),
+            push,
             db,
             cfg,
         }))
@@ -100,6 +109,15 @@ impl AppState {
         self.device_limiter
             .take(&device_id.to_string(), cost)
             .map_err(ApiError::rate_limited)
+    }
+
+    /// Something arrived for `device_id`: wake its long-poll and, if it has
+    /// a push endpoint, the app.
+    pub fn wake(&self, device_id: &str) {
+        self.waiters.notify(device_id);
+        if let Some(p) = &self.push {
+            let _ = p.send(device_id.to_string());
+        }
     }
 
     /// The server's franking key (created in the database on first use).
@@ -217,6 +235,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/recovery/apply", post(recovery::apply))
         .route("/v1/recovery/release", post(recovery::release))
         .route("/v1/recovery/recover", post(recovery::recover))
+        .route("/v1/push", post(push::set).delete(push::clear))
         .route("/v1/franking", post(reports::frank))
         .route("/v1/reports", post(reports::report).get(reports::list))
         .route("/v1/reports/{id}/resolve", post(reports::resolve))
@@ -308,9 +327,14 @@ pub async fn start(cfg: Config) -> Result<Server, BoxError> {
     let db = open_db(&cfg.database_url).await?;
     let listener = TcpListener::bind(cfg.bind_addr).await?;
     let addr = listener.local_addr()?;
-    let state = AppState::new(db, cfg);
+    let (push_tx, push_rx) = tokio::sync::mpsc::unbounded_channel();
+    let push_on = !cfg.push_allowed_hosts.is_empty();
+    let state = AppState::with_push(db, cfg, push_on.then_some(push_tx));
 
     let mut background = Vec::new();
+    if push_on {
+        background.push(push::spawn(state.clone(), push_rx));
+    }
     {
         let state = state.clone();
         background.push(tokio::spawn(async move {

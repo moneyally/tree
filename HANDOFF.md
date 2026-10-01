@@ -96,11 +96,14 @@ Status: prepared, waiting for the owner's choice. `deploy/README.md` (a) and
 `.github/workflows/deploy.yml` (b, manual only, needs the owner's secrets) are both ready.
 
 ### 3.6 After that (stage 1 apps) — IN PROGRESS
-Done on the branch stack (`claude/cli` … `claude/desktop`, see docs/STATUS.md): usernames,
+Done on the branch stack (`claude/cli` … `claude/organize`, see docs/STATUS.md): usernames,
 requests/blocking, safety numbers, admins and chat settings, files, history, reports with
-franking, recovery phrase, invite links, push wake-ups, UniFFI bindings (`crates/tree-ffi`),
+franking, recovery phrase, invite links, push wake-ups, key refresh schedule, anti-spam
+limits, account deletion, read receipts/typing/notes/folders, UniFFI bindings
+(`crates/tree-ffi`; Python, Kotlin/JVM and Swift each run against a real server),
 desktop app (`apps/desktop`, tested against a real server, screens rendered off-screen) and
 Android app (`apps/android`, APK builds; not run on a device: no emulator in the cloud box).
+Internal security review findings F-010..F-015 fixed. Swift 6 for Linux in `/opt/swift`.
 Next: iOS (needs macOS), a push gateway with the platform push services (needs the owner),
 notifications, packaging/signing, external review. Toolchains used: JDK 21, Gradle 8.14,
 Android SDK 35 + NDK r27 in `/opt/android-sdk` (install steps in apps/android/README.md).

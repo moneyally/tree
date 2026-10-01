@@ -41,6 +41,15 @@ data class UiState(
     /** Members of the open chat, and its chat settings. */
     val members: List<Member> = emptyList(),
     val chatFeatures: List<Feature> = emptyList(),
+    /** Members typing in the open chat (member ids). */
+    val typing: Set<String> = emptySet(),
+    /** My messages in the open chat that someone has read. */
+    val readMine: Set<String> = emptySet(),
+    /** Folders (user and built-in) and the one selected (null = all chats). */
+    val folders: List<uniffi.tree_ffi.ChatFolder> = emptyList(),
+    val folder: String? = null,
+    /** The notes chat, once the user opened it. */
+    val notes: String? = null,
     /** The open chat asks the app to block screenshots (chat.screenshot_block). */
     val screenshotBlocked: Boolean = false,
     /** Files received in this session: message id -> reference. */
@@ -65,7 +74,7 @@ class AppModel(
         private set
     private var profilePath: String? = null
     private var loop: Job? = null
-    private val unread = mutableMapOf<String, Int>()
+
 
     private suspend fun <T> call(block: (TreeSession) -> T): T? {
         val s = session ?: return null
@@ -139,11 +148,11 @@ class AppModel(
 
     private fun onEvent(e: TreeEvent) {
         when (e) {
-            is TreeEvent.Text -> if (e.group != _state.value.open) unread[e.group] = (unread[e.group] ?: 0) + 1
-            is TreeEvent.File -> {
-                if (e.group != _state.value.open) unread[e.group] = (unread[e.group] ?: 0) + 1
-                _state.update { it.copy(files = it.files + (e.file.msgId to e.file)) }
+            is TreeEvent.File -> _state.update { it.copy(files = it.files + (e.file.msgId to e.file)) }
+            is TreeEvent.Typing -> if (e.group == _state.value.open) {
+                _state.update { it.copy(typing = if (e.on) it.typing + e.from else it.typing - e.from) }
             }
+            is TreeEvent.GroupSafetyNotice -> _state.update { it.copy(notice = Strings.t("group_notice")) }
             is TreeEvent.KeyChanged -> _state.update { it.copy(notice = Strings.t("key_changed")) }
             else -> {}
         }
@@ -154,26 +163,64 @@ class AppModel(
             s.groups().map { g ->
                 val info = s.group(g)
                 val names = s.members(g).filter { it.id != s.memberId() }.mapNotNull { it.name }
-                Chat(g, info.name ?: names.joinToString(", ").ifEmpty { g.take(8) }, info.status, info.requestFrom, unread[g] ?: 0)
+                Chat(g, info.name ?: names.joinToString(", ").ifEmpty { g.take(8) }, info.status, info.requestFrom, s.unread(g).toInt())
             }
         } ?: return
         val open = _state.value.open
         val messages = if (open != null) call { it.history(open, 200u) } ?: emptyList() else emptyList()
+        // Opening a chat reads it (a receipt if user.read_receipts is applied).
+        if (open != null && chats.any { it.id == open && it.unread > 0 }) {
+            call { it.markRead(open, messages.filter { m -> m.sender != session?.memberId() }.takeLast(100).map { m -> m.id }) }
+        }
+        val folders = call { it.folders() } ?: emptyList()
+        val me0 = session?.memberId()
+        val readMine = if (open != null) {
+            messages.filter { it.sender == me0 }.filter { m -> (call { s -> s.readBy(open, m.id) } ?: emptyList()).isNotEmpty() }.map { it.id }.toSet()
+        } else emptySet()
         val members = if (open != null) call { it.members(open) } ?: emptyList() else emptyList()
         val me = session?.memberId()
         val names = members.associate { m -> m.id to if (m.id == me) "" else (m.name ?: m.id.take(6)) }
         val chatFeatures = if (open != null) call { it.chatFeatures(open) } ?: emptyList() else emptyList()
         val blocked = open != null && (call { it.screenshotBlocked(open) } ?: false)
         _state.update {
-            it.copy(chats = chats, messages = messages, names = names, members = members, chatFeatures = chatFeatures, screenshotBlocked = blocked)
+            it.copy(
+                chats = chats.map { c -> if (c.id == open) c.copy(unread = 0) else c },
+                messages = messages, names = names, members = members, chatFeatures = chatFeatures,
+                screenshotBlocked = blocked, folders = folders, readMine = readMine,
+            )
         }
     }
 
     suspend fun openChat(group: String?) {
-        if (group != null) unread.remove(group)
-        _state.update { it.copy(open = group) }
+        _state.update { it.copy(open = group, typing = emptySet()) }
         refresh()
     }
+
+    /** Opens the notes chat (made on first use; none if the user hid it). */
+    suspend fun openNotes(): String? {
+        val n = call { it.noteToSelf() } ?: return null
+        _state.update { it.copy(notes = n) }
+        openChat(n)
+        return n
+    }
+
+    /** Shows only the chats of one folder (null: all). */
+    fun showFolder(name: String?) = _state.update { it.copy(folder = name) }
+
+    /** Chats the list shows under the selected folder. */
+    fun visibleChats(s: UiState): List<Chat> {
+        val f = s.folder ?: return s.chats
+        val ids = s.folders.firstOrNull { it.name == f }?.chats?.toSet() ?: return s.chats
+        return s.chats.filter { it.id in ids }
+    }
+
+    suspend fun typing(group: String, on: Boolean) {
+        call { it.setTyping(group, on) }
+    }
+
+    suspend fun createFolder(name: String): Boolean = (call { it.createFolder(name) } != null).also { refresh() }
+
+    suspend fun fileChat(folder: String, group: String): Boolean = (call { it.fileChat(folder, group, true) } != null).also { refresh() }
 
     suspend fun newChat(): String? = call { it.createGroup() }?.also { refresh(); openChat(it) }
 

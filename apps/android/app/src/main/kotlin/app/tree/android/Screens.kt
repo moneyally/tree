@@ -117,8 +117,18 @@ private fun ChatList(model: AppModel, state: UiState, requests: Boolean) {
                 TextButton(onClick = { scope.launch { if (model.joinLink(link)) link = "" } }) { Text("→") }
             }
         }
+        if (!requests) {
+            Row {
+                TextButton(onClick = { model.showFolder(null) }) { Text(Strings.t("all")) }
+                state.folders.forEach { f ->
+                    TextButton(onClick = { model.showFolder(f.name) }) { Text(if (f.kind == "user") f.name else Strings.t(f.kind)) }
+                }
+            }
+            Text(Strings.t("notes"), Modifier.fillMaxWidth().clickable { scope.launch { model.openNotes() } }.padding(14.dp))
+            HorizontalDivider()
+        }
         LazyColumn {
-            items(state.chats.filter { (it.status == "request") == requests && it.status != "declined" }, key = { it.id }) { c ->
+            items(model.visibleChats(state).filter { (it.status == "request") == requests && it.status != "declined" }, key = { it.id }) { c ->
                 Text(c.title + if (c.unread > 0) "  (${c.unread})" else "",
                     Modifier.fillMaxWidth().clickable { scope.launch { model.openChat(c.id) } }.padding(14.dp))
                 HorizontalDivider()
@@ -176,10 +186,15 @@ private fun ChatScreen(model: AppModel, state: UiState, chat: Chat) {
             }
             extra?.let { SelectionContainer { Text(it) } }
         }
+        if (state.typing.isNotEmpty()) {
+            Text(state.typing.joinToString(", ") { state.names[it] ?: it.take(6) } + " " + Strings.t("typing"),
+                style = MaterialTheme.typography.bodySmall)
+        }
         LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
             items(state.messages, key = { it.id }) { m ->
                 val who2 = state.names[m.sender]?.ifEmpty { Strings.t("me") } ?: m.sender.take(6)
-                val body = if (m.deleted) Strings.t("deleted") else (m.text ?: "")
+                val body = (if (m.deleted) Strings.t("deleted") else (m.text ?: "")) +
+                    if (m.id in state.readMine) "  ✓ " + Strings.t("read") else ""
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("$who2: $body", Modifier.weight(1f).padding(4.dp))
                     if (m.kind == "file" && state.files.containsKey(m.id)) {
@@ -191,8 +206,11 @@ private fun ChatScreen(model: AppModel, state: UiState, chat: Chat) {
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = { pick.launch("*/*") }) { Text(Strings.t("attach")) }
-            OutlinedTextField(draft, { draft = it }, label = { Text(Strings.t("message")) }, modifier = Modifier.weight(1f))
-            Button(onClick = { scope.launch { if (model.send(chat.id, draft)) draft = "" } }) { Text(Strings.t("send")) }
+            OutlinedTextField(draft, { v ->
+                if (draft.isEmpty() != v.isEmpty()) scope.launch { model.typing(chat.id, v.isNotEmpty()) }
+                draft = v
+            }, label = { Text(Strings.t("message")) }, modifier = Modifier.weight(1f))
+            Button(onClick = { scope.launch { if (model.send(chat.id, draft)) { model.typing(chat.id, false); draft = "" } } }) { Text(Strings.t("send")) }
         }
     }
 }

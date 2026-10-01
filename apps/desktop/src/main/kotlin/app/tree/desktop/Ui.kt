@@ -120,12 +120,22 @@ private fun Main(model: AppModel, state: UiState) {
 @Composable
 private fun Chats(model: AppModel, state: UiState, requests: Boolean) {
     val scope = rememberCoroutineScope()
-    val shown = state.chats.filter { (it.status == "request") == requests && it.status != "declined" }
+    val shown = model.visibleChats(state).filter { (it.status == "request") == requests && it.status != "declined" }
     Row(Modifier.fillMaxSize()) {
         Column(Modifier.width(260.dp).fillMaxHeight().padding(8.dp)) {
             if (!requests) {
                 Button(onClick = { scope.launch { model.newChat() } }) { Text(Strings.t("new_group")) }
                 JoinLink(model)
+                // Folders: all, user folders, built-in ones.
+                Row {
+                    TextButton(onClick = { model.showFolder(null) }) { Text(Strings.t("all")) }
+                    state.folders.forEach { f ->
+                        TextButton(onClick = { model.showFolder(f.name) }) {
+                            Text(if (f.kind == "user") f.name else Strings.t(f.kind))
+                        }
+                    }
+                }
+                Text(Strings.t("notes"), Modifier.fillMaxWidth().clickable { scope.launch { model.openNotes() } }.padding(8.dp))
             }
             LazyColumn {
                 items(shown, key = { it.id }) { c ->
@@ -224,6 +234,10 @@ private fun ChatView(model: AppModel, state: UiState, chat: Chat) {
             TextButton(onClick = { settingsOpen = !settingsOpen }) { Text(Strings.t("group_settings")) }
             if (settingsOpen) GroupSettingsPanel(model, state, chat.id)
         }
+        if (state.typing.isNotEmpty()) {
+            Text(state.typing.joinToString(", ") { state.names[it] ?: it.take(6) } + " " + Strings.t("typing"),
+                style = MaterialTheme.typography.bodySmall)
+        }
         LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
             items(state.messages, key = { it.id }) { m ->
                 val body = when {
@@ -232,7 +246,8 @@ private fun ChatView(model: AppModel, state: UiState, chat: Chat) {
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     val who = state.names[m.sender]?.ifEmpty { Strings.t("me") } ?: m.sender.take(6)
-                    Text("$who: $body", Modifier.weight(1f).padding(4.dp))
+                    val read = if (m.id in state.readMine) "  ✓ " + Strings.t("read") else ""
+                    Text("$who: $body$read", Modifier.weight(1f).padding(4.dp))
                     if (m.kind == "file" && state.files.containsKey(m.id)) {
                         TextButton(onClick = {
                             val d = java.awt.FileDialog(null as java.awt.Frame?, Strings.t("save"), java.awt.FileDialog.SAVE)
@@ -253,8 +268,11 @@ private fun ChatView(model: AppModel, state: UiState, chat: Chat) {
                 d.isVisible = true
                 if (d.file != null) scope.launch { model.sendFile(chat.id, java.io.File(d.directory, d.file)) }
             }) { Text(Strings.t("attach")) }
-            OutlinedTextField(draft, { draft = it }, label = { Text(Strings.t("message")) }, modifier = Modifier.weight(1f))
-            Button(onClick = { scope.launch { if (model.send(chat.id, draft)) draft = "" } }) { Text(Strings.t("send")) }
+            OutlinedTextField(draft, { v ->
+                if (draft.isEmpty() != v.isEmpty()) scope.launch { model.typing(chat.id, v.isNotEmpty()) }
+                draft = v
+            }, label = { Text(Strings.t("message")) }, modifier = Modifier.weight(1f))
+            Button(onClick = { scope.launch { if (model.send(chat.id, draft)) { model.typing(chat.id, false); draft = "" } } }) { Text(Strings.t("send")) }
         }
     }
 }

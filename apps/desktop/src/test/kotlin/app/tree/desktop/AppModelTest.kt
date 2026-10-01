@@ -47,7 +47,25 @@ class AppModelTest {
         assertEquals(1, bob.state.value.chats.single().unread)
         bob.openChat(g)
         assertEquals(listOf("안녕 밥"), bob.state.value.messages.map { it.text })
-        assertEquals(0, bob.state.value.chats.single().unread)
+        assertEquals(0, bob.state.value.chats.first { it.id == g }.unread)
+        // Opening the chat sent a read receipt: alice sees "read".
+        alice.openChat(g)
+        alice.syncNow()
+        assertEquals(alice.state.value.messages.map { it.id }.toSet(), alice.state.value.readMine)
+        // Typing shows in the open chat.
+        bob.typing(g, true)
+        alice.syncNow()
+        assertTrue(alice.state.value.typing.isNotEmpty())
+        // Notes and folders.
+        val notes = assertNotNull(bob.openNotes())
+        assertEquals(notes, bob.openNotes(), "one notes chat")
+        bob.openChat(g)
+        assertTrue(bob.createFolder("가족"))
+        assertTrue(bob.fileChat("가족", g))
+        bob.showFolder("가족")
+        assertEquals(listOf(g), bob.visibleChats(bob.state.value).map { it.id })
+        bob.showFolder(null)
+        alice.openChat(null)
 
         // Safety numbers: the same 60 digits on both sides; mark verified.
         val aliceAcc = alice.state.value.account

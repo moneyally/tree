@@ -473,6 +473,8 @@ fn message_history() {
     let c = Client::open(&p, "pw").unwrap();
     assert_eq!(c.messages(g, 10, None).unwrap().len(), 5);
     assert_eq!(c.forget_messages(b"group-2").unwrap(), 1);
+    assert_eq!(c.forget_messages(b"group-3").unwrap(), 3);
+    assert_eq!(c.forget_messages(b"group-3").unwrap(), 0);
     drop(c);
     let raw = std::fs::read(&p).unwrap();
     assert!(!raw.windows(4).any(|w| w == b"9f1d"));

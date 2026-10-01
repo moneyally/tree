@@ -64,3 +64,18 @@ async fn upload_download_limits_purge() {
     assert_eq!(download(api, &b, &id).await.0, StatusCode::NOT_FOUND);
     ts.stop().await;
 }
+
+/// Uploads cost one extra rate token per whole MiB.
+#[tokio::test]
+async fn upload_cost_per_mib() {
+    let ts = boot(|c| {
+        c.rate_per_sec = 0.001;
+        c.rate_burst = 4.0;
+    })
+    .await;
+    let api = &ts.api;
+    let (a, b) = (api.signup().await, api.signup().await);
+    assert_eq!(upload(api, &a, &vec![1u8; 3 * 1024 * 1024]).await.0, StatusCode::CREATED, "1 + 3 tokens of 4");
+    assert_eq!(upload(api, &b, &vec![1u8; 4 * 1024 * 1024]).await.0, StatusCode::TOO_MANY_REQUESTS, "1 + 4 tokens");
+    ts.stop().await;
+}

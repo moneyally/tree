@@ -158,3 +158,49 @@ async fn a_damaged_franking_key_is_an_error_not_a_new_key() {
     assert!(tree_server::reports::franking_key(db).await.is_err());
     ts.stop().await;
 }
+
+#[tokio::test]
+async fn report_limits_are_exact() {
+    let ts = boot(|_| {}).await;
+    let api = &ts.api;
+    let (a, b) = (api.signup().await, api.signup().await);
+    let m = frank(api, &a, b"g", "{}").await;
+    let send = |messages: Vec<Value>, reason: String| {
+        let body = json!({ "reported_account": a.account_id, "reason": reason, "messages": messages });
+        api.call(&b, Method::POST, "/v1/reports", Some(body))
+    };
+    assert_eq!(send(vec![m.clone(); 20], "x".into()).await.0, StatusCode::CREATED, "20 messages");
+    assert_eq!(send(vec![m.clone()], "가".repeat(500)).await.0, StatusCode::CREATED, "500 characters");
+    let mut big = m.clone();
+    big["payload"] = json!("x".repeat(16 * 1024));
+    assert_eq!(send(vec![big], "x".into()).await.0, StatusCode::CREATED, "exactly 16 KiB");
+    ts.stop().await;
+}
+
+/// The franking key is 32 random bytes per server, and only a 32-byte
+/// franking key is accepted in a report (HMAC would treat a shorter key
+/// padded with zeros as the same key).
+#[tokio::test]
+async fn franking_keys_are_random_and_exact() {
+    let ts1 = boot(|_| {}).await;
+    let ts2 = boot(|_| {}).await;
+    let k1 = tree_server::reports::franking_key(&ts1.server.state.db).await.unwrap();
+    let k2 = tree_server::reports::franking_key(&ts2.server.state.db).await.unwrap();
+    assert_ne!(k1, k2);
+    assert!(k1 != [0; 32] && k1 != [1; 32]);
+
+    let api = &ts1.api;
+    let (a, b) = (api.signup().await, api.signup().await);
+    // A franking key ending in a zero byte: the same HMAC key as its first
+    // 31 bytes.
+    let mut k = [7u8; 32];
+    k[31] = 0;
+    let com = commitment(&k, b"g", b"{}");
+    let (_, v) = api.call(&a, Method::POST, "/v1/franking", Some(json!({ "com": b64(&com) }))).await;
+    let msg = |key: &[u8]| json!({ "payload": "{}", "key": b64(key), "tag": v["tag"], "minute": v["minute"], "group_id": b64(b"g") });
+    let report = |key: &[u8]| json!({ "reported_account": a.account_id, "reason": "x", "messages": [msg(key)] });
+    assert_eq!(api.call(&b, Method::POST, "/v1/reports", Some(report(&k))).await.1["verified"], true);
+    assert_eq!(api.call(&b, Method::POST, "/v1/reports", Some(report(&k[..31]))).await.1["verified"], false);
+    ts1.stop().await;
+    ts2.stop().await;
+}

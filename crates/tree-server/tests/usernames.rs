@@ -97,3 +97,20 @@ async fn deleted_with_the_account() {
     assert_eq!(api.call(&b, Method::POST, "/v1/usernames/apply", Some(json!({ "hash": h }))).await.0, StatusCode::OK);
     ts.stop().await;
 }
+
+/// A lookup costs exactly 10 rate tokens (1 for the request, 9 more).
+#[tokio::test]
+async fn lookup_cost_is_ten_tokens() {
+    let ts = boot(|c| {
+        c.rate_per_sec = 0.001;
+        c.rate_burst = 20.0;
+    })
+    .await;
+    let api = &ts.api;
+    let a = api.signup().await;
+    let body = || Some(json!({ "hash": b64(&[3u8; 32]) }));
+    assert_eq!(api.call(&a, Method::POST, "/v1/usernames/lookup", body()).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(api.call(&a, Method::POST, "/v1/usernames/lookup", body()).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(api.call(&a, Method::POST, "/v1/usernames/lookup", body()).await.0, StatusCode::TOO_MANY_REQUESTS);
+    ts.stop().await;
+}

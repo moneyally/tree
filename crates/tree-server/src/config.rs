@@ -225,6 +225,31 @@ impl Config {
 mod tests {
     use super::*;
 
+    /// The only test that touches the process environment (no other test
+    /// reads these variables).
+    #[test]
+    fn from_env_reads_every_kind_of_value() {
+        let set = |k: &str, v: &str| std::env::set_var(k, v);
+        set("POW_BITS", "12");
+        set("MAX_RECIPIENTS", "77");
+        set("TRUST_FORWARDED_FOR", "true");
+        set("PUSH_ALLOWED_HOSTS", " Push.Example , other.example:8443 ,");
+        set("ADMIN_TOKEN_SHA256", &"ab".repeat(32));
+        let c = Config::from_env().unwrap();
+        assert_eq!((c.pow_bits, c.max_recipients, c.trust_forwarded_for), (12, 77, true));
+        assert_eq!(c.push_allowed_hosts, vec!["push.example".to_string(), "other.example:8443".into()]);
+        assert_eq!(c.admin_token_sha256, Some([0xab; 32]));
+        set("POW_BITS", "lots");
+        assert!(Config::from_env().is_err());
+        set("POW_BITS", "12");
+        set("ADMIN_TOKEN_SHA256", "short");
+        assert!(Config::from_env().is_err());
+        for k in ["POW_BITS", "MAX_RECIPIENTS", "TRUST_FORWARDED_FOR", "PUSH_ALLOWED_HOSTS", "ADMIN_TOKEN_SHA256"] {
+            std::env::remove_var(k);
+        }
+        assert_eq!(Config::from_env().unwrap().pow_bits, Config::default().pow_bits);
+    }
+
     #[test]
     fn validate_refuses_unusable_limits() {
         assert!(Config::default().validate().is_ok());

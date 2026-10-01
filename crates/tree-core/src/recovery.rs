@@ -164,6 +164,9 @@ mod tests {
             assert_eq!(q.words(), p.words());
             assert_eq!(p.recovery_key().public_key(), q.recovery_key().public_key());
         }
+        // The word list asked for is the one used.
+        assert!(Phrase::generate(12, Words::Korean).unwrap().words().chars().any(|c| !c.is_ascii() && !c.is_whitespace()));
+        assert!(Phrase::generate(12, Words::English).unwrap().words().is_ascii());
         let a = Phrase::generate(24, Words::English).unwrap();
         let b = Phrase::generate(24, Words::English).unwrap();
         assert_ne!(a.words(), b.words());

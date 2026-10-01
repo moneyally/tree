@@ -27,16 +27,22 @@ moderate by default (256 to 512 per property) and can be raised with
 | `security.rs` | attacker scenarios against the core (removed member, tampering, replay, cross-group, forged group id, downgrade, X-Wing) |
 | `key_burn.rs` | F-001 regression: a tampered copy must not burn the genuine message key |
 | `envelope.rs` | outer seal: layout, version byte, boundary lengths, every tag byte, compensating tag changes, truncation/extension, per-group and per-epoch keys, padding |
-| `membership.rs` | add / remove / refresh reporting, removed device locked out, one-time welcomes, duplicate key packages, tampered commits, proposals from members (F-007), duplicate names (F-008) |
-| `delivery.rs` | out-of-order window, forward distance, epoch changes in flight (F-002), early next-epoch messages, removed member's old messages, commit replay, own echoes (F-004), concurrent commits (F-003) |
-| `registry.rs` | feature registry: error codes, standard table, defaults, list per scope, permanent locks, admin rules, options, server flags, plan gating, `define` (F-005) |
+| `membership.rs` | member ids, add / remove / refresh reporting (several devices per commit), removed device locked out, one-time welcomes, duplicate key packages, tampered commits, adds without update path, proposals and disallowed commits rejected (F-007), duplicate names told apart by member id (F-008) |
+| `delivery.rs` | out-of-order window, forward distance, past-epoch window and its boundary (F-002), early next-epoch messages, removed member's old-epoch messages, commit replay, past-epoch commits, own echoes (F-004), two-phase commits: pending, confirm, discard, automatic discard, own commit arriving, retry with the same key package, joiner refresh hint (F-003) |
+| `registry.rs` | feature registry: error codes, standard table, defaults, list per scope, permanent locks, admin rules, options, server flags, plan gating, `define` (F-005), security never plan-gated, bot owner, chat lock of user preferences (`LOCKED_BY_CHAT`) |
+| `storage.rs` | encrypted storage: restarts, wrong keys, isolation, pending commit / past epochs / refresh hint across restarts |
 | `welcome_burn.rs` | F-006 regression: a damaged welcome must not destroy the key package |
 | `robustness.rs` | proptest, see below |
 | `common/mod.rs` | fixtures, including `Insider`: a member built directly on the MLS library that can seal arbitrary bytes, used to reach the code behind the outer seal |
 
 Tests marked **KNOWN LIMITATION** / **KNOWN ISSUE** pin the current behaviour of
 an open finding. When the finding is fixed, the test must be changed to assert
-the fixed behaviour.
+the fixed behaviour. (None are open in the core after HANDOFF 3.1.)
+
+Tests that need a commit to be merged at once use the confirm-immediately
+helpers in `tests/common/mod.rs` (`add_now`, `remove_now`, `refresh_now`). They
+stand in for the server's acceptance and exist only in tests; real clients
+call `confirm_commit` after the server accepted.
 
 ## Robustness tests (proptest)
 
@@ -53,7 +59,7 @@ works afterwards (a failed input does not damage state).
 | `join_random_bytes_never_accepted` | random bytes into `Client::join` |
 | `join_mutated_welcome_never_accepted` | mutated genuine welcome; the genuine welcome must still join (F-006) |
 | `add_random_or_mutated_key_package_never_accepted` | random or mutated key packages into `Group::add`; epoch and members unchanged |
-| `feature_registry_random_sequences` | up to 60 random apply / release / server-flag calls by four caller types, checked against an independent model of the rules, plus invariants: AlwaysOn never released, AlwaysOff never applied, idempotency, a failed call changes nothing, a call changes no other key, non-admins never change Chat/Server features |
+| `feature_registry_random_sequences` | up to 60 random apply / release / server-flag / chat-lock calls by four caller types, checked against an independent model of the rules, plus invariants: AlwaysOn never released, AlwaysOff never applied, idempotency, a failed call changes nothing, a call changes no other key, non-admins never change Chat/Server/Bot features or lock anything for a chat |
 
 A 3000-case run of every property passed on 2026-10-01.
 
@@ -100,13 +106,15 @@ None. Every viable mutant changes behaviour that a test can observe.
 
 ## Findings from this pass
 
-See `SECURITY_FINDINGS.md`: F-005 and F-006 fixed with regression tests;
-F-002, F-003, F-004, F-007 and F-008 open, each pinned by a test. Other notes:
+See `SECURITY_FINDINGS.md`. At PR #3: F-005 and F-006 fixed with regression
+tests; F-002, F-003, F-004, F-007 and F-008 open. HANDOFF 3.1 fixed F-002,
+F-003 (client side), F-004, F-007 and F-008. Other notes from PR #3:
 
 - The out-of-order window "32" keeps 32 generations behind the ratchet head,
   which is one past the newest message, so in practice the 31 messages before
   the newest one can still arrive late.
-- `Scope::Bot` features are not permission checked (`Caller` has no bot-owner
-  flag). Today the only bot feature is permanently locked.
-- `LockReason::Chat`, `LockReason::Plan` and `FeatureError::LockedByChat` are
-  never produced: a chat-level setting does not lock the same key for users.
+- `Scope::Bot` features were not permission checked. Fixed in 3.1: they need
+  the bot owner (`Caller::is_admin`).
+- `LockReason::Chat` and `FeatureError::LockedByChat` were never produced.
+  Fixed in 3.1 (`Registry::release_for_chat`). `LockReason::Plan` is still
+  never produced: a plan-gated feature is shown as released, not locked.

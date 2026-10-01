@@ -131,8 +131,18 @@ impl Registry {
         r
     }
 
-    pub fn define(&mut self, f: Feature) {
+    /// Adds or replaces a feature definition. A permanently locked feature
+    /// can never be redefined, so its lock can never be weakened (F-005).
+    pub fn define(&mut self, f: Feature) -> Result<(), FeatureError> {
+        if let Some(old) = self.defs.get(f.key) {
+            match old.lock {
+                Lock::AlwaysOn(r) => return Err(FeatureError::LockedAlways(r)),
+                Lock::AlwaysOff(r) => return Err(FeatureError::ReleasedAlways(r)),
+                Lock::None => {}
+            }
+        }
         self.defs.insert(f.key, f);
+        Ok(())
     }
 
     fn def(&self, key: &str) -> Result<&Feature, FeatureError> {

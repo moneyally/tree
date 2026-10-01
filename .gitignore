@@ -2,3 +2,5 @@ target/
 *.key
 *.pem
 .env
+mutants.out/
+mutants.out.old/

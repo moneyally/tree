@@ -21,7 +21,7 @@ who leaks a conversation can prove it is genuine.
 | Network eavesdropper, incl. future quantum computer | TLS 1.3 + hybrid PQ MLS | message size and timing (padding reduces size leakage) |
 | The Tree server (breach, insider, legal compulsion) | stores only ciphertext; outer seal blocks forged inputs | sees mailbox, approximate time; can drop messages |
 | Outsider who can write to a mailbox | outer envelope seal checked before MLS | none known |
-| Malicious group member | MLS authentication | can leak what they read; can make one message undecryptable (see findings) |
+| Malicious group member | MLS authentication | can leak what they read; can make one message undecryptable (F-001); can get changes committed in an honest member's name or cut members off through proposals (F-007) |
 | Removed member with a modified client | new epoch keys after removal | none known (tested) |
 | Device thief | (planned) encrypted local storage, hardware-wrapped keys | an unlocked phone |
 | Spyware on the device | out of scope | no messenger can protect a compromised OS |

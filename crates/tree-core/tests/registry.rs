@@ -1,0 +1,288 @@
+//! Feature registry: lock, permission, plan and server-flag rules.
+
+use tree_core::features::{
+    standard_features, Caller, Feature, FeatureError, Lock, LockReason, Plan, Registry, Scope, State,
+};
+
+const USER: Caller = Caller { plan: Plan::Free, is_admin: false };
+const ADMIN: Caller = Caller { plan: Plan::Free, is_admin: true };
+const PRO_USER: Caller = Caller { plan: Plan::Pro, is_admin: false };
+const PRO_ADMIN: Caller = Caller { plan: Plan::Pro, is_admin: true };
+const ALL: [Caller; 4] = [USER, ADMIN, PRO_USER, PRO_ADMIN];
+
+#[test]
+fn error_codes_match_api() {
+    let cases = [
+        (FeatureError::Unknown("x".into()), "UNKNOWN_FEATURE"),
+        (FeatureError::LockedAlways("r"), "LOCKED_ALWAYS"),
+        (FeatureError::ReleasedAlways("r"), "RELEASED_ALWAYS"),
+        (FeatureError::LockedByServer, "LOCKED_BY_SERVER"),
+        (FeatureError::LockedByChat, "LOCKED_BY_CHAT"),
+        (FeatureError::NotAdmin, "NOT_ADMIN"),
+        (FeatureError::PlanRequired, "PLAN_REQUIRED"),
+    ];
+    for (e, code) in cases {
+        assert_eq!(e.code(), code);
+    }
+}
+
+#[test]
+fn standard_feature_table() {
+    let v = standard_features();
+    let mut keys: Vec<_> = v.iter().map(|f| f.key).collect();
+    keys.sort();
+    let n = keys.len();
+    keys.dedup();
+    assert_eq!(keys.len(), n, "duplicate feature keys");
+    for f in &v {
+        // Defaults of locked features agree with the lock.
+        match f.lock {
+            Lock::AlwaysOn(r) => {
+                assert_eq!(f.default, State::Applied, "{}", f.key);
+                assert!(!r.is_empty());
+            }
+            Lock::AlwaysOff(r) => {
+                assert_eq!(f.default, State::Released, "{}", f.key);
+                assert!(!r.is_empty());
+            }
+            Lock::None => {}
+        }
+        assert_eq!(f.plan, Plan::Free, "{}", f.key);
+        assert!((1..=3).contains(&f.stage), "{}", f.key);
+        // The key prefix names the scope.
+        let prefix = f.key.split('.').next().unwrap();
+        let ok = match f.scope {
+            Scope::Chat => prefix == "chat",
+            Scope::User => prefix == "user" || prefix == "points",
+            Scope::Server => prefix == "server",
+            Scope::Bot => prefix == "bot",
+        };
+        assert!(ok, "{} has scope {:?}", f.key, f.scope);
+    }
+    let get = |k: &str| v.iter().find(|f| f.key == k).unwrap().clone();
+    assert!(matches!(get("chat.e2e").lock, Lock::AlwaysOn(_)));
+    assert!(matches!(get("points.send_to_user").lock, Lock::AlwaysOff(_)));
+    assert!(matches!(get("bot.pay_out_points").lock, Lock::AlwaysOff(_)));
+    assert_eq!(get("server.bot_platform").stage, 2);
+    assert_eq!(get("server.calls").stage, 3);
+}
+
+/// Status of every standard feature equals its default on a fresh registry.
+#[test]
+fn fresh_registry_shows_defaults() {
+    let r = Registry::standard();
+    for f in standard_features() {
+        let s = r.status(f.key).unwrap();
+        assert_eq!(s.key, f.key);
+        assert_eq!(s.state, f.default, "{}", f.key);
+        assert_eq!(s.option, None);
+        let expect_lock = match f.lock {
+            Lock::AlwaysOn(x) | Lock::AlwaysOff(x) => Some(LockReason::Always(x)),
+            Lock::None => None,
+        };
+        assert_eq!(s.locked_by, expect_lock, "{}", f.key);
+    }
+    assert!(matches!(r.status("nope"), Err(FeatureError::Unknown(k)) if k == "nope"));
+}
+
+/// `list` returns exactly the features of the scope.
+#[test]
+fn list_per_scope() {
+    let r = Registry::standard();
+    let all = standard_features();
+    for scope in [Scope::Server, Scope::Chat, Scope::User, Scope::Bot] {
+        let mut want: Vec<_> = all.iter().filter(|f| f.scope == scope).map(|f| f.key).collect();
+        want.sort();
+        let got: Vec<_> = r.list(scope).iter().map(|s| s.key).collect();
+        assert_eq!(got, want, "{scope:?}");
+    }
+}
+
+/// Permanent locks hold for every caller and survive server flags.
+#[test]
+fn permanent_locks() {
+    let mut r = Registry::standard();
+    for f in standard_features() {
+        for who in ALL {
+            match f.lock {
+                Lock::AlwaysOn(reason) => {
+                    assert_eq!(r.release(f.key, who), Err(FeatureError::LockedAlways(reason)));
+                }
+                Lock::AlwaysOff(reason) => {
+                    assert_eq!(r.apply(f.key, Some("x".into()), who), Err(FeatureError::ReleasedAlways(reason)));
+                }
+                Lock::None => {}
+            }
+        }
+    }
+    // Applying an AlwaysOn / releasing an AlwaysOff is a harmless no-op for
+    // those allowed to touch the scope.
+    let s = r.apply("chat.e2e", Some("opt".into()), ADMIN).unwrap();
+    assert_eq!((s.state, s.option), (State::Applied, None));
+    assert_eq!(r.release("points.send_to_user", USER).unwrap().state, State::Released);
+    assert_eq!(r.release("chat.private_to_public", ADMIN).unwrap().state, State::Released);
+    assert_eq!(r.apply("chat.e2e", None, USER), Err(FeatureError::NotAdmin));
+
+    // An operator flag cannot switch off end-to-end encryption.
+    r.set_server_flag("chat.e2e", State::Released);
+    let s = r.status("chat.e2e").unwrap();
+    assert_eq!(s.state, State::Applied);
+    assert!(matches!(s.locked_by, Some(LockReason::Always(_))));
+    // Nor switch on an AlwaysOff feature.
+    r.set_server_flag("points.send_to_user", State::Applied);
+    assert_eq!(r.status("points.send_to_user").unwrap().state, State::Released);
+}
+
+/// Chat and Server scope need an admin; User scope does not.
+#[test]
+fn admin_rules() {
+    let mut r = Registry::standard();
+    for f in standard_features().into_iter().filter(|f| f.lock == Lock::None) {
+        let before = r.status(f.key).unwrap();
+        let needs_admin = matches!(f.scope, Scope::Chat | Scope::Server);
+        for who in [USER, PRO_USER] {
+            let a = r.apply(f.key, None, who);
+            let rel = r.release(f.key, who);
+            if needs_admin {
+                assert_eq!(a, Err(FeatureError::NotAdmin), "{}", f.key);
+                assert_eq!(rel, Err(FeatureError::NotAdmin), "{}", f.key);
+                assert_eq!(r.status(f.key).unwrap(), before, "{} changed by non-admin", f.key);
+            } else {
+                assert!(a.is_ok() && rel.is_ok(), "{}", f.key);
+            }
+        }
+        assert_eq!(r.apply(f.key, None, ADMIN).unwrap().state, State::Applied);
+        assert_eq!(r.release(f.key, ADMIN).unwrap().state, State::Released);
+    }
+}
+
+/// Options are kept on apply and cleared on release.
+#[test]
+fn options_kept_and_cleared() {
+    let mut r = Registry::standard();
+    let s = r.apply("user.app_lock", Some("pin".into()), USER).unwrap();
+    assert_eq!((s.state, s.option.as_deref()), (State::Applied, Some("pin")));
+    assert_eq!(r.status("user.app_lock").unwrap().option.as_deref(), Some("pin"));
+    let s = r.apply("user.app_lock", Some("bio".into()), USER).unwrap();
+    assert_eq!(s.option.as_deref(), Some("bio"));
+    let s = r.release("user.app_lock", USER).unwrap();
+    assert_eq!((s.state, s.option), (State::Released, None));
+}
+
+/// A server flag set to Released locks the same key at lower scopes, for
+/// admins too; re-applying the flag restores the previous lower-level state.
+#[test]
+fn server_flag_locks_lower_scopes() {
+    let mut r = Registry::standard();
+    r.apply("chat.disappearing", Some("1d".into()), ADMIN).unwrap();
+    r.set_server_flag("chat.disappearing", State::Released);
+    let s = r.status("chat.disappearing").unwrap();
+    assert_eq!(s.state, State::Released);
+    assert_eq!(s.locked_by, Some(LockReason::Server));
+    for who in ALL {
+        let want = if who.is_admin { FeatureError::LockedByServer } else { FeatureError::NotAdmin };
+        assert_eq!(r.apply("chat.disappearing", None, who), Err(want.clone()));
+        assert_eq!(r.release("chat.disappearing", who), Err(want));
+    }
+    // User scope: no admin needed, the server lock is the error.
+    r.set_server_flag("user.link_preview", State::Released);
+    assert_eq!(r.apply("user.link_preview", None, USER), Err(FeatureError::LockedByServer));
+    assert_eq!(r.status("user.link_preview").unwrap().state, State::Released);
+
+    r.set_server_flag("chat.disappearing", State::Applied);
+    let s = r.status("chat.disappearing").unwrap();
+    assert_eq!((s.state, s.option.as_deref(), s.locked_by), (State::Applied, Some("1d"), None));
+    assert!(r.release("chat.disappearing", ADMIN).is_ok());
+}
+
+/// A Server-scope feature released by an admin does not lock itself.
+#[test]
+fn server_scope_feature_not_self_locked() {
+    let mut r = Registry::standard();
+    let s = r.release("server.signups", ADMIN).unwrap();
+    assert_eq!((s.state, s.locked_by), (State::Released, None));
+    let s = r.apply("server.signups", None, ADMIN).unwrap();
+    assert_eq!(s.state, State::Applied);
+    // set_server_flag on a Server-scope key is the same state.
+    r.set_server_flag("server.calls", State::Released);
+    let s = r.status("server.calls").unwrap();
+    assert_eq!((s.state, s.locked_by), (State::Released, None));
+}
+
+/// Pro features need the Pro plan to apply; release is always allowed.
+#[test]
+fn plan_gating() {
+    let mut r = Registry::standard();
+    for (key, scope) in [("user.pro_theme", Scope::User), ("chat.pro_bots", Scope::Chat)] {
+        r.define(Feature { key, scope, default: State::Released, lock: Lock::None, plan: Plan::Pro, stage: 2 })
+            .unwrap();
+    }
+    assert_eq!(r.apply("user.pro_theme", None, USER), Err(FeatureError::PlanRequired));
+    assert_eq!(r.status("user.pro_theme").unwrap().state, State::Released);
+    assert_eq!(r.apply("user.pro_theme", None, PRO_USER).unwrap().state, State::Applied);
+    assert_eq!(r.release("user.pro_theme", USER).unwrap().state, State::Released);
+    // Admin rights do not replace the plan, and the plan does not replace admin.
+    assert_eq!(r.apply("chat.pro_bots", None, ADMIN), Err(FeatureError::PlanRequired));
+    assert_eq!(r.apply("chat.pro_bots", None, PRO_USER), Err(FeatureError::NotAdmin));
+    assert_eq!(r.apply("chat.pro_bots", None, PRO_ADMIN).unwrap().state, State::Applied);
+    // Free features ignore the plan.
+    assert!(r.apply("user.app_lock", None, PRO_USER).is_ok());
+    assert!(r.apply("user.app_lock", None, USER).is_ok());
+}
+
+/// `define` adds new features but can never weaken a permanent lock
+/// (regression for F-005).
+#[test]
+fn define_cannot_override_permanent_locks() {
+    let mut r = Registry::standard();
+    for f in standard_features().into_iter().filter(|f| f.lock != Lock::None) {
+        let weakened = Feature { lock: Lock::None, ..f.clone() };
+        let err = r.define(weakened).unwrap_err();
+        assert!(matches!(err, FeatureError::LockedAlways(_) | FeatureError::ReleasedAlways(_)), "{}", f.key);
+        // Even re-defining with the identical lock is refused (no silent swaps
+        // of reason text or scope).
+        assert!(r.define(f.clone()).is_err());
+        assert_eq!(r.status(f.key).unwrap().locked_by, Some(LockReason::Always(match f.lock {
+            Lock::AlwaysOn(x) | Lock::AlwaysOff(x) => x,
+            Lock::None => unreachable!(),
+        })));
+    }
+    assert!(r.release("chat.e2e", ADMIN).is_err());
+    assert!(r.apply("points.send_to_user", None, ADMIN).is_err());
+
+    // Unlocked features may be redefined, e.g. to add a lock.
+    r.define(Feature {
+        key: "user.app_lock",
+        scope: Scope::User,
+        default: State::Applied,
+        lock: Lock::AlwaysOn("test"),
+        plan: Plan::Free,
+        stage: 1,
+    })
+    .unwrap();
+    assert_eq!(r.release("user.app_lock", USER), Err(FeatureError::LockedAlways("test")));
+    // New keys can be defined.
+    r.define(Feature {
+        key: "bot.greeting",
+        scope: Scope::Bot,
+        default: State::Applied,
+        lock: Lock::None,
+        plan: Plan::Free,
+        stage: 2,
+    })
+    .unwrap();
+    assert_eq!(r.status("bot.greeting").unwrap().state, State::Applied);
+}
+
+/// Unknown keys are errors for every operation.
+#[test]
+fn unknown_keys() {
+    let mut r = Registry::standard();
+    for who in ALL {
+        assert!(matches!(r.apply("x.y", None, who), Err(FeatureError::Unknown(k)) if k == "x.y"));
+        assert!(matches!(r.release("x.y", who), Err(FeatureError::Unknown(_))));
+    }
+    // Setting a server flag for an unknown key does not invent a feature.
+    r.set_server_flag("x.y", State::Released);
+    assert!(r.status("x.y").is_err());
+}

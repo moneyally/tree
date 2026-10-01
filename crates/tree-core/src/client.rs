@@ -5,7 +5,7 @@
 
 use openmls::prelude::{tls_codec::{Deserialize, Serialize}, *};
 use openmls_basic_credential::SignatureKeyPair;
-use openmls_traits::{crypto::OpenMlsCrypto, OpenMlsProvider};
+use openmls_traits::{crypto::OpenMlsCrypto, storage::StorageProvider as _, OpenMlsProvider};
 
 use crate::{error::TreeError, group::Group, DefaultProvider, TREE_CIPHERSUITE};
 
@@ -96,15 +96,34 @@ impl<P: OpenMlsProvider> Client<P> {
             MlsMessageBodyIn::Welcome(w) => w,
             _ => return Err(TreeError::Malformed("not a welcome message".into())),
         };
+        // The MLS library deletes the matching one-time key package as soon as
+        // it finds its reference in the welcome, before anything is decrypted
+        // or verified. Keep a copy and put it back if the join fails, so a
+        // damaged or forged welcome cannot destroy it (F-006).
+        let saved: Vec<(KeyPackageRef, KeyPackageBundle)> = welcome
+            .secrets()
+            .iter()
+            .filter_map(|s| {
+                let r = s.new_member();
+                let kp = self.provider.storage().key_package(&r).ok().flatten()?;
+                Some((r, kp))
+            })
+            .collect();
         let config = MlsGroupJoinConfig::builder()
             .use_ratchet_tree_extension(true)
             .padding_size(Group::PADDING)
             .sender_ratchet_configuration(Group::sender_ratchet())
             .build();
-        let mls = StagedWelcome::new_from_welcome(&self.provider, &config, welcome, None)
-            .map_err(crate::error::group_err)?
-            .into_group(&self.provider)
-            .map_err(crate::error::group_err)?;
-        Ok(Group { mls })
+        let joined = StagedWelcome::new_from_welcome(&self.provider, &config, welcome, None)
+            .and_then(|staged| staged.into_group(&self.provider));
+        match joined {
+            Ok(mls) => Ok(Group { mls }),
+            Err(e) => {
+                for (r, kp) in &saved {
+                    let _ = self.provider.storage().write_key_package(r, kp);
+                }
+                Err(crate::error::group_err(e))
+            }
+        }
     }
 }

@@ -5,3 +5,9 @@ members = ["crates/tree-core", "crates/tree-server"]
 [workspace.package]
 edition = "2021"
 license = "Apache-2.0"
+
+# Argon2id is far too slow unoptimised; keep debug builds and tests usable.
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3

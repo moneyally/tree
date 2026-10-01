@@ -228,6 +228,9 @@ async fn request_validation() {
     r["recipients"] = json!(["AAAAAAAAAAAAAAAAAAAAAA", "BAAAAAAAAAAAAAAAAAAAAA", "CAAAAAAAAAAAAAAAAAAAAA", "DAAAAAAAAAAAAAAAAAAAAA"]);
     check(submit(api, &a, r).await, StatusCode::PAYLOAD_TOO_LARGE, "too many recipients");
     let mut r = req(0, b"x", &[&b]);
+    r["removed"] = json!(["AAAAAAAAAAAAAAAAAAAAAA", "BAAAAAAAAAAAAAAAAAAAAA", "CAAAAAAAAAAAAAAAAAAAAA", "DAAAAAAAAAAAAAAAAAAAAA"]);
+    check(submit(api, &a, r).await, StatusCode::PAYLOAD_TOO_LARGE, "too many removed");
+    let mut r = req(0, b"x", &[&b]);
     r["recipients"] = json!(["../etc"]);
     check(submit(api, &a, r).await, StatusCode::BAD_REQUEST, "bad id");
     let mut r = req(0, b"x", &[&b]);
@@ -243,6 +246,7 @@ async fn request_validation() {
     r["recipients"] = json!([b.device_id, "AAAAAAAAAAAAAAAAAAAAAA"]);
     r["added"] = json!([b.device_id]);
     r["welcome"] = json!(b64(&welcome(&[0; 496])));
+    r["removed"] = json!(["BAAAAAAAAAAAAAAAAAAAAA", "CAAAAAAAAAAAAAAAAAAAAA", "DAAAAAAAAAAAAAAAAAAAAA"]);
     let (st, v) = submit(api, &a, r).await;
     assert_eq!(st, StatusCode::OK, "{v}");
     assert_eq!(v["unknown_devices"], json!(["AAAAAAAAAAAAAAAAAAAAAA"]));

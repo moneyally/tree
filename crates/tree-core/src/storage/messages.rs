@@ -72,7 +72,11 @@ impl Client<StoredProvider> {
             let n = self
                 .conn()
                 .execute(
-                    &format!("INSERT OR IGNORE INTO tree_messages ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)"),
+                    // `seq` keeps the arrival order among messages of the same second.
+                    &format!(
+                        "INSERT OR IGNORE INTO tree_messages ({COLS}, seq) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, \
+                         (SELECT COALESCE(MAX(seq), 0) + 1 FROM tree_messages))"
+                    ),
                     params![m.group_id, m.id, m.sender, m.received_at, m.kind, m.text, m.data, m.edited_at, m.deleted, m.expires_at, reactions, m.franking],
                 )
                 .map_err(storage_err)?;
@@ -153,7 +157,7 @@ impl Client<StoredProvider> {
             .conn()
             .prepare(&format!(
                 "SELECT {COLS} FROM tree_messages WHERE group_id = ?1 AND received_at < ?2 \
-                 ORDER BY received_at DESC, id DESC LIMIT ?3"
+                 ORDER BY received_at DESC, seq DESC LIMIT ?3"
             ))
             .map_err(storage_err)?;
         let rows = stmt.query_map(params![group_id, before.unwrap_or(i64::MAX), limit], from_row).map_err(storage_err)?;
@@ -170,7 +174,7 @@ impl Client<StoredProvider> {
             .conn()
             .prepare(&format!(
                 "SELECT {COLS} FROM tree_messages WHERE deleted = 0 AND text LIKE ?1 ESCAPE '\\' \
-                 ORDER BY received_at DESC LIMIT ?2"
+                 ORDER BY received_at DESC, seq DESC LIMIT ?2"
             ))
             .map_err(storage_err)?;
         let rows = stmt.query_map(params![pattern, limit], from_row).map_err(storage_err)?;

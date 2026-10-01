@@ -444,6 +444,14 @@ fn message_history() {
     c.react(g, "m3", "aa", "x", false).unwrap();
     assert!(c.message(g, "m3").unwrap().unwrap().reactions.is_empty());
 
+    // Same second: arrival order is kept (not the random id order).
+    let g3 = b"group-3";
+    for id in ["zz", "aa", "mm"] {
+        c.store_message(&msg(g3, id, 500, id)).unwrap();
+    }
+    let order: Vec<String> = c.messages(g3, 10, None).unwrap().into_iter().map(|m| m.id).collect();
+    assert_eq!(order, vec!["zz", "aa", "mm"]);
+
     // search: substring, not deleted, % and _ are literal
     let hits = c.search_messages("9F1D", 10).unwrap();
     assert_eq!(hits.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec!["m4", "m2", "m0"]);

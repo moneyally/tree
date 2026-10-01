@@ -9,3 +9,6 @@ bindings/generated/
 bindings/kotlin-jvm/build/
 bindings/kotlin-jvm/.gradle/
 bindings/kotlin-jvm/.kotlin/
+apps/desktop/build/
+apps/desktop/.gradle/
+apps/desktop/.kotlin/

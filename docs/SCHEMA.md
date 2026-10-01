@@ -21,7 +21,7 @@ Schema version: `PRAGMA user_version`.
 | 1 | `tree_meta`, `tree_groups` + OpenMLS tables |
 | 2 | `tree_group_state` (HANDOFF 3.1) |
 | 3 | `tree_app` (app data), `tree_messages` (history). Versions 1 and 2 are upgraded on open (all later tables are created idempotently); newer versions are refused |
-| 4 | `tree_messages.franking` (report records). Version 3 gets the column added on open |
+| 4 | `tree_messages.franking` (report records), `tree_messages.seq` (arrival order). Version 3 gets the columns added on open |
 
 ### 1.1 Key header `<db>.hdr` (not secret)
 
@@ -52,6 +52,7 @@ CREATE TABLE tree_messages (
     expires_at  INTEGER,             -- disappearing messages
     reactions   TEXT NOT NULL DEFAULT '{}',  -- JSON emoji -> member ids
     franking    BLOB,                -- JSON {payload, key, tag, minute} to report it (v4); NULL when deleted
+    seq         INTEGER NOT NULL DEFAULT 0,  -- arrival order within the same second (v4)
     PRIMARY KEY (group_id, id)
 ) WITHOUT ROWID;
 ```

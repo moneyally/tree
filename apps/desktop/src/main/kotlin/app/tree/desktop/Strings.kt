@@ -1,0 +1,86 @@
+package app.tree.desktop
+
+/** UI language. Korean first; English for everyone else. */
+enum class Lang { KO, EN }
+
+/** All UI text. Keys are English; missing Korean falls back to English. */
+object Strings {
+    var lang: Lang = if (java.util.Locale.getDefault().language == "ko") Lang.KO else Lang.EN
+
+    private val ko = mapOf(
+        "app" to "트리",
+        "create" to "새 계정 만들기",
+        "open" to "열기",
+        "name" to "이름",
+        "passphrase" to "비밀 문장 (기기 잠금)",
+        "server" to "서버 주소",
+        "chats" to "대화",
+        "requests" to "요청함",
+        "settings" to "설정",
+        "new_group" to "새 대화",
+        "invite" to "초대 (@아이디 또는 계정)",
+        "send" to "보내기",
+        "message" to "메시지",
+        "accept" to "수락",
+        "decline" to "거절",
+        "block" to "차단",
+        "report" to "신고",
+        "safety" to "안전 번호",
+        "verify" to "확인 완료",
+        "recovery" to "복구 문구 만들기",
+        "recovery_note" to "이 단어들을 종이에 적어 안전한 곳에 두세요. 지금 한 번만 보입니다. 이 단어를 가진 사람은 계정을 가져갈 수 있습니다.",
+        "invite_link" to "초대 링크 만들기",
+        "join" to "링크로 참여",
+        "username" to "내 @아이디",
+        "applied" to "적용",
+        "released" to "해제",
+        "locked" to "바꿀 수 없음",
+        "wrong_pass" to "비밀 문장이 틀렸거나 파일이 손상됐습니다",
+        "key_changed" to "상대의 기기 키가 바뀌었습니다. 안전 번호를 다시 확인하세요.",
+        "request_from" to "모르는 사람이 보낸 대화 요청",
+        "edited" to "수정됨",
+        "deleted" to "삭제된 메시지",
+        "me" to "나",
+    )
+
+    private val en = mapOf(
+        "app" to "Tree",
+        "create" to "Create account",
+        "open" to "Open",
+        "name" to "Name",
+        "passphrase" to "Passphrase (device lock)",
+        "server" to "Server URL",
+        "chats" to "Chats",
+        "requests" to "Requests",
+        "settings" to "Settings",
+        "new_group" to "New chat",
+        "invite" to "Invite (@username or account)",
+        "send" to "Send",
+        "message" to "Message",
+        "accept" to "Accept",
+        "decline" to "Decline",
+        "block" to "Block",
+        "report" to "Report",
+        "safety" to "Safety number",
+        "verify" to "Mark verified",
+        "recovery" to "Make recovery phrase",
+        "recovery_note" to "Write these words on paper and keep them safe. They are shown only now. Whoever has them can take over the account.",
+        "invite_link" to "Make invite link",
+        "join" to "Join with link",
+        "username" to "My @username",
+        "applied" to "On",
+        "released" to "Off",
+        "locked" to "Cannot be changed",
+        "wrong_pass" to "Wrong passphrase, or the file is damaged",
+        "key_changed" to "A contact's device key changed. Compare the safety number again.",
+        "request_from" to "Chat request from someone you don't know",
+        "edited" to "edited",
+        "deleted" to "Deleted message",
+        "me" to "Me",
+    )
+
+    fun t(key: String): String = (if (lang == Lang.KO) ko[key] else null) ?: en[key] ?: key
+
+    /** Every key exists in both languages (checked by a test). */
+    fun missing(): Set<String> = (ko.keys - en.keys) + (en.keys - ko.keys)
+}

@@ -164,15 +164,15 @@ fn schema_v1_is_upgraded() {
     {
         let c = Client::open(&path, "pw").unwrap();
         let conn = &c.provider.storage.conn;
-        conn.execute_batch("ALTER TABLE tree_messages DROP COLUMN franking").unwrap();
+        conn.execute_batch("ALTER TABLE tree_messages DROP COLUMN franking; ALTER TABLE tree_messages DROP COLUMN seq;").unwrap();
         conn.pragma_update(None, "user_version", 3).unwrap();
     }
     let c = Client::open(&path, "pw").unwrap();
     let conn = &c.provider.storage.conn;
     let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
     assert_eq!(v, TREE_SCHEMA_VERSION);
-    let n: i64 = conn.query_row("SELECT COUNT(*) FROM pragma_table_info('tree_messages') WHERE name = 'franking'", [], |r| r.get(0)).unwrap();
-    assert_eq!(n, 1);
+    let n: i64 = conn.query_row("SELECT COUNT(*) FROM pragma_table_info('tree_messages') WHERE name IN ('franking', 'seq')", [], |r| r.get(0)).unwrap();
+    assert_eq!(n, 2);
     drop(c);
     drop(Client::open(&path, "pw").unwrap()); // and opening again is fine
     for bad in [0, TREE_SCHEMA_VERSION + 1] {

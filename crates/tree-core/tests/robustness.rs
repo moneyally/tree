@@ -283,6 +283,8 @@ enum Op {
     Apply { key: usize, option: Option<u8>, who: usize },
     Release { key: usize, who: usize },
     ServerFlag { key: usize, applied: bool },
+    /// `release_for_chat` (release = true) or `apply_for_chat`.
+    ChatLock { key: usize, release: bool, who: usize },
 }
 
 const CALLERS: [Caller; 4] = [
@@ -296,8 +298,29 @@ fn all_features() -> Vec<Feature> {
     let mut v = standard_features();
     v.push(Feature { key: "user.pro_x", scope: Scope::User, default: State::Released, lock: Lock::None, plan: Plan::Pro, stage: 2 });
     v.push(Feature { key: "chat.pro_y", scope: Scope::Chat, default: State::Applied, lock: Lock::None, plan: Plan::Pro, stage: 2 });
+    v.push(Feature { key: "bot.greet", scope: Scope::Bot, default: State::Released, lock: Lock::None, plan: Plan::Free, stage: 2 });
     v
 }
+
+/// Number of features `all_features` adds to the standard ones.
+const EXTRA: usize = 3;
+
+/// User features a chat may NOT lock (security, safety, billing), written
+/// out independently of the registry's own classification.
+const NOT_CHAT_LOCKABLE: &[&str] = &[
+    "user.app_lock",
+    "user.notification_content",
+    "user.incognito_keyboard",
+    "user.app_switcher_blur",
+    "user.pc_screen_security",
+    "user.discoverable",
+    "user.message_requests",
+    "user.stranger_block",
+    "user.stranger_labels",
+    "user.group_safety_notice",
+    "user.group_add",
+    "user.pro_x",
+];
 
 /// Independent model of the documented rules.
 struct Model {
@@ -315,9 +338,32 @@ impl Model {
         let (state, option) = self.state.get(&(f.scope, f.key)).cloned().unwrap_or((f.default, None));
         if self.server_locked(f) {
             Status { key: f.key, state: State::Released, option, locked_by: Some(LockReason::Server) }
+        } else if self.chat_locked(f) {
+            Status { key: f.key, state: State::Released, option, locked_by: Some(LockReason::Chat) }
         } else {
             Status { key: f.key, state, option, locked_by: None }
         }
+    }
+    fn chat_locked(&self, f: &Feature) -> bool {
+        f.scope == Scope::User && matches!(self.state.get(&(Scope::Chat, f.key)), Some((State::Released, _)))
+    }
+    /// Error code or resulting status of a chat lock / unlock.
+    fn chat_lock(&mut self, f: &Feature, release: bool, who: Caller) -> Result<Status, &'static str> {
+        if f.scope != Scope::User || f.lock != Lock::None || NOT_CHAT_LOCKABLE.contains(&f.key) {
+            return Err("LOCKED_ALWAYS");
+        }
+        if !who.is_admin {
+            return Err("NOT_ADMIN");
+        }
+        if self.server_locked(f) {
+            return Err("LOCKED_BY_SERVER");
+        }
+        if release {
+            self.state.insert((Scope::Chat, f.key), (State::Released, None));
+        } else {
+            self.state.remove(&(Scope::Chat, f.key));
+        }
+        Ok(self.status(f))
     }
     fn server_locked(&self, f: &Feature) -> bool {
         f.scope != Scope::Server && matches!(self.state.get(&(Scope::Server, f.key)), Some((State::Released, _)))
@@ -328,11 +374,14 @@ impl Model {
             (false, Lock::AlwaysOn(r)) => return Err(FeatureError::LockedAlways(r)),
             _ => {}
         }
-        if matches!(f.scope, Scope::Chat | Scope::Server) && !who.is_admin {
+        if matches!(f.scope, Scope::Chat | Scope::Server | Scope::Bot) && !who.is_admin {
             return Err(FeatureError::NotAdmin);
         }
         if self.server_locked(f) {
             return Err(FeatureError::LockedByServer);
+        }
+        if self.chat_locked(f) {
+            return Err(FeatureError::LockedByChat);
         }
         if apply && f.plan == Plan::Pro && who.plan != Plan::Pro {
             return Err(FeatureError::PlanRequired);
@@ -351,6 +400,7 @@ fn op(n_keys: usize) -> impl Strategy<Value = Op> {
             .prop_map(|(key, option, who)| Op::Apply { key, option, who }),
         4 => (0..n_keys, 0..4usize).prop_map(|(key, who)| Op::Release { key, who }),
         1 => (0..n_keys, any::<bool>()).prop_map(|(key, applied)| Op::ServerFlag { key, applied }),
+        2 => (0..n_keys, any::<bool>(), 0..4usize).prop_map(|(key, release, who)| Op::ChatLock { key, release, who }),
     ]
 }
 
@@ -361,7 +411,7 @@ fn feature_registry_random_sequences() {
     runner(512)
         .run(&vec(op(n), 1..60), |ops| {
             let mut r = Registry::standard();
-            for f in &defs[n - 2..] {
+            for f in &defs[n - EXTRA..] {
                 r.define(f.clone()).unwrap();
             }
             let mut model = Model { defs: defs.clone(), state: Default::default() };
@@ -391,8 +441,21 @@ fn feature_registry_random_sequences() {
                         model.state.insert((Scope::Server, k), (st, None));
                         (None, None, k)
                     }
+                    Op::ChatLock { key, release, who } => {
+                        let f = &model.defs[key].clone();
+                        let call = |r: &mut Registry| {
+                            if release { r.release_for_chat(f.key, CALLERS[who]) } else { r.apply_for_chat(f.key, CALLERS[who]) }
+                        };
+                        let got = call(&mut r);
+                        prop_assert_eq!(&call(&mut r), &got, "idempotent");
+                        let want = model.chat_lock(f, release, CALLERS[who]);
+                        prop_assert_eq!(got.as_ref().map_err(|e| e.code()), want.as_ref().map_err(|c| *c), "op {:?}", o);
+                        (Some(got), Some(want.map_err(|_| FeatureError::NotAdmin)), f.key)
+                    }
                 };
-                prop_assert_eq!(&got, &want, "op {:?}", o);
+                if !matches!(o, Op::ChatLock { .. }) {
+                    prop_assert_eq!(&got, &want, "op {:?}", o);
+                }
                 if let Some(Ok(s)) = &got {
                     prop_assert_eq!(s, &r.status(s.key).unwrap());
                 }
@@ -411,9 +474,15 @@ fn feature_registry_random_sequences() {
                     if failed || f.key != touched {
                         prop_assert_eq!(&now, before, "{} changed by {:?}", f.key, o);
                     }
-                    // Non-admins never change Chat/Server features.
+                    // Non-admins never change Chat/Server/Bot features, and
+                    // never lock anything for a chat.
+                    if let Op::ChatLock { who, .. } = *o {
+                        if !CALLERS[who].is_admin {
+                            prop_assert_eq!(&now, before);
+                        }
+                    }
                     if let Op::Apply { who, .. } | Op::Release { who, .. } = *o {
-                        if !CALLERS[who].is_admin && matches!(f.scope, Scope::Chat | Scope::Server) {
+                        if !CALLERS[who].is_admin && matches!(f.scope, Scope::Chat | Scope::Server | Scope::Bot) {
                             prop_assert_eq!(&now, before);
                         }
                     }

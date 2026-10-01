@@ -93,7 +93,7 @@ Rules:
 - A client MUST refuse to open stored state whose recorded ciphersuite its
   provider does not support (`Client::open_with_key`).
 - The ciphersuite of a group never changes. Changing it requires a new group
-  (ReInit commits are rejected, section 6.4, **in progress**).
+  (ReInit commits are rejected, section 6.4).
 - Because the code point is provisional, a future final RFC may assign a
   different number. Tree will then define Tree v2 with the final code point;
   v1 and v2 groups do not mix. A client MUST NOT reinterpret `0x004E` if its
@@ -257,9 +257,9 @@ NOT write any state if the check fails:
    `PrivateMessage.epoch` MUST equal `e`; otherwise reject.
 5. Only then hand the message to MLS.
 
-On `main`: steps 1, 2 (current epoch only), 3 (reject) and 5 are
-implemented; past-epoch keys and the explicit group-id/epoch cross-check of
-step 4 are **(in progress)**.
+On `main`: all steps are implemented; in step 3 the envelope is rejected
+(holding it for a retry is **(in progress)**, section 6.7). Step 4 also
+requires `wire_format = mls_private_message`.
 
 ### 4.4 Why
 
@@ -295,7 +295,7 @@ The MLS credential is a `BasicCredential` whose identity bytes are a display
 name chosen by the user. The name is **not authenticated** and MUST NOT be
 used for any security decision (finding F-008).
 
-### 5.2 Member id (in progress)
+### 5.2 Member id
 
 Members are identified by a value derived from their MLS signature key:
 
@@ -307,14 +307,18 @@ where `signature_key` is the raw `LeafNode.signature_key` bytes (32 bytes for
 Ed25519). RFC 9420 §7.3 requires signature keys to be unique among the
 leaves of a group, so member ids are unique in a group.
 
-Rules: `Incoming::Message` reports the sender's `member_id`; `remove` takes a
-`member_id`; the app shows names only next to a member id it has verified or
-pinned. The safety number a user compares out of band is derived from the
-signature key (format: open question Q4).
+Rules: `Incoming::Message` reports the sender's `member_id` (and the
+unauthenticated name next to it); `Group::remove` takes member ids, several
+in one commit (all devices of a person); `Group::members` returns id, name
+and a flag set when another member carries the same name; the app shows
+names only next to a member id it has verified or pinned. The safety number
+a user compares out of band is derived from the signature key (format: open
+question Q4).
 
-On `main`: members are identified and removed by name (F-008). The member-id
-derivation above is the target; if the implementation in progress picks a
-different encoding, this section must be updated to match before release.
+For an application message of a past epoch (section 6.2) the sender's
+member id is taken from the members of **that** epoch, which the receiver
+keeps together with the epoch's envelope key: a leaf index may belong to a
+different member in the current epoch.
 
 ### 5.3 Key packages
 
@@ -369,7 +373,7 @@ only detected by comparing safety numbers or, later, by key transparency
 | ratchet tree extension | on: the welcome carries the ratchet tree (RFC 9420 §12.4.3.3) |
 | padding size | 256 (section 6.8) |
 | sender ratchet | out-of-order tolerance 32, maximum forward distance 1000 |
-| past epochs | 2 **(in progress: 0 on `main`)** |
+| past epochs | 2 |
 | resumption PSKs kept | 0 (library default) |
 | group id | 16 random bytes (library default) |
 
@@ -381,10 +385,17 @@ A one-to-one chat is a two-member group; there is no separate 1:1 protocol.
 | --- | --- | --- |
 | Out-of-order window | 32 | keys up to 32 generations behind a sender's ratchet head are kept; in practice the 31 messages before the newest one received from that sender can still arrive late |
 | Maximum forward distance | 1000 | a receiver derives keys at most 1000 generations ahead of the head; a message further ahead is rejected |
-| Past-epoch window | 2 | application messages of epochs `N-1` and `N-2` are still decrypted after the receiver moved to `N` **(in progress)** |
+| Past-epoch window | 2 | application messages of epochs `N-1` and `N-2` are still decrypted after the receiver moved to `N`; commits never (section 6.6) |
 | Padding | 256 bytes | see section 6.8 |
 | Key refresh cadence | at least every 24 h of activity, and on suspicion | see section 6.9 |
-| Envelope keys kept | `N`, `N-1`, `N-2` | see section 4.3 **(in progress: `N` only)** |
+| Envelope keys kept | `N`, `N-1`, `N-2` | see section 4.3 |
+
+Cost of the past-epoch window: the secrets that decrypt epoch `N` stay on the
+device until it reaches `N+3` instead of being deleted at `N+1`, so a device
+compromise exposes not-yet-read messages of up to three epochs (claim C4).
+Two epochs cover a message in flight while one or two commits pass, which is
+the normal case with server ordering; a longer window would only widen that
+exposure.
 
 ### 6.3 Key derivation and deletion (by reference)
 
@@ -432,19 +443,22 @@ inline. Allowed commit contents in v1:
 | --- | --- |
 | inline Add proposals | yes |
 | inline Remove proposals (not of the committer itself) | yes |
-| UpdatePath | **always required** (add, remove and key refresh all include one; the library's `add_members`, `remove_members` and `self_update` do) |
+| UpdatePath | required, except in a commit that contains only Add proposals (RFC 9420 §12.4 allows that). Tree's own adds carry **no** UpdatePath (`add_members_without_update`: 3 KB instead of 30 KB to 2.3 MB at 2,000 leaves, [BENCHMARKS.md](BENCHMARKS.md)); its removes and key refreshes always carry one |
 | proposals by reference | no |
 | Update proposals | no (key refresh is a commit with an UpdatePath and no proposals) |
 | PreSharedKey, ReInit, ExternalInit, GroupContextExtensions, custom proposals | no |
 | external commits / external senders | no |
 
 A receiver MUST reject a commit that violates this table, after MLS has
-staged it and before merging it **(in progress: `main` merges any valid MLS
-commit)**.
+staged it and before merging it (`check_commit` in `group.rs`). A commit
+whose committer is not a member (external commit) is rejected as well.
+
+Because an add carries no UpdatePath, it does not refresh the adder's own
+keys; its next key refresh does (section 6.9).
 
 Any member may add or remove members in v1 (no roles; roles are stage 3).
 
-### 6.5 Proposals from others (in progress)
+### 6.5 Proposals from others
 
 A receiver MUST reject standalone proposal messages (`content_type =
 proposal`) and external join proposals, and MUST NOT store them. The server
@@ -459,19 +473,28 @@ leaving device's leaf stays in the tree (it no longer holds any group
 secrets, so this does not affect confidentiality unless an attacker had
 copied its state earlier).
 
-On `main`: proposals are stored and folded into the next own commit (F-007).
+A leaving device: Tree v1 has no leave call in the core. The app sends an
+ordinary application message that its peers' apps understand as a leave
+request, then stops using the group; a remaining member's app calls
+`Group::remove` with the leaving device's member id. A self-remove without
+proposals is open question Q9.
 
 ### 6.6 Receiving
 
-For each envelope taken from the mailbox, in mailbox order (on `main`:
-steps 1, 3 with the current epoch only, 4 without the Tree checks and with
-proposals stored, and 5 are implemented; the rest is **(in progress)**):
+For each envelope taken from the mailbox, in mailbox order (all steps are
+implemented on `main` except the "already processed" set in step 2):
 
 1. If the first byte is `0x00`: welcome path (`Client::join`).
-2. Duplicate check: if `SHA-256(envelope)` is in the set of envelopes this
-   device has itself sent for this group and still retains, return
-   `OwnEcho` without processing **(in progress for commits: F-004)**. If it
-   is in the set of envelopes already processed, acknowledge and ignore.
+2. Duplicate check: if `SHA-256(envelope)` equals the hash of this device's
+   pending commit, the server accepted it: merge it and return
+   `OwnCommitMerged` (section 7.1 step 6). If it is in the set of commit
+   envelopes this device has itself merged and still retains (epochs `N`,
+   `N-1`, `N-2`), return `OwnEcho` without processing. Own application
+   messages are recognised by MLS (sender = own leaf) and also give
+   `OwnEcho`. If it is in the set of envelopes already processed,
+   acknowledge and ignore **(in progress: no such set; a replayed
+   application message is rejected by MLS, a replayed commit by the epoch
+   rule in step 4)**.
 3. Seal check, section 4.3. The matching key identifies the epoch `e`.
 4. By `content_type`:
    - application: decrypt with MLS if `e ∈ {N, N-1, N-2}`;
@@ -513,7 +536,7 @@ multiple of 256 bytes (OpenMLS `padding_size(256)`). The cleartext
 `PrivateMessage` header and the encrypted sender data are not padded.
 
 `authenticated_data` (sent in clear) MUST be empty in v1. Receivers SHOULD
-reject a non-empty value **(in progress: not checked on `main`)**.
+reject a non-empty value; `main` rejects it on application messages.
 
 ### 6.9 Key refresh
 
@@ -525,11 +548,16 @@ and credential.
   in which the group had traffic, and MUST refresh in every group after a
   suspected compromise, after restoring from backup or recovery, and after
   re-installation **(in progress: no scheduler yet)**.
+- A device that has just joined SHOULD refresh its keys soon: its leaf key
+  came from a one-time key package that waited on the server. The core sets
+  `Group::should_refresh_keys` on join and clears it with the device's first
+  merged commit that carries an UpdatePath. In a freshly built large group
+  these first refreshes should be staggered ([BENCHMARKS.md](BENCHMARKS.md)).
 - A refresh does **not** replace the signature key. Recovering from a
   compromised signature key requires removing the device and adding a new
   device identity (claim C5).
-- Since every Tree commit includes an UpdatePath, an add or remove by a
-  device also refreshes that device's own path.
+- A remove by a device also refreshes that device's own path (it carries an
+  UpdatePath); an add does not.
 
 ### 6.10 Verification code
 
@@ -547,9 +575,10 @@ MLS requires that all members apply the same sequence of commits (RFC 9420
 commit it receives for each (group, epoch); clients merge a commit only after
 the server accepted it.**
 
-On `main`: commits are merged immediately and two simultaneous commits fork
-the group (F-003). The client side below is **(in progress)**; the server
-side (section 7.4) is **(in progress, not implemented)**.
+On `main`: the client side below is implemented in the core
+(`PendingCommit`, `Group::confirm_commit`, `Group::discard_commit`,
+`Group::pending_commit`); the steps that talk to the server belong to the
+app. The server side (section 7.4) is **(in progress, not implemented)**.
 
 ### 7.1 Client: two-phase commit
 
@@ -583,8 +612,13 @@ side (section 7.4) is **(in progress, not implemented)**.
    envelope's hash, this device won: merge the pending commit. Otherwise
    discard the pending commit and process the winner.
 7. **Crash.** The pending commit and its envelope are stored with the group
-   state. After a restart with a pending commit, the device resubmits it
-   (step 5) before doing anything else in the group.
+   state, in the same transaction as the MLS state. After a restart with a
+   pending commit (`Group::pending_commit`), the device resubmits the same
+   bytes (step 5) before doing anything else in the group. If the server
+   had accepted it before the crash, the idempotent answer is `200` and the
+   device confirms; if the accepted commit's echo is fetched from the
+   mailbox first, step 6 merges it. Either way a crash between acceptance
+   and merge ends with the commit merged.
 
 ### 7.2 Own echoes
 
@@ -906,9 +940,9 @@ of the following hold:
 
 1. **Healing commit.** Between `t` and epoch `M` the server accepted, and
    honest members merged, either
-   (a) a commit created by `D` itself (every Tree commit carries an
-   UpdatePath, section 6.4), with path secrets drawn from randomness the
-   attacker does not know; or
+   (a) a commit created by `D` itself that carries an UpdatePath (a key
+   refresh or a removal; Tree's adds carry none, section 6.4), with path
+   secrets drawn from randomness the attacker does not know; or
    (b) a commit by an honest member that removes `D`.
    Healing applies from the epoch that commit creates.
 2. **Access ended.** The attacker had no access to `D`'s state or randomness
@@ -982,7 +1016,7 @@ A-ins.
 **Reduces to.** The ciphersuite is part of the MLS group context (bound by
 the key schedule and signatures); key packages are signed and carry their
 ciphersuite; Tree checks the key-package ciphersuite on add, and rejects
-ReInit commits (section 6.4, **in progress**).
+ReInit commits (section 6.4).
 
 **Not claimed.** Protection if a release build is made without the `pq`
 feature (section 2.3) or if the provisional code point changes meaning
@@ -1111,9 +1145,10 @@ the server cannot learn it from what it sees or stores.
 - **Q2 Library assurance.** Record the review/audit status of OpenMLS 0.9,
   `openmls_rust_crypto`, the `x-wing` and `ml-kem` crates and libcrux before
   stage 1; Tree relies on them for every claim (A5).
-- **Q3 Two-phase commit details.** Interaction of the pending commit with
-  storage transactions and with a crash between acceptance and merge (the
-  device must merge on restart if the server accepted).
+- **Q3 Two-phase commit details.** Answered for the client in section 7.1
+  step 7 (pending commit stored in the same transaction; resubmit after a
+  restart). Remaining: how long a client keeps retrying before it gives up
+  and discards.
 - **Q4 Safety number format.** Encoding and length of the out-of-band
   fingerprint of a member's signature key, and how it combines for a person
   with several devices.

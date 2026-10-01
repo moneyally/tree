@@ -180,9 +180,10 @@ Classical at 2000 leaves: 3.5 MB, about 75 s, 7 GB.
    less committer CPU in a cold tree. Building a group from batches of 100
    then sends ~100 key packages (~260 KB, estimate) per batch instead of up to
    2.4 MB. The committer's own key is then refreshed by its next update.
-   (The core's `Group::add` currently always sends a path.)
+   (Done: the core's `Group::add` sends no path since HANDOFF 3.1.)
 5. **Warm new and freshly built groups.** A newly joined device should send
-   one update commit soon after joining (this also replaces the key from its
+   one update commit soon after joining, flagged by the core as
+   `Group::should_refresh_keys` (this also replaces the key from its
    one-time key package, which sat on the server). In a freshly built large
    group stagger these first updates; the first few are ~1 MB each.
 6. **Server limits must match.** The server defaults (`MAX_MESSAGE_BYTES`
@@ -196,6 +197,11 @@ Classical at 2000 leaves: 3.5 MB, about 75 s, 7 GB.
 7. **Store state in a binary encoding**, not JSON: 3.7x less to encrypt and
    write per commit, and most of the 50 ms "apply" at 2000 leaves is JSON
    encoding. This is a storage-format change, so it needs a migration.
+   (Not done yet: the OpenMLS storage crate is tested with JSON, and the
+   values it stores have no stable binary format of their own; switching
+   needs a codec that round-trips every stored type plus a migration of
+   existing databases, which is not contained enough for HANDOFF 3.1.
+   Tree's own new table `tree_group_state` is binary already.)
 8. **Keep the hybrid suite as the default.** The 1,000 x 2 target is reachable
    with it once commits are budgeted and batched. The classical suite would
    cut bandwidth ~15x and receiver CPU ~3x, but gives up post-quantum

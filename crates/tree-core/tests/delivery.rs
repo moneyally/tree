@@ -219,7 +219,7 @@ fn concurrent_commits_no_longer_fork() {
     a.confirm_commit(&alice).unwrap();
     assert_eq!(
         b.receive(&bob, &ca.commit).unwrap(),
-        Incoming::GroupChanged { added: vec![], removed: vec![], epoch: 2, own_commit_discarded: true }
+        Incoming::GroupChanged { added: vec![], removed: vec![], epoch: 2, own_commit_discarded: true, settings_changed: false }
     );
     assert!(b.pending_commit().is_none());
     assert_eq!(a.epoch(), b.epoch());

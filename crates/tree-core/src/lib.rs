@@ -15,6 +15,7 @@ pub mod client;
 pub mod error;
 pub mod features;
 pub mod group;
+pub mod group_settings;
 mod group_state;
 pub mod provider;
 pub mod safety;

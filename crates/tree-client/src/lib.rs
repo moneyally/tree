@@ -68,7 +68,7 @@ pub enum Event {
     /// A group was declined automatically (blocked adder, settings).
     Declined { group: Vec<u8>, from: String, reason: String },
     Joined { group: Vec<u8> },
-    Changed { group: Vec<u8>, added: Vec<MemberId>, removed: Vec<MemberId>, epoch: u64, own_commit_discarded: bool },
+    Changed { group: Vec<u8>, added: Vec<MemberId>, removed: Vec<MemberId>, epoch: u64, own_commit_discarded: bool, settings_changed: bool },
     /// A member announced its display name.
     Profile { group: Vec<u8>, member: MemberId, name: String },
     /// A contact's devices changed (new device or replaced key): compare the
@@ -555,6 +555,52 @@ impl Session {
         Ok(CommitOutcome::Accepted { epoch })
     }
 
+    /// The settings every member of the group agrees on: admins, name, chat features.
+    pub fn group_settings(&mut self, gid: &[u8]) -> Result<tree_core::group_settings::GroupSettings, Error> {
+        Ok(self.group(gid)?.settings())
+    }
+
+    /// An admin changes the group settings (one commit through the server).
+    pub fn change_group_settings(&mut self, gid: &[u8], new: &tree_core::group_settings::GroupSettings) -> Result<CommitOutcome, Error> {
+        self.with(gid, |g, c| g.change_settings(c, new))?;
+        self.save_pending(gid, &PendingExtra::default())?;
+        self.submit(gid)
+    }
+
+    pub fn make_admin(&mut self, gid: &[u8], member: MemberId, admin: bool) -> Result<CommitOutcome, Error> {
+        let mut s = self.group_settings(gid)?;
+        s.admins.retain(|a| *a != member);
+        if admin {
+            s.admins.push(member);
+        }
+        self.change_group_settings(gid, &s)
+    }
+
+    pub fn set_group_name(&mut self, gid: &[u8], name: Option<String>) -> Result<CommitOutcome, Error> {
+        let mut s = self.group_settings(gid)?;
+        s.name = name;
+        self.change_group_settings(gid, &s)
+    }
+
+    /// An admin applies or releases a chat-scope feature for the whole group
+    /// (checked against the registry: permanent locks, server locks).
+    pub fn set_chat_feature(&mut self, gid: &[u8], key: &str, apply: bool, option: Option<String>) -> Result<CommitOutcome, Error> {
+        use tree_core::features::{Caller, Plan, Registry, Scope};
+        let mut r = Registry::standard();
+        let admin = Caller { plan: Plan::Free, is_admin: true };
+        let status = if apply { r.apply(key, option, admin) } else { r.release(key, admin) }
+            .map_err(|e| Error::Feature(e.code().into()))?;
+        if !r.list(Scope::Chat).iter().any(|s| s.key == status.key) {
+            return Err(Error::Feature("NOT_A_CHAT_FEATURE".into()));
+        }
+        let mut s = self.group_settings(gid)?;
+        s.features.insert(
+            key.to_string(),
+            tree_core::group_settings::ChatSetting { applied: status.state == tree_core::features::State::Applied, option: status.option },
+        );
+        self.change_group_settings(gid, &s)
+    }
+
     pub fn send_text(&mut self, gid: &[u8], text: &str) -> Result<usize, Error> {
         self.send_payload(gid, &Payload::Text { text: text.to_string() })
     }
@@ -646,7 +692,7 @@ impl Session {
                 self.on_payload(&gid, from, &body, events)?;
                 Ok(false)
             }
-            Ok(Incoming::GroupChanged { added, removed, epoch, own_commit_discarded }) => {
+            Ok(Incoming::GroupChanged { added, removed, epoch, own_commit_discarded, settings_changed }) => {
                 let mut roster = self.roster(&gid)?;
                 let mut names = self.names(&gid)?;
                 for m in &removed {
@@ -658,7 +704,7 @@ impl Session {
                 if own_commit_discarded {
                     self.client.set_app_data(&pending_key(&gid), None)?;
                 }
-                events.push(Event::Changed { group: gid, added, removed, epoch, own_commit_discarded });
+                events.push(Event::Changed { group: gid, added, removed, epoch, own_commit_discarded, settings_changed });
                 Ok(true)
             }
             Ok(Incoming::OwnCommitMerged { .. }) => {

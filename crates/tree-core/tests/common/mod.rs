@@ -80,6 +80,11 @@ impl Insider {
     pub fn key_package(&self) -> Vec<u8> {
         use openmls::prelude::tls_codec::Serialize;
         KeyPackage::builder()
+            .leaf_node_capabilities(
+                Capabilities::builder()
+                    .extensions(vec![ExtensionType::Unknown(tree_core::group_settings::EXTENSION_TYPE)])
+                    .build(),
+            )
             .build(TREE_CIPHERSUITE, &self.provider, &self.signer, self.credential.clone())
             .unwrap()
             .key_package()

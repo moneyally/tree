@@ -23,6 +23,8 @@ pub enum TreeError {
     CommitPending,
     #[error("no pending commit")]
     NoPendingCommit,
+    #[error("only an admin of the group may do this")]
+    NotAdmin,
     #[error("this device is no longer a member of the group")]
     NotAMember,
     #[error("no stored group with this id")]

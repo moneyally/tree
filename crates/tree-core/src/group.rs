@@ -20,6 +20,7 @@ use zeroize::Zeroizing;
 use crate::{
     client::Client,
     error::{group_err, TreeError},
+    group_settings::{GroupSettings, EXTENSION_TYPE},
     group_state::{GroupState, PastEpoch, Pending},
     provider::TreeProvider,
 };
@@ -113,7 +114,9 @@ pub enum Incoming {
     /// someone refreshed their keys. If this device had a pending commit for
     /// the same epoch, it lost and was discarded (`own_commit_discarded`);
     /// decide again in the new epoch.
-    GroupChanged { added: Vec<MemberId>, removed: Vec<MemberId>, epoch: u64, own_commit_discarded: bool },
+    /// `settings_changed`: an admin changed the group settings (admins, name,
+    /// chat features); read them with [`Group::settings`].
+    GroupChanged { added: Vec<MemberId>, removed: Vec<MemberId>, epoch: u64, own_commit_discarded: bool, settings_changed: bool },
     /// Our pending commit came back from the server, so it was accepted and
     /// is now merged (same as [`Group::confirm_commit`]).
     OwnCommitMerged { epoch: u64 },
@@ -160,6 +163,50 @@ impl Group {
     /// Current members in leaf order.
     pub fn members(&self) -> Vec<MemberId> {
         self.mls.members().map(|m| MemberId::of(&m.signature_key)).collect()
+    }
+
+    /// The group settings every member agrees on (PROTOCOL.md 6.11). Admins
+    /// who are no longer members are left out.
+    pub fn settings(&self) -> GroupSettings {
+        let mut s = settings_of(self.mls.extensions()).unwrap_or_default();
+        let members = self.members();
+        s.admins.retain(|a| members.contains(a));
+        s
+    }
+
+    pub fn is_admin(&self, m: &MemberId) -> bool {
+        self.settings().is_admin(m)
+    }
+
+    pub(crate) fn settings_extensions(s: &GroupSettings) -> Result<Extensions<GroupContext>, TreeError> {
+        Extensions::from_vec(vec![
+            Extension::RequiredCapabilities(RequiredCapabilitiesExtension::new(
+                &[ExtensionType::Unknown(EXTENSION_TYPE)],
+                &[],
+                &[],
+            )),
+            Extension::Unknown(EXTENSION_TYPE, UnknownExtension(s.encode()?)),
+        ])
+        .map_err(group_err)
+    }
+
+    /// An admin changes the group settings (admins, name, chat features) in
+    /// one commit; two-phase like every commit.
+    pub fn change_settings<P: TreeProvider>(
+        &mut self,
+        me: &Client<P>,
+        new: &GroupSettings,
+    ) -> Result<PendingCommit, TreeError> {
+        if !self.is_admin(&me.member_id()) {
+            return Err(TreeError::NotAdmin);
+        }
+        new.check(&self.members())?;
+        let ext = Self::settings_extensions(new)?;
+        self.begin_commit(me, |mls| {
+            let (commit, _, _) =
+                mls.update_group_context_extensions(&me.provider, ext, &me.signer).map_err(group_err)?;
+            Ok((commit, None))
+        })
     }
 
     /// Value both sides can compare out of band (QR / safety number) to
@@ -224,6 +271,9 @@ impl Group {
             return Err(TreeError::Group("nothing to remove".into()));
         }
         let own = me.member_id();
+        if !self.is_admin(&own) {
+            return Err(TreeError::NotAdmin);
+        }
         let mut leaves = Vec::new();
         for id in members {
             if *id == own {
@@ -438,6 +488,30 @@ impl Group {
                     return Err(TreeError::Rejected("commit from a non-member".into()));
                 };
                 check_commit(&staged, committer)?;
+                // Admin rules (PROTOCOL.md 6.11), judged by the settings
+                // before this commit.
+                let before = self.settings();
+                let committer_id = self
+                    .mls
+                    .member_at(committer)
+                    .map(|m| MemberId::of(&m.signature_key))
+                    .ok_or_else(|| TreeError::Rejected("unknown committer".into()))?;
+                let changes_settings = staged
+                    .queued_proposals()
+                    .any(|q| matches!(q.proposal(), Proposal::GroupContextExtensions(_)));
+                let removes_others = staged.remove_proposals().next().is_some();
+                if (changes_settings || removes_others) && !before.is_admin(&committer_id) {
+                    return Err(TreeError::Rejected("only an admin may change settings or remove members".into()));
+                }
+                let new_members: Vec<MemberId> = {
+                    let gone: Vec<LeafNodeIndex> = staged.remove_proposals().map(|p| p.remove_proposal().removed()).collect();
+                    let mut v: Vec<MemberId> = self.mls.members().filter(|m| !gone.contains(&m.index)).map(|m| MemberId::of(&m.signature_key)).collect();
+                    v.extend(staged.add_proposals().map(|p| MemberId::of(p.add_proposal().key_package().leaf_node().signature_key().as_slice())));
+                    v
+                };
+                let after = settings_of(staged.group_context().extensions())?;
+                after.check(&new_members).map_err(|e| TreeError::Rejected(format!("settings after this commit: {e}")))?;
+                let settings_changed = changes_settings;
                 let removed_leaves: Vec<LeafNodeIndex> =
                     staged.remove_proposals().map(|p| p.remove_proposal().removed()).collect();
                 let added_ids: Vec<MemberId> = staged
@@ -461,7 +535,7 @@ impl Group {
                 if !self.mls.is_active() {
                     return Ok(Incoming::RemovedFromGroup);
                 }
-                Ok(Incoming::GroupChanged { added: added_ids, removed, epoch: self.epoch(), own_commit_discarded })
+                Ok(Incoming::GroupChanged { added: added_ids, removed, epoch: self.epoch(), own_commit_discarded, settings_changed })
             }
             ProcessedMessageContent::OwnPrivateMessage => Ok(Incoming::OwnEcho),
             _ => Err(TreeError::Rejected("message type not accepted in Tree v1".into())),
@@ -574,6 +648,10 @@ fn check_commit(staged: &StagedCommit, committer: LeafNodeIndex) -> Result<(), T
             return reject("proposal by reference");
         }
         match q.proposal() {
+            Proposal::GroupContextExtensions(g) if !settings_extensions_ok(g.extensions()) => {
+                return reject("group context may hold only Tree's settings")
+            }
+            Proposal::GroupContextExtensions(_) => only_adds = false,
             Proposal::Add(a) if !credential_is_key(a.key_package().leaf_node()) => {
                 return reject("credential is not the signature key")
             }
@@ -587,6 +665,25 @@ fn check_commit(staged: &StagedCommit, committer: LeafNodeIndex) -> Result<(), T
         return reject("update path missing");
     }
     Ok(())
+}
+
+/// The group settings carried in a group context.
+fn settings_of(ext: &Extensions<GroupContext>) -> Result<GroupSettings, TreeError> {
+    let raw = ext
+        .unknown(EXTENSION_TYPE)
+        .ok_or_else(|| TreeError::Rejected("group has no Tree settings".into()))?;
+    GroupSettings::decode(&raw.0)
+}
+
+/// A new group context may hold exactly: the required-capabilities extension
+/// naming Tree's settings extension, and the settings themselves.
+fn settings_extensions_ok(ext: &Extensions<GroupContext>) -> bool {
+    let required_ok = ext.required_capabilities().is_some_and(|r| {
+        r.extension_types() == [ExtensionType::Unknown(EXTENSION_TYPE)]
+            && r.proposal_types().is_empty()
+            && r.credential_types().is_empty()
+    });
+    required_ok && ext.unknown(EXTENSION_TYPE).is_some() && ext.iter().count() == 2
 }
 
 /// Tree credentials carry nothing but the signature key (F-009): any other

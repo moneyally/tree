@@ -16,6 +16,7 @@ use openmls_traits::{crypto::OpenMlsCrypto, storage::StorageProvider as _, OpenM
 use crate::{
     error::TreeError,
     group::{Group, MemberId},
+    group_settings::{GroupSettings, EXTENSION_TYPE},
     group_state::GroupState,
     provider::TreeProvider,
     storage::{KdfParams, KeySource, Passphrase, StoredProvider},
@@ -198,12 +199,18 @@ impl<P: TreeProvider> Client<P> {
         MemberId::of(&self.signer.to_public_vec())
     }
 
+    /// Leaf capabilities: Tree's group-settings extension (PROTOCOL.md 6.11).
+    pub(crate) fn capabilities() -> Capabilities {
+        Capabilities::builder().extensions(vec![ExtensionType::Unknown(EXTENSION_TYPE)]).build()
+    }
+
     /// Publishes a fresh one-time key package (uploaded to the server so
     /// others can add this device to a group while it is offline). Its
     /// private part stays in this device's store until it is used.
     pub fn key_package(&self) -> Result<Vec<u8>, TreeError> {
         self.provider.atomically(|| {
             let bundle = KeyPackage::builder()
+                .leaf_node_capabilities(Self::capabilities())
                 .build(self.ciphersuite, &self.provider, &self.signer, self.credential.clone())
                 .map_err(|e| TreeError::Identity(format!("{e:?}")))?;
             bundle
@@ -213,10 +220,13 @@ impl<P: TreeProvider> Client<P> {
         })
     }
 
-    /// Starts a new conversation with only this device in it.
+    /// Starts a new conversation with only this device in it, as its admin.
     pub fn create_group(&self) -> Result<Group, TreeError> {
+        let settings = GroupSettings { admins: vec![self.member_id()], ..Default::default() };
         let config = MlsGroupCreateConfig::builder()
             .ciphersuite(self.ciphersuite)
+            .capabilities(Self::capabilities())
+            .with_group_context_extensions(Group::settings_extensions(&settings)?)
             .use_ratchet_tree_extension(true)
             .padding_size(Group::PADDING)
             .sender_ratchet_configuration(Group::sender_ratchet())

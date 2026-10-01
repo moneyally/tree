@@ -107,3 +107,48 @@ fn requests_blocking_and_group_add() {
     assert!(matches!(alice.apply_feature("chat.media", None), Err(tree_client::Error::Feature(c)) if c == "NOT_ADMIN"));
     assert!(alice.features().unwrap().iter().any(|s| s.key == "user.message_requests"));
 }
+
+/// Admins through the server: only admins rename, change chat settings and
+/// remove; every member sees the same settings.
+#[test]
+fn admins_through_the_server() {
+    let env = Env::new("admins");
+    let mut alice = env.device("alice");
+    let mut bob = env.device("bob");
+    let mut carol = env.device("carol");
+    bob.add_contact(alice.account_id()).unwrap();
+    carol.add_contact(alice.account_id()).unwrap();
+    let g = alice.create_group().unwrap();
+    alice.invite(&g, bob.account_id()).unwrap();
+    alice.invite(&g, carol.account_id()).unwrap();
+    bob.sync(0).unwrap();
+    carol.sync(0).unwrap();
+
+    alice.set_group_name(&g, Some("산악회".into())).unwrap();
+    alice.set_chat_feature(&g, "chat.media", false, None).unwrap();
+    let ev = bob.sync(0).unwrap();
+    assert!(ev.iter().any(|e| matches!(e, Event::Changed { settings_changed: true, .. })), "{ev:?}");
+    let s = bob.group_settings(&g).unwrap();
+    assert_eq!(s.name.as_deref(), Some("산악회"));
+    assert!(!s.features["chat.media"].applied);
+    assert_eq!(s.admins, vec![alice.member_id()]);
+
+    // bob is not an admin.
+    assert!(matches!(bob.remove(&g, &[carol.member_id()]), Err(tree_client::Error::Core(tree_core::TreeError::NotAdmin))));
+    assert!(bob.set_group_name(&g, Some("x".into())).is_err());
+    // Permanent locks hold for admins too.
+    assert!(matches!(alice.set_chat_feature(&g, "chat.e2e", false, None), Err(tree_client::Error::Feature(c)) if c == "LOCKED_ALWAYS"));
+    assert!(matches!(alice.set_chat_feature(&g, "user.typing", false, None), Err(tree_client::Error::Feature(_))));
+
+    // alice makes bob admin; bob removes carol.
+    alice.make_admin(&g, bob.member_id(), true).unwrap();
+    bob.sync(0).unwrap();
+    carol.sync(0).unwrap();
+    assert_eq!(bob.remove(&g, &[carol.member_id()]).unwrap(), tree_client::CommitOutcome::Accepted { epoch: 6 });
+    assert!(carol.sync(0).unwrap().contains(&Event::RemovedFromGroup { group: g.clone() }));
+    alice.sync(0).unwrap();
+    assert_eq!(alice.group_settings(&g).unwrap(), bob.group_settings(&g).unwrap());
+    // The server database never saw the group name.
+    let raw = std::fs::read(&env.db).unwrap();
+    assert!(!raw.windows("산악회".len()).any(|w| w == "산악회".as_bytes()));
+}

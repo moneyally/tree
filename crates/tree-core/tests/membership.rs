@@ -85,7 +85,7 @@ fn add_reported_to_existing_members() {
     assert_ne!(a.verification_code(), before, "code changes with the epoch");
     assert_eq!(
         b.receive(&bob, &add.commit).unwrap(),
-        Incoming::GroupChanged { added: vec![carol.member_id()], removed: vec![], epoch: 2, own_commit_discarded: false }
+        Incoming::GroupChanged { added: vec![carol.member_id()], removed: vec![], epoch: 2, own_commit_discarded: false, settings_changed: false }
     );
     let c = carol.join(&add.welcome).unwrap();
     assert_eq!(c.epoch(), 2);
@@ -130,7 +130,7 @@ fn remove_reported_and_removed_device_locked_out() {
     assert_eq!(a.members(), vec![alice.member_id(), carol.member_id()]);
     assert_eq!(
         c.receive(&carol, &rm).unwrap(),
-        Incoming::GroupChanged { added: vec![], removed: vec![bob.member_id()], epoch: 3, own_commit_discarded: false }
+        Incoming::GroupChanged { added: vec![], removed: vec![bob.member_id()], epoch: 3, own_commit_discarded: false, settings_changed: false }
     );
     assert_eq!(b.receive(&bob, &rm).unwrap(), Incoming::RemovedFromGroup);
     assert!(!b.is_member());
@@ -205,7 +205,7 @@ fn refresh_keys_processed() {
     let c = b.refresh_now(&bob).unwrap();
     assert_eq!(
         a.receive(&alice, &c).unwrap(),
-        Incoming::GroupChanged { added: vec![], removed: vec![], epoch: 2, own_commit_discarded: false }
+        Incoming::GroupChanged { added: vec![], removed: vec![], epoch: 2, own_commit_discarded: false, settings_changed: false }
     );
     assert_ne!(b.verification_code(), before);
     assert_eq!(a.verification_code(), b.verification_code());
@@ -330,7 +330,7 @@ fn insider_proposal_rejected_not_stored() {
     let c = a.refresh_now(&alice).unwrap();
     assert_eq!(
         b.receive(&bob, &c).unwrap(),
-        Incoming::GroupChanged { added: vec![], removed: vec![], epoch: 3, own_commit_discarded: false }
+        Incoming::GroupChanged { added: vec![], removed: vec![], epoch: 3, own_commit_discarded: false, settings_changed: false }
     );
     assert_eq!(a.verification_code(), b.verification_code());
 }
@@ -412,7 +412,7 @@ fn commit_with_disallowed_proposal_rejected() {
     let (commit, _, _) = g.update_group_context_extensions(p, Extensions::empty(), s).unwrap();
     let sealed = m.seal(&commit.to_bytes().unwrap());
     let r = b.receive(&bob, &sealed);
-    assert!(matches!(r, Err(TreeError::Rejected(ref s)) if s.contains("proposal type")), "{r:?}");
+    assert!(matches!(r, Err(TreeError::Rejected(ref s)) if s.contains("settings")), "{r:?}");
     assert_eq!(b.epoch(), 2);
 }
 
@@ -489,6 +489,11 @@ fn name_credentials_refused() {
         signature_key: named.signer.to_public_vec().into(),
     };
     let kp = KeyPackage::builder()
+        .leaf_node_capabilities(
+            openmls::prelude::Capabilities::builder()
+                .extensions(vec![openmls::prelude::ExtensionType::Unknown(tree_core::group_settings::EXTENSION_TYPE)])
+                .build(),
+        )
         .build(TREE_CIPHERSUITE, &named.provider, &named.signer, cred)
         .unwrap();
     let bytes = kp.key_package().tls_serialize_detached().unwrap();
@@ -501,3 +506,131 @@ fn name_credentials_refused() {
     assert!(matches!(r, Err(TreeError::Rejected(ref s)) if s.contains("credential")), "{r:?}");
     assert_eq!(b.members(), vec![alice.member_id(), bob.member_id(), m.member_id()]);
 }
+
+// ----- admins and group settings (PROTOCOL.md 6.11) ---------------------------
+
+use tree_core::group_settings::{ChatSetting, GroupSettings};
+
+/// The creator is the only admin; only admins remove members or change
+/// settings; settings changes reach every member.
+#[test]
+fn admins_and_settings() {
+    let (alice, bob, mut a, mut b) = two_person_chat();
+    let carol = Client::new("carol").unwrap();
+    let add = a.add_now(&alice, &carol.key_package().unwrap()).unwrap();
+    b.receive(&bob, &add.commit).unwrap();
+    let mut c = carol.join(&add.welcome).unwrap();
+    assert_eq!(a.settings().admins, vec![alice.member_id()]);
+    assert_eq!(c.settings(), a.settings(), "joiners get the settings with the welcome");
+    assert!(a.is_admin(&alice.member_id()) && !b.is_admin(&bob.member_id()));
+
+    // bob is not an admin: he may not remove or change settings.
+    assert!(matches!(b.remove(&bob, &[carol.member_id()]), Err(TreeError::NotAdmin)));
+    assert!(matches!(b.change_settings(&bob, &GroupSettings::default()), Err(TreeError::NotAdmin)));
+    // bob may still add (any member may add in v1) and refresh.
+    b.refresh_now(&bob).map(|r| {
+        a.receive(&alice, &r).unwrap();
+        c.receive(&carol, &r).unwrap();
+    }).unwrap();
+
+    // alice names the group, switches media off and makes bob admin.
+    let mut s = a.settings();
+    s.name = Some("우리 가족".into());
+    s.admins.push(bob.member_id());
+    s.features.insert("chat.media".into(), ChatSetting { applied: false, option: None });
+    let p = a.change_settings(&alice, &s).unwrap();
+    a.confirm_commit(&alice).unwrap();
+    for (g, me) in [(&mut b, &bob), (&mut c, &carol)] {
+        assert_eq!(
+            g.receive(me, &p.commit).unwrap(),
+            Incoming::GroupChanged { added: vec![], removed: vec![], epoch: 4, own_commit_discarded: false, settings_changed: true }
+        );
+        assert_eq!(g.settings(), s);
+    }
+    // Invalid settings are refused before anything is sent.
+    let mut no_admin = s.clone();
+    no_admin.admins.clear();
+    assert!(a.change_settings(&alice, &no_admin).is_err());
+    assert!(a.pending_commit().is_none());
+
+    // Now bob may remove carol.
+    let rm = b.remove_now(&bob, &[carol.member_id()]).unwrap();
+    a.receive(&alice, &rm).unwrap();
+    assert_eq!(c.receive(&carol, &rm).unwrap(), Incoming::RemovedFromGroup);
+    // An admin who is removed drops out of the admin list.
+    let rm = a.remove_now(&alice, &[bob.member_id()]).unwrap();
+    assert_eq!(b.receive(&bob, &rm).unwrap(), Incoming::RemovedFromGroup);
+    assert_eq!(a.settings().admins, vec![alice.member_id()]);
+}
+
+/// A non-admin insider's settings change or removal is rejected by every
+/// device, even though MLS itself would accept it.
+#[test]
+fn non_admin_commits_rejected() {
+    let (alice, bob, _a, mut b, mut m) = chat_with_insider("mallory");
+    let (p, s) = (&m.provider, &m.signer);
+    let g = m.group.as_mut().unwrap();
+    // mallory makes herself the only admin
+    let evil = GroupSettings { admins: vec![MemberId::of(&s.to_public_vec())], ..Default::default() };
+    let ext = openmls::prelude::Extensions::from_vec(vec![
+        openmls::prelude::Extension::RequiredCapabilities(openmls::prelude::RequiredCapabilitiesExtension::new(
+            &[openmls::prelude::ExtensionType::Unknown(tree_core::group_settings::EXTENSION_TYPE)],
+            &[],
+            &[],
+        )),
+        openmls::prelude::Extension::Unknown(
+            tree_core::group_settings::EXTENSION_TYPE,
+            openmls::prelude::UnknownExtension(evil.encode().unwrap()),
+        ),
+    ])
+    .unwrap();
+    let (commit, _, _) = g.update_group_context_extensions(p, ext, s).unwrap();
+    g.clear_pending_commit(openmls_traits::OpenMlsProvider::storage(p)).unwrap();
+    let sealed = m.seal(&commit.to_bytes().unwrap());
+    let r = b.receive(&bob, &sealed);
+    assert!(matches!(r, Err(TreeError::Rejected(ref e)) if e.contains("only an admin")), "{r:?}");
+
+    // mallory removes alice
+    let (p, s) = (&m.provider, &m.signer);
+    let g = m.group.as_mut().unwrap();
+    let alice_idx = g.members().find(|x| x.signature_key == alice.signature_public_key()).unwrap().index;
+    let (commit, _, _) = g.remove_members(p, s, &[alice_idx]).unwrap();
+    let sealed = m.seal(&commit.to_bytes().unwrap());
+    let r = b.receive(&bob, &sealed);
+    assert!(matches!(r, Err(TreeError::Rejected(ref e)) if e.contains("only an admin")), "{r:?}");
+    assert_eq!(b.epoch(), 2);
+}
+
+/// An admin's commit that would leave the group without an admin who is a
+/// member is rejected by receivers.
+#[test]
+fn settings_without_admin_rejected() {
+    let (alice, bob, mut a, mut b, mut m) = chat_with_insider("mallory");
+    // alice makes mallory admin
+    let mut s = a.settings();
+    s.admins.push(m.member_id());
+    let p = a.change_settings(&alice, &s).unwrap();
+    a.confirm_commit(&alice).unwrap();
+    b.receive(&bob, &p.commit).unwrap();
+    m.receive_commit(&p.commit);
+    // mallory (admin now) sends settings naming nobody who is a member
+    let (pr, sg) = (&m.provider, &m.signer);
+    let bad = GroupSettings { admins: vec![MemberId([9; 32])], ..Default::default() };
+    let ext = openmls::prelude::Extensions::from_vec(vec![
+        openmls::prelude::Extension::RequiredCapabilities(openmls::prelude::RequiredCapabilitiesExtension::new(
+            &[openmls::prelude::ExtensionType::Unknown(tree_core::group_settings::EXTENSION_TYPE)],
+            &[],
+            &[],
+        )),
+        openmls::prelude::Extension::Unknown(
+            tree_core::group_settings::EXTENSION_TYPE,
+            openmls::prelude::UnknownExtension(bad.encode().unwrap()),
+        ),
+    ])
+    .unwrap();
+    let (commit, _, _) = m.group.as_mut().unwrap().update_group_context_extensions(pr, ext, sg).unwrap();
+    let sealed = m.seal(&commit.to_bytes().unwrap());
+    let r = b.receive(&bob, &sealed);
+    assert!(matches!(r, Err(TreeError::Rejected(ref e)) if e.contains("admin")), "{r:?}");
+}
+

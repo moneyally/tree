@@ -34,7 +34,11 @@ commands:
   accept <group> | decline <group> [block]
   block <account-id> | unblock <account-id>
   settings                               my apply/release settings
-  apply <feature> [option] | release <feature>";
+  apply <feature> [option] | release <feature>
+  group-settings <group>                 admins, name, chat settings (admins change them)
+  make-admin | unmake-admin <group> <member-id>
+  name <group> <text>                    set the group name
+  group-apply <group> <chat.feature> [option] | group-release <group> <chat.feature>";
 
 fn main() -> ExitCode {
     match run(std::env::args().skip(1).collect()) {
@@ -136,6 +140,26 @@ fn run(args: Vec<String>) -> Result<(), String> {
             Some(a) => println!("{a}"),
             None => println!("no one is called {name} (or they hid their name)"),
         },
+        ["group-settings", g] => {
+            let st = s.group_settings(&hex_arg(g)?).map_err(e)?;
+            println!("name    {}", st.name.as_deref().unwrap_or("(none)"));
+            for a in &st.admins {
+                println!("admin   {a}");
+            }
+            for (k, v) in &st.features {
+                println!("{k:<24} {}{}", if v.applied { "applied" } else { "released" }, v.option.as_deref().map(|o| format!(" {o}")).unwrap_or_default());
+            }
+        }
+        ["make-admin", g, member] | ["unmake-admin", g, member] => {
+            let id = tree_client::MemberId::from_hex(member).ok_or("member id must be 64 hex digits")?;
+            let admin = rest[0] == "make-admin";
+            println!("{}", outcome(s.make_admin(&hex_arg(g)?, id, admin).map_err(e)?));
+        }
+        ["name", g, name @ ..] => println!("{}", outcome(s.set_group_name(&hex_arg(g)?, Some(name.join(" "))).map_err(e)?)),
+        ["group-apply", g, key, more @ ..] => {
+            println!("{}", outcome(s.set_chat_feature(&hex_arg(g)?, key, true, more.first().map(|o| o.to_string())).map_err(e)?))
+        }
+        ["group-release", g, key] => println!("{}", outcome(s.set_chat_feature(&hex_arg(g)?, key, false, None).map_err(e)?)),
         ["requests"] => {
             for g in s.group_ids().map_err(e)? {
                 if let tree_client::GroupStatus::Request { from } = s.group_status(&g).map_err(e)? {
@@ -253,11 +277,12 @@ fn print_event(ev: &Event) {
         ),
         Event::Declined { group, from, reason } => println!("[{}] declined (from {from}): {reason}", &hex(group)[..8]),
         Event::Joined { group } => println!("joined group {}", hex(group)),
-        Event::Changed { group, added, removed, epoch, own_commit_discarded } => println!(
-            "[{}] group changed: epoch {epoch}, {} added, {} removed{}",
+        Event::Changed { group, added, removed, epoch, own_commit_discarded, settings_changed } => println!(
+            "[{}] group changed: epoch {epoch}, {} added, {} removed{}{}",
             &hex(group)[..8],
             added.len(),
             removed.len(),
+            if *settings_changed { ", settings changed (tree group-settings)" } else { "" },
             if *own_commit_discarded { " (our pending commit lost and was discarded)" } else { "" }
         ),
         Event::Profile { group, member, name } => println!("[{}] {} is {name}", &hex(group)[..8], &member.to_hex()[..8]),

@@ -49,13 +49,13 @@ in section 5.
 | Encrypted device storage (SQLCipher, hardware-wrapped key) | partial | SQLCipher + Argon2id done; hardware key (Secure Enclave / Keystore) needs the apps (`KeySource` is the hook) |
 | Feature registry: apply/release for every feature, permanent locks, layers | done | `features.rs`; server, chat, user, bot layers; `LOCKED_BY_CHAT` |
 | All 34 stage-1 feature keys in the registry | done | all 34 (behaviour behind most of them: see next row) |
-| Behaviour behind the keys (disappearing timer, edit window, view once, ...) | partial | user settings are stored per device and act for message requests, stranger block, group add, key-change warning; chat settings (disappearing, edit window, media, ...) not yet: they must live in the MLS group context |
+| Behaviour behind the keys (disappearing timer, edit window, view once, ...) | partial | user settings act for message requests, stranger block, group add, key-change warning; chat settings are stored in the MLS group context (PROTOCOL.md 6.11) but nothing enforces them yet (only text messages exist) |
 | Recovery phrase (12-24 words) | missing | threat model in RECOVERY_THREAT_MODEL.md |
 | Safety number / QR comparison, key change warning | done | PROTOCOL.md 5.4 (Q4 decided); pinning on first use, warning on any new device key; CLI `safety`, `verify` |
 | Device link with confirmation code on both devices | missing | permanent lock in the registry, no code (multi-device is stage 3) |
 | Per-file encryption for attachments | missing | |
 | Message franking for reports | missing | |
-| Admin roles inside the group (admins, kick) | missing | today any member may add or remove (PROTOCOL.md 6.4) |
+| Admin roles inside the group (admins, kick) | done | PROTOCOL.md 6.11: admins, name and chat settings in the MLS group context; non-admin settings changes and removals rejected by every device; CLI `make-admin`, `name`, `group-apply` |
 | Invite links with expiry / use count | missing | |
 | Official test vectors before merging crypto | partial | the libraries carry their own; Tree has no vector file of its own yet |
 

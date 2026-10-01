@@ -48,7 +48,8 @@ as text. Message padding (256 bytes) is applied by MLS below this layer.
   current members only; a new member id for a known account is reported as
   a key change. A false entry can at worst raise a warning or attach a
   device to the wrong contact, which the safety-number comparison exposes.
-- **Leave.** A member that receives `leave` from X may remove X. Several
+- **Leave.** An admin that receives `leave` from X removes X (only admins
+  may remove, PROTOCOL.md 6.11). Several
   members doing so race for the same epoch; the server's ordering keeps one.
 - **Recipients.** Every message goes to the devices in the roster except the
   sender's own device. Commits also go to devices being removed.

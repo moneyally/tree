@@ -475,11 +475,12 @@ inline. Allowed commit contents in v1:
 | Content | Allowed |
 | --- | --- |
 | inline Add proposals | yes, if the added credential is the signature key (section 5.1) |
-| inline Remove proposals (not of the committer itself) | yes |
+| inline Remove proposals (not of the committer itself) | yes, by an admin (section 6.11) |
+| GroupContextExtensions with exactly Tree's settings (section 6.11) | yes, by an admin |
 | UpdatePath | required, except in a commit that contains only Add proposals (RFC 9420 §12.4 allows that). Tree's own adds carry **no** UpdatePath (`add_members_without_update`: 3 KB instead of 30 KB to 2.3 MB at 2,000 leaves, [BENCHMARKS.md](BENCHMARKS.md)); its removes and key refreshes always carry one |
 | proposals by reference | no |
 | Update proposals | no (key refresh is a commit with an UpdatePath and no proposals) |
-| PreSharedKey, ReInit, ExternalInit, GroupContextExtensions, custom proposals | no |
+| PreSharedKey, ReInit, ExternalInit, other GroupContextExtensions, custom proposals | no |
 | external commits / external senders | no |
 
 A receiver MUST reject a commit that violates this table, after MLS has
@@ -489,7 +490,8 @@ whose committer is not a member (external commit) is rejected as well.
 Because an add carries no UpdatePath, it does not refresh the adder's own
 keys; its next key refresh does (section 6.9).
 
-Any member may add or remove members in v1 (no roles; roles are stage 3).
+Any member may add members; only admins may remove others or change the
+group settings (section 6.11). Finer roles are stage 3.
 
 ### 6.5 Proposals from others
 
@@ -598,6 +600,39 @@ and credential.
 Two members who see the same value are in the same epoch with the same group
 state. It changes every epoch and is not an identity check. The identity
 check is the safety number (section 5.4).
+
+### 6.11 Admins and group settings
+
+The group settings are one MLS group-context extension, so every member
+holds the same value, every commit's transcript covers it, and the server
+never sees it:
+
+| Item | Value |
+| --- | --- |
+| Extension type | `0xF2E0` (RFC 9420 §17.3 private-use range) |
+| Content | JSON: `admins` (member ids, hex), optional `name` (at most 128 characters), optional `features` (chat-scope key -> `{applied, option}`) |
+| Size | at most 16 KiB |
+| Required capabilities | the group context also carries RequiredCapabilities naming `0xF2E0`, so every added device must support it (Tree key packages declare it) |
+
+Rules every receiver checks before merging a commit, judged by the settings
+**before** the commit:
+
+1. A commit with a GroupContextExtensions proposal or any Remove proposal must
+   come from an admin.
+2. A new group context must hold exactly the RequiredCapabilities extension
+   (naming only `0xF2E0`) and the settings.
+3. The settings after the commit must name at least one admin who is a
+   member after the commit, only `chat.*` feature keys, and a name of at most
+   128 characters.
+
+The creator is the first admin. Admins appoint and drop admins, rename the
+group and apply or release chat features (checked against the feature
+registry: permanent locks such as `chat.e2e` cannot be released). An admin
+who is removed drops out of the admin list automatically. A leave request
+(section 6.5) is carried out by an admin.
+
+Chat features are stored here; what they enforce on each device (media off,
+edit window, disappearing timer, ...) is implemented feature by feature.
 
 ---
 
@@ -1171,7 +1206,7 @@ the server cannot learn it from what it sees or stores.
 
 | Item | Stage 1 | What the server sees | Later |
 | --- | --- | --- | --- |
-| Message content, media keys, group name and settings | protected | ciphertext only | — |
+| Message content, media keys, group name and settings, admin list | protected | ciphertext only (section 6.11) | — |
 | Display names | protected | nothing: not in key packages or credentials (F-009), only inside the group | — |
 | @usernames | **partially protected** | a hash per account; guessable names can be found by trying (section 8.4) | — |
 | Sender identity | **not protected** from the server | the authenticated device id of every send request (not stored) and the connection address | stage 4: sealed sender with anonymous delivery tokens |

@@ -21,6 +21,16 @@ pub enum TreeError {
     UnknownMember(String),
     #[error("this device is no longer a member of the group")]
     NotAMember,
+    #[error("no stored group with this id")]
+    NoSuchGroup,
+    #[error("passphrase must not be empty")]
+    EmptyPassphrase,
+    /// Wrong passphrase, or the database file was damaged or modified.
+    /// (The two cannot be told apart: both fail page authentication.)
+    #[error("wrong passphrase, or the database is damaged")]
+    WrongKey,
+    #[error("local storage: {0}")]
+    Storage(String),
 }
 
 pub(crate) fn group_err(e: impl std::fmt::Debug) -> TreeError {

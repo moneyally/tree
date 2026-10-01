@@ -1,0 +1,55 @@
+name: tree
+
+services:
+  tree-server:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: tree-server:local
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      BIND_ADDR: 0.0.0.0:8080
+      DATABASE_URL: sqlite:///data/tree.db
+      # Caddy overwrites X-Forwarded-For with the real client address.
+      TRUST_FORWARDED_FOR: "true"
+    volumes:
+      - tree-data:/data
+    expose:
+      - "8080"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      tree-server:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      TREE_DOMAIN: ${TREE_DOMAIN:?set TREE_DOMAIN in deploy/.env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  tree-data:
+  caddy-data:
+  caddy-config:

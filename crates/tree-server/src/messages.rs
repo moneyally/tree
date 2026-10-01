@@ -18,7 +18,7 @@ use tokio::time::Instant;
 use crate::auth::{NoBody, Signed};
 use crate::error::{ApiError, ApiResult};
 use crate::util::{b64, b64_exceeds, check_id, new_id, now_secs, round_to_minute, unb64, ID_LEN};
-use crate::{json_body, AppState};
+use crate::{json_body, wire, AppState};
 
 /// At most this many ids per acknowledgement.
 pub const MAX_ACK_IDS: usize = 1000;
@@ -77,29 +77,70 @@ pub async fn send(
     if bytes.len() > cfg.max_message_bytes {
         return Err(ApiError::too_large("message body too large"));
     }
+    // Only application messages travel here: commits go through
+    // /v1/commits, welcomes only with their commit, proposals not at all.
+    match wire::envelope_header(&bytes) {
+        Ok(h) if h.content_type == wire::APPLICATION => {}
+        Ok(h) if h.content_type == wire::COMMIT => {
+            return Err(ApiError::bad_request("commits must be sent to /v1/commits"))
+        }
+        Ok(_) => return Err(ApiError::bad_request("proposals are not accepted")),
+        Err(_) if wire::is_welcome(&bytes) => {
+            return Err(ApiError::bad_request("welcomes travel only with their commit"))
+        }
+        Err(why) => return Err(ApiError::bad_request(format!("body: {why}"))),
+    }
     // Fan-out to many mailboxes costs more.
     state.rate_device(&req.device.device_id, (unique.len() / 100) as f64)?;
 
+    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
+    let d = deliver(&mut tx, cfg, &bytes, unique).await?;
+    tx.commit().await?;
+
+    for id in &d.delivered {
+        state.waiters.notify(id);
+    }
+    Ok(Json(SendResp {
+        delivered: d.delivered.len(),
+        unknown_devices: d.unknown_devices,
+        full_devices: d.full_devices,
+    }))
+}
+
+/// Outcome of putting one body into several mailboxes.
+pub struct Delivery {
+    pub delivered: Vec<String>,
+    pub unknown_devices: Vec<String>,
+    pub full_devices: Vec<String>,
+}
+
+/// Stores `bytes` once and adds a mailbox entry for every known device whose
+/// mailbox is not full, inside the caller's transaction. The caller notifies
+/// the waiters after committing.
+pub async fn deliver(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    cfg: &crate::Config,
+    bytes: &[u8],
+    devices: Vec<String>,
+) -> ApiResult<Delivery> {
     let mut delivered = Vec::new();
     let mut unknown_devices = Vec::new();
     let mut full_devices = Vec::new();
-
-    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
     let blob_id: i64 =
         sqlx::query("INSERT INTO blobs (body, received_at) VALUES (?, ?) RETURNING id")
-            .bind(&bytes)
+            .bind(bytes)
             .bind(round_to_minute(now_secs()))
-            .fetch_one(&mut *tx)
+            .fetch_one(&mut **tx)
             .await?
             .try_get("id")?;
-    for device_id in unique {
+    for device_id in devices {
         let row = sqlx::query(
             "SELECT EXISTS (SELECT 1 FROM devices WHERE id = ?1) AS known, \
              (SELECT COUNT(*) FROM (SELECT 1 FROM deliveries WHERE device_id = ?1 LIMIT ?2)) AS pending",
         )
         .bind(&device_id)
         .bind(cfg.max_mailbox_messages as i64)
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut **tx)
         .await?;
         let known: bool = row.try_get("known")?;
         let pending: i64 = row.try_get("pending")?;
@@ -112,7 +153,7 @@ pub async fn send(
                 .bind(new_id())
                 .bind(&device_id)
                 .bind(blob_id)
-                .execute(&mut *tx)
+                .execute(&mut **tx)
                 .await?;
             delivered.push(device_id);
         }
@@ -120,19 +161,10 @@ pub async fn send(
     if delivered.is_empty() {
         sqlx::query("DELETE FROM blobs WHERE id = ?")
             .bind(blob_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
     }
-    tx.commit().await?;
-
-    for d in &delivered {
-        state.waiters.notify(d);
-    }
-    Ok(Json(SendResp {
-        delivered: delivered.len(),
-        unknown_devices,
-        full_devices,
-    }))
+    Ok(Delivery { delivered, unknown_devices, full_devices })
 }
 
 #[derive(Deserialize)]

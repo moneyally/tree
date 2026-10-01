@@ -152,9 +152,22 @@ claimed; accounts and devices until deleted.
 
 What a seized server database reveals is listed in PROTOCOL.md section 11.
 
-### 2.1 Planned (HANDOFF 3.2)
+### 2.1 Commit ordering (migration `0002_commits.sql`)
 
-Commit ordering (PROTOCOL.md 7.4) adds one record per group: last accepted
-epoch, the device ids allowed to commit, and the winner hashes of the last 64
-epochs. That table makes group membership (as device ids) visible to the
-server, which it already sees through recipient lists (PROTOCOL.md 11).
+```sql
+CREATE TABLE groups (group_id BLOB PRIMARY KEY, last_epoch INTEGER NOT NULL);
+CREATE TABLE group_devices (                     -- may take the next commit slot
+    group_id  BLOB NOT NULL REFERENCES groups(group_id) ON DELETE CASCADE,
+    device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    PRIMARY KEY (group_id, device_id)
+);
+CREATE TABLE group_winners (                     -- last 64 accepted commits
+    group_id BLOB NOT NULL REFERENCES groups(group_id) ON DELETE CASCADE,
+    epoch INTEGER NOT NULL, sha256 BLOB NOT NULL, id TEXT NOT NULL,
+    PRIMARY KEY (group_id, epoch)
+);
+```
+
+This makes group membership (as device ids) visible in the database; the
+server already sees it through recipient lists (PROTOCOL.md 11). A group's
+rows are deleted by the purge task once none of its devices exists.

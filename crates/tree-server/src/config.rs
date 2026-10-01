@@ -33,8 +33,15 @@ pub struct Config {
     pub max_key_package_bytes: usize,
     /// `MAX_MESSAGE_BYTES`: size of one decoded message body.
     pub max_message_bytes: usize,
-    /// `MAX_RECIPIENTS`: device mailboxes per send.
+    /// `MAX_RECIPIENTS`: device mailboxes per send or commit (a 1,000-member
+    /// group with two devices each has 2,000).
     pub max_recipients: usize,
+    /// `MAX_COMMIT_BYTES`: size of one decoded commit (a cold 2,000-leaf
+    /// hybrid commit is about 2.3 MB, docs/BENCHMARKS.md).
+    pub max_commit_bytes: usize,
+    /// `MAX_WELCOME_BYTES`: size of one decoded welcome (about 2.8 MB at
+    /// 2,000 leaves).
+    pub max_welcome_bytes: usize,
     /// `MAX_MAILBOX_MESSAGES`: pending messages per device mailbox.
     pub max_mailbox_messages: u32,
     /// `FETCH_LIMIT`: messages returned per fetch.
@@ -66,7 +73,9 @@ impl Default for Config {
             max_key_packages_per_upload: 100,
             max_key_package_bytes: 16 * 1024,
             max_message_bytes: 256 * 1024,
-            max_recipients: 1000,
+            max_recipients: 2048,
+            max_commit_bytes: 4 * 1024 * 1024,
+            max_welcome_bytes: 4 * 1024 * 1024,
             max_mailbox_messages: 10_000,
             fetch_limit: 100,
             rate_per_sec: 20.0,
@@ -138,6 +147,8 @@ impl Config {
             max_key_package_bytes: env_parse("MAX_KEY_PACKAGE_BYTES", d.max_key_package_bytes)?,
             max_message_bytes: env_parse("MAX_MESSAGE_BYTES", d.max_message_bytes)?,
             max_recipients: env_parse("MAX_RECIPIENTS", d.max_recipients)?,
+            max_commit_bytes: env_parse("MAX_COMMIT_BYTES", d.max_commit_bytes)?,
+            max_welcome_bytes: env_parse("MAX_WELCOME_BYTES", d.max_welcome_bytes)?,
             max_mailbox_messages: env_parse("MAX_MAILBOX_MESSAGES", d.max_mailbox_messages)?,
             fetch_limit: env_parse("FETCH_LIMIT", d.fetch_limit)?,
             rate_per_sec: env_parse("RATE_PER_SEC", d.rate_per_sec)?,
@@ -156,6 +167,8 @@ impl Config {
         }
         if self.fetch_limit == 0
             || self.max_recipients == 0
+            || self.max_commit_bytes == 0
+            || self.max_welcome_bytes == 0
             || self.max_key_packages_per_upload == 0
         {
             return Err(ConfigError("limits must be positive".into()));

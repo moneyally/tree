@@ -193,7 +193,8 @@ Classical at 2000 leaves: 3.5 MB, about 75 s, 7 GB.
    leaves; a 2000-leaf group needs two sends per commit. Either raise the
    limits for welcomes (about 3 MB at 2000 leaves) or deliver the ratchet tree
    outside the welcome (a separate, chunked download), and keep commits small
-   by keeping trees warm.
+   by keeping trees warm. (Done for commits: `/v1/commits` takes commits and
+   welcomes up to 4 MiB and 2048 devices; HANDOFF 3.2.)
 7. **Store state in a binary encoding**, not JSON: 3.7x less to encrypt and
    write per commit, and most of the 50 ms "apply" at 2000 leaves is JSON
    encoding. This is a storage-format change, so it needs a migration.

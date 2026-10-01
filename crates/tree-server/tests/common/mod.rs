@@ -176,6 +176,7 @@ impl Signed {
     }
 }
 
+#[derive(Clone)]
 pub struct Api {
     pub http: reqwest::Client,
     pub base: String,
@@ -320,12 +321,20 @@ impl Api {
         v["count"].as_i64().unwrap()
     }
 
+    /// Sends `payload` wrapped as an application-message envelope (see
+    /// [`app`]); an empty payload is sent as an empty body.
     pub async fn send_msg(
         &self,
         dev: &Device,
         recipients: &[&str],
-        body: &[u8],
+        payload: &[u8],
     ) -> (StatusCode, Value) {
+        let body = if payload.is_empty() { vec![] } else { app(payload) };
+        self.send_raw(dev, recipients, &body).await
+    }
+
+    /// Sends exactly `body`.
+    pub async fn send_raw(&self, dev: &Device, recipients: &[&str], body: &[u8]) -> (StatusCode, Value) {
         self.call(
             dev,
             Method::POST,
@@ -355,4 +364,46 @@ impl Api {
         )
         .await
     }
+}
+
+/// Group id used by the fake envelopes below.
+pub const GROUP: [u8; 16] = [0x47; 16];
+
+/// A Tree envelope header (PROTOCOL.md 4.1) for `group` / `epoch` /
+/// `content_type`, followed by `rest`. The tag is fake: the server cannot
+/// check it.
+pub fn envelope(group: &[u8], epoch: u64, content_type: u8, rest: &[u8]) -> Vec<u8> {
+    let mut v = vec![1u8];
+    v.extend_from_slice(&[0xee; 32]);
+    v.extend_from_slice(&[0, 1, 0, 2]);
+    assert!(group.len() < 64);
+    v.push(group.len() as u8);
+    v.extend_from_slice(group);
+    v.extend_from_slice(&epoch.to_be_bytes());
+    v.push(content_type);
+    v.extend_from_slice(rest);
+    v
+}
+
+/// An application message carrying `payload` (tests compare whole bodies).
+pub fn app(payload: &[u8]) -> Vec<u8> {
+    envelope(&GROUP, 1, 1, payload)
+}
+
+/// An application message of exactly `n` bytes.
+pub fn app_sized(n: usize) -> Vec<u8> {
+    let head = app(b"").len();
+    app(&vec![1u8; n - head])
+}
+
+/// A commit for `group` / `epoch`; `tag` makes different commits differ.
+pub fn commit(group: &[u8], epoch: u64, tag: &[u8]) -> Vec<u8> {
+    envelope(group, epoch, 3, tag)
+}
+
+/// A bare MLS welcome (first bytes only matter to the server).
+pub fn welcome(tag: &[u8]) -> Vec<u8> {
+    let mut v = vec![0, 1, 0, 3];
+    v.extend_from_slice(tag);
+    v
 }

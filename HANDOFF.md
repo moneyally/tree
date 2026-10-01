@@ -62,7 +62,10 @@ every OpenMLS stored type plus a migration; see `docs/BENCHMARKS.md` rec. 7). Co
    the same key for users (LOCKED_BY_CHAT).
 8. Envelope compare via the `subtle` crate.
 
-### 3.2 Server (`crates/tree-server`, after 3.1)
+### 3.2 Server (`crates/tree-server`, after 3.1) — DONE
+`POST /v1/commits` per PROTOCOL.md 7.4, `/v1/messages` refuses commits / proposals / welcomes,
+commit and welcome 4 MiB, 2048 devices; tests in `crates/tree-server/tests/commits.rs`
+(incl. 8 devices racing for one epoch) and `real_messages.rs` (parser vs. real core bytes). Original list:
 1. **Commit ordering endpoint** per `docs/PROTOCOL.md`: first commit per (group, epoch) wins, idempotent
    retry, conflict response; device eligibility set so non-members/removed members cannot grab the slot;
    welcome travels in the same request and is delivered only if the commit wins.

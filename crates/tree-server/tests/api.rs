@@ -249,7 +249,7 @@ async fn authentication_failures() {
     assert_eq!(st, StatusCode::UNAUTHORIZED);
 
     // Body changed after signing.
-    let body = json!({ "recipients": [other.device_id], "body": b64(b"hello") });
+    let body = json!({ "recipients": [other.device_id], "body": b64(&app(b"hello")) });
     let mut s = Signed::new(
         Method::POST,
         "/v1/messages",
@@ -257,7 +257,7 @@ async fn authentication_failures() {
         Some(&body),
     );
     s.sign_body = Some(
-        serde_json::to_vec(&json!({ "recipients": [other.device_id], "body": b64(b"HELLO") }))
+        serde_json::to_vec(&json!({ "recipients": [other.device_id], "body": b64(&app(b"HELLO")) }))
             .unwrap(),
     );
     let (st, _) = api.send(&s, &dev.key).await;
@@ -601,7 +601,7 @@ async fn mailbox_fan_out_fetch_and_ack() {
     assert_eq!((b1.len(), b2.len(), c.len()), (1, 1, 1));
     assert!(api.fetch(&alice, 0).await.is_empty());
     for m in [&b1[0], &b2[0], &c[0]] {
-        assert_eq!(unb64(m["body"].as_str().unwrap()), body);
+        assert_eq!(unb64(m["body"].as_str().unwrap()), app(body));
         let t = m["received_at"].as_i64().unwrap();
         assert_eq!(t % 60, 0, "rounded to the minute");
         assert!((now() - t) < 120);
@@ -642,7 +642,7 @@ async fn mailbox_fan_out_fetch_and_ack() {
     assert_eq!(
         bodies,
         (0..5)
-            .map(|i| format!("m{i}").into_bytes())
+            .map(|i| app(format!("m{i}").as_bytes()))
             .collect::<Vec<_>>()
     );
     ts.stop().await;
@@ -702,7 +702,7 @@ async fn long_poll_wakes_on_new_message() {
     api.send_msg(&a, &[&b.device_id], b"wake up").await;
     let (msgs, took) = waiter.await.unwrap();
     assert_eq!(msgs.len(), 1);
-    assert_eq!(unb64(msgs[0]["body"].as_str().unwrap()), b"wake up");
+    assert_eq!(unb64(msgs[0]["body"].as_str().unwrap()), app(b"wake up"));
     assert!(took < Duration::from_secs(5), "woke early: {took:?}");
     assert_eq!(
         ts.server.state.waiters.len(),
@@ -725,16 +725,20 @@ async fn long_poll_wakes_on_new_message() {
 
 #[tokio::test]
 async fn message_size_recipient_and_mailbox_limits() {
-    let ts = boot(|c| c.max_mailbox_messages = 3).await;
+    let ts = boot(|c| {
+        c.max_mailbox_messages = 3;
+        c.max_recipients = 1000;
+    })
+    .await;
     let api = &ts.api;
     let a = api.signup().await;
     let b = api.signup().await;
 
     // Body size: exactly 256 KiB is accepted, one byte more is not.
     let max = 256 * 1024;
-    let (st, v) = api.send_msg(&a, &[&b.device_id], &vec![1u8; max]).await;
+    let (st, v) = api.send_raw(&a, &[&b.device_id], &app_sized(max)).await;
     assert_eq!(st, StatusCode::OK, "{v}");
-    let (st, v) = api.send_msg(&a, &[&b.device_id], &vec![1u8; max + 1]).await;
+    let (st, v) = api.send_raw(&a, &[&b.device_id], &app_sized(max + 1)).await;
     assert_eq!((st, code(&v)), (StatusCode::PAYLOAD_TOO_LARGE, "TOO_LARGE"));
     let (st, v) = api.send_msg(&a, &[&b.device_id], b"").await;
     assert_eq!((st, code(&v)), (StatusCode::BAD_REQUEST, "BAD_REQUEST"));

@@ -22,6 +22,8 @@ One JSON object per application message, UTF-8, field `t` names the type:
 | `profile` | `name` | the sender's own display name | any member, about itself |
 | `roster` | `devices`: member id (hex) -> device id; `names` (optional): member id -> name; `accounts` (optional): member id -> account id; `link` (optional): hash of the invite link the new member used | who is reachable at which server device, the sender's view of names, and which account each device belongs to | the member that just added devices (others may too) |
 | `leave` | — | the sender asks to be removed (PROTOCOL.md 6.5) | any member |
+| `read` | `ids` (at most 100 message ids) | the sender read these messages | any member, while its `user.read_receipts` is applied; shown only while the receiver's is applied too |
+| `typing` | `on` | the sender started or stopped typing; never stored | any member, both sides `user.typing` |
 | `file` | `msg_id`, `view_once` (optional), `voice` and `duration_ms` (optional, voice message), `id`, `key` (base64), `nonce` (base64, 7 bytes), `size`, `ct_sha256`, `pt_sha256` (hex), `name`, `mime` | an encrypted attachment (PROTOCOL.md 6.12) | any member, if `chat.media` is applied (and `chat.view_once` for view-once, `chat.voice` for voice) |
 | `franked` | `p` (the inner `text`, `edit` or `file` payload as a JSON string), `k` (base64), `tag` (base64), `m` (minute) | how every `text`, `edit` and `file` is sent: the inner payload with its franking (PROTOCOL.md 8.5); the receiver keeps `p`, `k`, `tag`, `m` to be able to report it | any member |
 
@@ -168,6 +170,10 @@ In the same encrypted database as the core (`tree_app` table, SCHEMA.md):
 | `profile/username` | the own @username |
 | `file/<attachment id>` | a received `file` reference and its group (deleted after a view-once download) |
 | `screenshot/<group hex>` | this user's own screenshot block for the chat |
+| `reads/<group hex>` | JSON message id -> member ids that sent a read receipt |
+| `unread/<group hex>` | messages received since the user last read the chat |
+| `note/self` | the notes group (one member) |
+| `folders`, `muted` | the user's chat folders (name -> group ids) and muted chats |
 | `refresh/<group hex>`, `traffic/<group hex>` | when this device last refreshed its keys in the group, and when the group last had traffic (PROTOCOL.md 6.9) |
 | `invite/<link hash hex>` | a link this device made: group, expiry, use limit (PROTOCOL.md 8.7) |
 | `linkjoin/<link hash hex>` | the user opened this link: owner account and time (one day, used once) |

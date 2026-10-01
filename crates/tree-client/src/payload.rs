@@ -60,6 +60,10 @@ pub enum Payload {
     Profile { name: String },
     /// The sender asks to be removed (PROTOCOL.md 6.5).
     Leave,
+    /// The sender read these messages (`user.read_receipts`).
+    Read { ids: Vec<String> },
+    /// The sender started or stopped typing (`user.typing`); not stored.
+    Typing { on: bool },
     /// An encrypted attachment (PROTOCOL.md 6.12).
     File(FileInfo),
     /// A chat message (`text`, `edit` or `file`) with its franking

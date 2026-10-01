@@ -10,6 +10,7 @@ pub mod api;
 pub mod franking;
 pub mod invites;
 pub mod messages;
+pub mod organize;
 pub mod payload;
 pub mod refresh;
 pub mod requests;
@@ -111,6 +112,14 @@ pub enum Event {
     Dropped { reason: String },
     /// Someone used one of this device's invite links and was added.
     InviteLinkUsed { group: Vec<u8>, account: String },
+    /// A member read these messages (shown only while this user's own
+    /// `user.read_receipts` is applied: receipts go both ways or not at all).
+    Read { group: Vec<u8>, from: MemberId, ids: Vec<String> },
+    /// A member is typing (`user.typing`, both ways).
+    Typing { group: Vec<u8>, from: MemberId, on: bool },
+    /// This device was added to a group by someone who is not a contact
+    /// (`user.group_safety_notice`): show who added you and who is in it.
+    GroupSafetyNotice { group: Vec<u8>, adder: String },
 }
 
 /// Recovery as the server has it (PROTOCOL.md 8.6).
@@ -1005,6 +1014,12 @@ impl Session {
                 events.push(Event::Profile { group: gid.to_vec(), member: from, name });
             }
             Some(Payload::Leave) => events.push(Event::LeaveRequested { group: gid.to_vec(), member: from }),
+            Some(Payload::Read { ids }) => self.on_read(gid, from, ids, events)?,
+            Some(Payload::Typing { on }) => {
+                if self.is_applied("user.typing")? {
+                    events.push(Event::Typing { group: gid.to_vec(), from, on });
+                }
+            }
             Some(Payload::Franked { .. }) | None => events.push(Event::Dropped { reason: format!("unsupported message from {}", &from.to_hex()[..8]) }),
         }
         Ok(())

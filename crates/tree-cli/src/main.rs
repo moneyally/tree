@@ -476,5 +476,12 @@ fn print_event(ev: &Event) {
         Event::Held => println!("(a message was kept for later)"),
         Event::Dropped { reason } => println!("(dropped: {reason})"),
         Event::InviteLinkUsed { group, account } => println!("[{}] {account} joined through your invite link", &hex(group)[..8]),
+        Event::Read { group, from, ids } => println!("[{}] {} read {} message(s)", &hex(group)[..8], &from.to_hex()[..8], ids.len()),
+        Event::Typing { group, from, on } => {
+            println!("[{}] {} {}", &hex(group)[..8], &from.to_hex()[..8], if *on { "is typing" } else { "stopped typing" })
+        }
+        Event::GroupSafetyNotice { group, adder } => {
+            println!("[{}] !! {adder} is not a contact and added you to this group; check who is in it (tree members)", &hex(group)[..8])
+        }
     }
 }

@@ -375,6 +375,7 @@ impl Session {
                     refuse(events, "duplicate message id");
                     return Ok(());
                 }
+                self.count_unread(gid)?;
                 events.push(Event::Text { group: gid.to_vec(), id, from, name, text, request, formatted, mentions_me });
             }
             Payload::Edit { id, text } => match self.changeable_by(gid, &id, &from, "chat.edit")? {
@@ -429,6 +430,7 @@ impl Session {
                 }
                 let stored = StoredFile { group: hex::encode(gid), info: file.clone() };
                 self.client.set_app_data(&format!("file/{}", file.id), Some(&serde_json::to_vec(&stored).expect("JSON")))?;
+                self.count_unread(gid)?;
                 events.push(Event::File { group: gid.to_vec(), from, name, file, request });
             }
             _ => refuse(events, "not a message"),

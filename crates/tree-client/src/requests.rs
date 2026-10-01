@@ -141,6 +141,9 @@ impl Session {
         if c.as_ref().is_some_and(|c| c.accepted) {
             return self.set_group_status(gid, &GroupStatus::Accepted);
         }
+        if !direct && self.is_applied("user.group_safety_notice")? {
+            events.push(Event::GroupSafetyNotice { group: gid.to_vec(), adder: adder.to_string() });
+        }
         if self.is_applied("user.stranger_block")? {
             events.push(decline("messages from strangers are blocked (user.stranger_block)"));
             return self.decline(gid, false);

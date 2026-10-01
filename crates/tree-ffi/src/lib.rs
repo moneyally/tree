@@ -129,6 +129,9 @@ pub enum TreeEvent {
     Held,
     Dropped { reason: String },
     InviteLinkUsed { group: String, account: String },
+    Read { group: String, from: String, ids: Vec<String> },
+    Typing { group: String, from: String, on: bool },
+    GroupSafetyNotice { group: String, adder: String },
 }
 
 fn ids(v: Vec<MemberId>) -> Vec<String> {
@@ -165,6 +168,9 @@ impl From<Event> for TreeEvent {
             Event::Held => TreeEvent::Held,
             Event::Dropped { reason } => TreeEvent::Dropped { reason },
             Event::InviteLinkUsed { group, account } => TreeEvent::InviteLinkUsed { group: h(group), account },
+            Event::Read { group, from, ids } => TreeEvent::Read { group: h(group), from: from.to_hex(), ids },
+            Event::Typing { group, from, on } => TreeEvent::Typing { group: h(group), from: from.to_hex(), on },
+            Event::GroupSafetyNotice { group, adder } => TreeEvent::GroupSafetyNotice { group: h(group), adder },
         }
     }
 }
@@ -291,6 +297,21 @@ impl From<tree_client::RecoveryStatus> for Recovery {
 pub struct NewPhrase {
     pub words: String,
     pub status: Recovery,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct Labels {
+    pub not_contact: bool,
+    pub no_common_group: bool,
+    pub name_unverified: bool,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ChatFolder {
+    pub name: String,
+    /// `user`, `unread`, `direct`, `groups` or `quiet`.
+    pub kind: String,
+    pub chats: Vec<String>,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -577,6 +598,54 @@ impl TreeSession {
     /// Downloads, checks and decrypts an attachment.
     pub fn download(&self, file: Attachment) -> R<Vec<u8>> {
         Ok(self.s().download(&file.into())?)
+    }
+
+    /// The user opened the chat and saw these messages (sends a read
+    /// receipt if `user.read_receipts`; resets the unread count).
+    pub fn mark_read(&self, group: String, ids: Vec<String>) -> R<()> {
+        Ok(self.s().mark_read(&unhex(&group, "group")?, &ids)?)
+    }
+
+    pub fn read_by(&self, group: String, id: String) -> R<Vec<String>> {
+        Ok(self.s().read_by(&unhex(&group, "group")?, &id)?)
+    }
+
+    pub fn set_typing(&self, group: String, on: bool) -> R<()> {
+        Ok(self.s().set_typing(&unhex(&group, "group")?, on)?)
+    }
+
+    pub fn unread(&self, group: String) -> R<u32> {
+        Ok(self.s().unread(&unhex(&group, "group")?)?)
+    }
+
+    /// The notes chat (created on first use), or none if hidden.
+    pub fn note_to_self(&self) -> R<Option<String>> {
+        Ok(self.s().note_to_self()?.map(hex::encode))
+    }
+
+    pub fn stranger_labels(&self, account: String) -> R<Labels> {
+        let l = self.s().stranger_labels(&account)?;
+        Ok(Labels { not_contact: l.not_contact, no_common_group: l.no_common_group, name_unverified: l.name_unverified })
+    }
+
+    pub fn folders(&self) -> R<Vec<ChatFolder>> {
+        Ok(self.s().folders()?.into_iter().map(|f| ChatFolder { name: f.name, kind: f.kind, chats: f.chats }).collect())
+    }
+
+    pub fn create_folder(&self, name: String) -> R<()> {
+        Ok(self.s().create_folder(&name)?)
+    }
+
+    pub fn delete_folder(&self, name: String) -> R<()> {
+        Ok(self.s().delete_folder(&name)?)
+    }
+
+    pub fn file_chat(&self, folder: String, group: String, add: bool) -> R<()> {
+        Ok(self.s().file_chat(&folder, &unhex(&group, "group")?, add)?)
+    }
+
+    pub fn mute(&self, group: String, on: bool) -> R<()> {
+        Ok(self.s().mute(&unhex(&group, "group")?, on)?)
     }
 
     pub fn history(&self, group: String, limit: u32) -> R<Vec<Message>> {

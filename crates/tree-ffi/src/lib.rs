@@ -112,7 +112,17 @@ impl From<Attachment> for FileInfo {
 /// What a sync reports (tree_client::Event; ids as hex).
 #[derive(Debug, Clone, uniffi::Enum)]
 pub enum TreeEvent {
-    Text { group: String, id: String, from: String, name: Option<String>, text: String, request: bool, formatted: bool, mentions_me: bool },
+    Text {
+        group: String,
+        id: String,
+        from: String,
+        name: Option<String>,
+        text: String,
+        request: bool,
+        formatted: bool,
+        mentions_me: bool,
+        preview: Option<Preview>,
+    },
     Edited { group: String, id: String, from: String, text: String },
     Deleted { group: String, id: String, from: String },
     Reaction { group: String, id: String, from: String, emoji: String, remove: bool },
@@ -142,9 +152,17 @@ impl From<Event> for TreeEvent {
     fn from(e: Event) -> Self {
         let h = hex::encode;
         match e {
-            Event::Text { group, id, from, name, text, request, formatted, mentions_me } => {
-                TreeEvent::Text { group: h(group), id, from: from.to_hex(), name, text, request, formatted, mentions_me }
-            }
+            Event::Text { group, id, from, name, text, request, formatted, mentions_me, preview } => TreeEvent::Text {
+                group: h(group),
+                id,
+                from: from.to_hex(),
+                name,
+                text,
+                request,
+                formatted,
+                mentions_me,
+                preview: preview.map(|p| Preview { url: p.url, title: p.title, description: p.description }),
+            },
             Event::Edited { group, id, from, text } => TreeEvent::Edited { group: h(group), id, from: from.to_hex(), text },
             Event::Deleted { group, id, from } => TreeEvent::Deleted { group: h(group), id, from: from.to_hex() },
             Event::Reaction { group, id, from, emoji, remove } => TreeEvent::Reaction { group: h(group), id, from: from.to_hex(), emoji, remove },
@@ -297,6 +315,14 @@ impl From<tree_client::RecoveryStatus> for Recovery {
 pub struct NewPhrase {
     pub words: String,
     pub status: Recovery,
+}
+
+/// A link preview made by the sender's app (receivers never fetch the page).
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct Preview {
+    pub url: String,
+    pub title: String,
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -570,8 +596,21 @@ impl TreeSession {
         Ok(self.s().send_text(&unhex(&group, "group")?, &text)?)
     }
 
-    pub fn send_text_with(&self, group: String, text: String, formatted: bool, mentions: Vec<String>, all: bool) -> R<String> {
-        let o = TextOptions { formatted, mentions: mentions.iter().map(|m| member(m)).collect::<R<_>>()?, all };
+    pub fn send_text_with(
+        &self,
+        group: String,
+        text: String,
+        formatted: bool,
+        mentions: Vec<String>,
+        all: bool,
+        preview: Option<Preview>,
+    ) -> R<String> {
+        let o = TextOptions {
+            formatted,
+            mentions: mentions.iter().map(|m| member(m)).collect::<R<_>>()?,
+            all,
+            preview: preview.map(|p| tree_client::payload::LinkPreview { url: p.url, title: p.title, description: p.description }),
+        };
         Ok(self.s().send_text_with(&unhex(&group, "group")?, &text, &o)?)
     }
 
@@ -608,6 +647,15 @@ impl TreeSession {
 
     pub fn read_by(&self, group: String, id: String) -> R<Vec<String>> {
         Ok(self.s().read_by(&unhex(&group, "group")?, &id)?)
+    }
+
+    /// The app came to the foreground (`user.last_seen`).
+    pub fn announce_seen(&self, group: String) -> R<()> {
+        Ok(self.s().announce_seen(&unhex(&group, "group")?)?)
+    }
+
+    pub fn last_seen(&self, group: String, member_id: String) -> R<Option<i64>> {
+        Ok(self.s().last_seen(&unhex(&group, "group")?, &member(&member_id)?)?)
     }
 
     pub fn set_typing(&self, group: String, on: bool) -> R<()> {

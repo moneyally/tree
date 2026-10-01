@@ -45,6 +45,9 @@ pub struct TextOptions {
     pub mentions: Vec<MemberId>,
     /// @all.
     pub all: bool,
+    /// A preview of a link in the text, made by this device's app
+    /// (`user.link_preview`).
+    pub preview: Option<crate::payload::LinkPreview>,
 }
 
 pub(crate) fn now() -> i64 {
@@ -61,9 +64,19 @@ fn screenshot_key(gid: &[u8]) -> String {
     format!("screenshot/{}", hex::encode(gid))
 }
 
-/// What a stored text keeps besides its text: whether it is formatted.
-fn text_data(formatted: bool) -> Option<Vec<u8>> {
-    formatted.then(|| br#"{"fmt":true}"#.to_vec())
+/// What a stored text keeps besides its text: formatting and a preview.
+fn text_data(formatted: bool, preview: Option<&crate::payload::LinkPreview>) -> Option<Vec<u8>> {
+    if !formatted && preview.is_none() {
+        return None;
+    }
+    let mut v = serde_json::json!({});
+    if formatted {
+        v["fmt"] = true.into();
+    }
+    if let Some(p) = preview {
+        v["preview"] = serde_json::to_value(p).expect("JSON");
+    }
+    Some(serde_json::to_vec(&v).expect("JSON"))
 }
 
 /// A stored file reference: which group and message it belongs to.
@@ -166,10 +179,16 @@ impl Session {
             return Err(Self::locked_by_chat());
         }
         let fmt = o.formatted && self.chat_allows(gid, "chat.formatting")?;
+        let preview = match &o.preview {
+            Some(p) if !p.is_valid() => return Err(Error::Usage("link preview too long or not a web link".into())),
+            Some(p) if self.is_applied("user.link_preview")? => Some(p.clone()),
+            _ => None,
+        };
         let id = new_id();
         let mentions = o.mentions.iter().map(|m| m.to_hex()).collect();
-        self.send_payload(gid, &Payload::Text { id: id.clone(), text: text.to_string(), fmt, mentions, all: o.all })?;
-        self.store(gid, &id, &me, "text", Some(text.to_string()), text_data(fmt), None)?;
+        let data = text_data(fmt, preview.as_ref());
+        self.send_payload(gid, &Payload::Text { id: id.clone(), text: text.to_string(), fmt, mentions, all: o.all, preview })?;
+        self.store(gid, &id, &me, "text", Some(text.to_string()), data, None)?;
         Ok(id)
     }
 
@@ -364,19 +383,24 @@ impl Session {
         let request = matches!(self.group_status(gid)?, GroupStatus::Request { .. });
         let name = self.names(gid)?.get(&from.to_hex()).cloned();
         match p {
-            Payload::Text { id, text, fmt, mentions, all } => {
+            Payload::Text { id, text, fmt, mentions, all, preview } => {
+                // A preview is shown only while this user wants previews.
+                let preview = match preview {
+                    Some(p) if p.is_valid() && self.is_applied("user.link_preview")? => Some(p),
+                    _ => None,
+                };
                 // Formatting the group released is shown as plain text; an
                 // @all the sender may not make is ignored.
                 let formatted = fmt && self.chat_allows(gid, "chat.formatting")?;
                 let me = self.member_id().to_hex();
                 let all = all && self.may_mention_all(gid, &from)?;
                 let mentions_me = all || mentions.iter().take(MAX_MENTIONS).any(|m| *m == me);
-                if !self.store(gid, &id, &from, "text", Some(text.clone()), text_data(formatted), franking)? {
+                if !self.store(gid, &id, &from, "text", Some(text.clone()), text_data(formatted, preview.as_ref()), franking)? {
                     refuse(events, "duplicate message id");
                     return Ok(());
                 }
                 self.count_unread(gid)?;
-                events.push(Event::Text { group: gid.to_vec(), id, from, name, text, request, formatted, mentions_me });
+                events.push(Event::Text { group: gid.to_vec(), id, from, name, text, request, formatted, mentions_me, preview });
             }
             Payload::Edit { id, text } => match self.changeable_by(gid, &id, &from, "chat.edit")? {
                 Ok(m) if m.kind == "text" => {

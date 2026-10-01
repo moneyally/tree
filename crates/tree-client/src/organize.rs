@@ -32,6 +32,10 @@ fn reads_key(gid: &[u8]) -> String {
     format!("reads/{}", hex::encode(gid))
 }
 
+fn seen_key(gid: &[u8]) -> String {
+    format!("seen/{}", hex::encode(gid))
+}
+
 fn unread_key(gid: &[u8]) -> String {
     format!("unread/{}", hex::encode(gid))
 }
@@ -105,6 +109,33 @@ impl Session {
     pub fn read_by(&self, gid: &[u8], id: &str) -> Result<Vec<String>, Error> {
         let reads: BTreeMap<String, BTreeSet<String>> = self.json(&reads_key(gid))?;
         Ok(reads.get(id).map(|s| s.iter().cloned().collect()).unwrap_or_default())
+    }
+
+    /// The app came to the foreground: tells the group "seen now" if
+    /// `user.last_seen` is applied (released by default).
+    pub fn announce_seen(&mut self, gid: &[u8]) -> Result<(), Error> {
+        if self.is_applied("user.last_seen")? {
+            self.send_payload(gid, &Payload::Seen)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn on_seen(&mut self, gid: &[u8], from: MemberId) -> Result<(), Error> {
+        if !self.is_applied("user.last_seen")? {
+            return Ok(());
+        }
+        let mut seen: BTreeMap<String, i64> = self.json(&seen_key(gid))?;
+        seen.insert(from.to_hex(), crate::messages::now());
+        self.put_json(&seen_key(gid), &seen)
+    }
+
+    /// When this device last heard `member` was online (its own clock), if
+    /// both sides apply `user.last_seen`.
+    pub fn last_seen(&self, gid: &[u8], member: &MemberId) -> Result<Option<i64>, Error> {
+        if !self.is_applied("user.last_seen")? {
+            return Ok(None);
+        }
+        Ok(self.json::<BTreeMap<String, i64>>(&seen_key(gid))?.get(&member.to_hex()).copied())
     }
 
     /// Tells the others the user is (or stopped) typing, if `user.typing`.

@@ -15,7 +15,7 @@ One JSON object per application message, UTF-8, field `t` names the type:
 
 | `t` | Fields | Meaning | Who may send |
 | --- | --- | --- | --- |
-| `text` | `id` (16 random bytes, hex), `text`; optional `fmt` (true: Tree markup, 1.1), `mentions` (member ids, at most 50), `all` (@all) | a chat message | any member; `fmt` only while `chat.formatting` is applied; `all` as `chat.mention_all` allows |
+| `text` | `id` (16 random bytes, hex), `text`; optional `fmt` (true: Tree markup, 1.1), `mentions` (member ids, at most 50), `all` (@all), `preview` (`url`, `title`, `description`: made by the sender's app, which fetched the page; receivers never fetch it; shown only while the receiver's `user.link_preview` is applied) | a chat message | any member; `fmt` only while `chat.formatting` is applied; `all` as `chat.mention_all` allows |
 | `edit` | `id`, `text` | replaces the text of the sender's own message `id` | its sender, if `chat.edit` is applied, within the window |
 | `delete` | `id` | deletes the sender's own message `id` for everyone | its sender, if `chat.delete_for_all` is applied, within the window |
 | `react` | `id`, `emoji` (1 to 8 characters), `remove` (optional) | adds or takes back a reaction | any member, if `chat.reactions` is applied |
@@ -24,6 +24,7 @@ One JSON object per application message, UTF-8, field `t` names the type:
 | `leave` | — | the sender asks to be removed (PROTOCOL.md 6.5) | any member |
 | `read` | `ids` (at most 100 message ids) | the sender read these messages | any member, while its `user.read_receipts` is applied; shown only while the receiver's is applied too |
 | `typing` | `on` | the sender started or stopped typing; never stored | any member, both sides `user.typing` |
+| `seen` | — | the sender's app is open; the receiver records its own time | any member, both sides `user.last_seen` (released by default) |
 | `file` | `msg_id`, `view_once` (optional), `voice` and `duration_ms` (optional, voice message), `id`, `key` (base64), `nonce` (base64, 7 bytes), `size`, `ct_sha256`, `pt_sha256` (hex), `name`, `mime` | an encrypted attachment (PROTOCOL.md 6.12) | any member, if `chat.media` is applied (and `chat.view_once` for view-once, `chat.voice` for voice) |
 | `franked` | `p` (the inner `text`, `edit` or `file` payload as a JSON string), `k` (base64), `tag` (base64), `m` (minute) | how every `text`, `edit` and `file` is sent: the inner payload with its franking (PROTOCOL.md 8.5); the receiver keeps `p`, `k`, `tag`, `m` to be able to report it | any member |
 
@@ -172,6 +173,7 @@ In the same encrypted database as the core (`tree_app` table, SCHEMA.md):
 | `screenshot/<group hex>` | this user's own screenshot block for the chat |
 | `reads/<group hex>` | JSON message id -> member ids that sent a read receipt |
 | `unread/<group hex>` | messages received since the user last read the chat |
+| `seen/<group hex>` | member id -> when this device last got that member's `seen` |
 | `note/self` | the notes group (one member) |
 | `folders`, `muted` | the user's chat folders (name -> group ids) and muted chats |
 | `refresh/<group hex>`, `traffic/<group hex>` | when this device last refreshed its keys in the group, and when the group last had traffic (PROTOCOL.md 6.9) |

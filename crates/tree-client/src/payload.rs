@@ -25,6 +25,9 @@ pub enum Payload {
         /// @all (`chat.mention_all`).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         all: bool,
+        /// A link preview the sender's device made (`user.link_preview`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        preview: Option<LinkPreview>,
     },
     /// The sender replaces the text of its own message `id` (chat.edit).
     Edit { id: String, text: String },
@@ -64,12 +67,36 @@ pub enum Payload {
     Read { ids: Vec<String> },
     /// The sender started or stopped typing (`user.typing`); not stored.
     Typing { on: bool },
+    /// The sender's app is open now (`user.last_seen`); the time is the
+    /// receiver's own.
+    Seen,
     /// An encrypted attachment (PROTOCOL.md 6.12).
     File(FileInfo),
     /// A chat message (`text`, `edit` or `file`) with its franking
     /// (PROTOCOL.md 8.5): `p` is the inner payload exactly as encoded, `k`
     /// the franking key, `tag` the server's tag made at minute `m`.
     Franked { p: String, k: String, tag: String, m: i64 },
+}
+
+/// A link preview, made by the sender's device (which fetched the page), so
+/// receivers never contact the site. Limits: url 2048, title 200,
+/// description 500 characters; longer previews are dropped.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LinkPreview {
+    pub url: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+impl LinkPreview {
+    pub fn is_valid(&self) -> bool {
+        let n = |s: &str| s.chars().count();
+        (self.url.starts_with("https://") || self.url.starts_with("http://"))
+            && n(&self.url) <= 2048
+            && n(&self.title) <= 200
+            && self.description.as_deref().is_none_or(|d| n(d) <= 500)
+    }
 }
 
 /// Where an attachment is and how to open it. Only ever inside an
@@ -121,7 +148,7 @@ mod tests {
 
     #[test]
     fn round_trip_and_format() {
-        let t = Payload::Text { id: "01".into(), text: "안녕".into(), fmt: false, mentions: vec![], all: false };
+        let t = Payload::Text { id: "01".into(), text: "안녕".into(), fmt: false, mentions: vec![], all: false, preview: None };
         assert_eq!(String::from_utf8(t.encode()).unwrap(), r#"{"t":"text","id":"01","text":"안녕"}"#);
         for p in [
             Payload::Edit { id: "01".into(), text: "x".into() },

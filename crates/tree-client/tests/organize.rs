@@ -91,3 +91,57 @@ fn receipts_typing_notes_labels_folders() {
     bob.release_feature("user.default_folders").unwrap();
     assert!(!bob.folders().unwrap().iter().any(|x| x.kind == "unread"));
 }
+
+#[test]
+fn link_previews_and_last_seen() {
+    use tree_client::payload::LinkPreview;
+    use tree_client::TextOptions;
+    let env = Env::new("preview");
+    let mut alice = env.device("alice");
+    let mut bob = env.device("bob");
+    bob.add_contact(alice.account_id()).unwrap();
+    let g = alice.create_group().unwrap();
+    alice.invite(&g, bob.account_id()).unwrap();
+    bob.sync(0).unwrap();
+    alice.sync(0).unwrap();
+
+    let p = LinkPreview { url: "https://example.org/a".into(), title: "Example".into(), description: Some("a page".into()) };
+    let with = TextOptions { preview: Some(p.clone()), ..Default::default() };
+    let preview_of = |ev: &[Event]| {
+        ev.iter().rev().find_map(|e| match e {
+            Event::Text { preview, .. } => Some(preview.clone()),
+            _ => None,
+        })
+    };
+    alice.send_text_with(&g, "look https://example.org/a", &with).unwrap();
+    assert_eq!(preview_of(&bob.sync(0).unwrap()), Some(Some(p.clone())));
+    // Receivers who released previews get the text without it.
+    bob.release_feature("user.link_preview").unwrap();
+    alice.send_text_with(&g, "again", &with).unwrap();
+    assert_eq!(preview_of(&bob.sync(0).unwrap()), Some(None));
+    // Senders who released previews send none.
+    bob.apply_feature("user.link_preview", None).unwrap();
+    alice.release_feature("user.link_preview").unwrap();
+    alice.send_text_with(&g, "third", &with).unwrap();
+    assert_eq!(preview_of(&bob.sync(0).unwrap()), Some(None));
+    // Malformed previews are refused.
+    let bad = TextOptions { preview: Some(LinkPreview { url: "file:///etc/passwd".into(), title: "x".into(), description: None }), ..Default::default() };
+    assert!(alice.send_text_with(&g, "x", &bad).is_err());
+    let long = TextOptions { preview: Some(LinkPreview { url: "https://e.org".into(), title: "t".repeat(201), description: None }), ..Default::default() };
+    assert!(alice.send_text_with(&g, "x", &long).is_err());
+
+    // Last seen: released by default; both sides must apply it.
+    alice.announce_seen(&g).unwrap();
+    bob.sync(0).unwrap();
+    assert_eq!(bob.last_seen(&g, &alice.member_id()).unwrap(), None);
+    alice.apply_feature("user.last_seen", None).unwrap();
+    alice.announce_seen(&g).unwrap();
+    bob.sync(0).unwrap();
+    assert_eq!(bob.last_seen(&g, &alice.member_id()).unwrap(), None, "bob does not share his, so he sees none");
+    bob.apply_feature("user.last_seen", None).unwrap();
+    alice.announce_seen(&g).unwrap();
+    bob.sync(0).unwrap();
+    let t = bob.last_seen(&g, &alice.member_id()).unwrap().unwrap();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    assert!((now - t).abs() <= 5, "the receiver's own clock");
+}

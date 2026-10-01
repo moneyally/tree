@@ -81,6 +81,8 @@ pub enum Event {
         request: bool,
         formatted: bool,
         mentions_me: bool,
+        /// The sender's link preview, if both sides want previews.
+        preview: Option<payload::LinkPreview>,
     },
     /// The sender edited its message `id`.
     Edited { group: Vec<u8>, id: String, from: MemberId, text: String },
@@ -1015,6 +1017,7 @@ impl Session {
             }
             Some(Payload::Leave) => events.push(Event::LeaveRequested { group: gid.to_vec(), member: from }),
             Some(Payload::Read { ids }) => self.on_read(gid, from, ids, events)?,
+            Some(Payload::Seen) => self.on_seen(gid, from)?,
             Some(Payload::Typing { on }) => {
                 if self.is_applied("user.typing")? {
                     events.push(Event::Typing { group: gid.to_vec(), from, on });

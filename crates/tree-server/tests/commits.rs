@@ -259,15 +259,15 @@ async fn messages_endpoint_refuses_commits_proposals_welcomes() {
     let ts = boot(|_| {}).await;
     let api = &ts.api;
     let (a, b) = (api.signup().await, api.signup().await);
-    for (body, what) in [
-        (commit(&G, 0, b"c"), "commit"),
-        (envelope(&G, 0, 2, b"p"), "proposal"),
-        (welcome(b"w"), "welcome"),
-        (b"plain bytes".to_vec(), "garbage"),
-        (envelope(&G, 0, 9, b"?"), "unknown content type"),
+    for (body, why) in [
+        (commit(&G, 0, b"c"), "commits must be sent to /v1/commits"),
+        (envelope(&G, 0, 2, b"p"), "proposals are not accepted"),
+        (welcome(b"w"), "welcomes travel only with their commit"),
+        (b"plain bytes".to_vec(), "body: not a Tree envelope"),
+        (envelope(&G, 0, 9, b"?"), "body: unknown content type"),
     ] {
         let (st, v) = api.send_raw(&a, &[&b.device_id], &body).await;
-        assert_eq!((st, code(&v)), (StatusCode::BAD_REQUEST, "BAD_REQUEST"), "{what}: {v}");
+        assert_eq!((st, code(&v), v["message"].as_str()), (StatusCode::BAD_REQUEST, "BAD_REQUEST", Some(why)), "{v}");
     }
     assert!(api.fetch(&b, 0).await.is_empty());
     assert_eq!(api.send_raw(&a, &[&b.device_id], &app(b"ok")).await.0, StatusCode::OK);
@@ -289,5 +289,22 @@ async fn group_record_removed_with_its_last_device() {
     assert_eq!(st, StatusCode::OK);
     tree_server::purge_expired(&ts.server.state, now()).await.unwrap();
     assert_eq!(count().await, 0);
+    ts.stop().await;
+}
+
+/// A commit to a few devices costs one rate token, not one per device.
+#[tokio::test]
+async fn small_commits_cost_one_token() {
+    let ts = boot(|c| {
+        c.rate_per_sec = 0.001;
+        c.rate_burst = 3.0;
+    })
+    .await;
+    let api = &ts.api;
+    let (a, b) = (api.signup().await, api.signup().await);
+    let (st, v) = submit(api, &a, req(0, b"x", &[&b])).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    let (st, v) = submit(api, &a, req(1, b"y", &[&b])).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
     ts.stop().await;
 }

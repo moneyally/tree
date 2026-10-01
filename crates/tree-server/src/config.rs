@@ -189,3 +189,35 @@ impl Config {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_refuses_unusable_limits() {
+        assert!(Config::default().validate().is_ok());
+        let bad: Vec<fn(&mut Config)> = vec![
+            |c| c.pow_bits = 41,
+            |c| c.fetch_limit = 0,
+            |c| c.max_recipients = 0,
+            |c| c.max_commit_bytes = 0,
+            |c| c.max_welcome_bytes = 0,
+            |c| c.max_attachment_bytes = 0,
+            |c| c.max_key_packages_per_upload = 0,
+            |c| c.rate_per_sec = 0.0,
+            |c| c.rate_burst = 0.5,
+            |c| c.signup_per_hour = 0.0,
+            |c| c.signup_burst = 0.5,
+            |c| c.purge_interval_secs = 0,
+        ];
+        for (i, f) in bad.into_iter().enumerate() {
+            let mut c = Config::default();
+            f(&mut c);
+            assert!(c.validate().is_err(), "case {i}");
+        }
+        let mut c = Config::default();
+        c.pow_bits = 40;
+        assert!(c.validate().is_ok());
+    }
+}

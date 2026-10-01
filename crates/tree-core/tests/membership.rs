@@ -2,9 +2,13 @@
 
 mod common;
 
-use common::{chat_with_insider, two_person_chat};
-use openmls::prelude::Ciphersuite;
-use tree_core::{Client, Incoming, TreeError, TREE_CIPHERSUITE};
+use common::{chat_with_insider, names, two_person_chat, Now, TAG_LEN};
+use openmls::prelude::{tls_codec::Deserialize, Ciphersuite, LeafNodeParameters, MlsMessageIn, ProcessedMessageContent};
+use tree_core::{Client, Incoming, Member, MemberId, TreeError, TREE_CIPHERSUITE};
+
+fn member(c: &Client, duplicate_name: bool) -> Member {
+    Member { id: c.member_id(), name: c.name().to_string(), duplicate_name }
+}
 
 #[test]
 fn client_accessors() {
@@ -20,6 +24,26 @@ fn client_accessors() {
     let kp2 = alice.key_package().unwrap();
     assert!(kp1.len() > 1000, "PQ key package is large: {}", kp1.len());
     assert_ne!(kp1, kp2, "key packages are one-time and fresh");
+}
+
+/// Member id = SHA-256("tree/member-id/v1" || signature key) (PROTOCOL.md 5.2).
+#[test]
+fn member_id_derivation() {
+    use sha2::{Digest, Sha256};
+    let alice = Client::new("alice").unwrap();
+    let mut h = Sha256::new();
+    h.update(b"tree/member-id/v1");
+    h.update(alice.signature_public_key());
+    let expected: [u8; 32] = h.finalize().into();
+    assert_eq!(alice.member_id(), MemberId(expected));
+    assert_eq!(MemberId::of(&alice.signature_public_key()), alice.member_id());
+    assert_eq!(alice.member_id().as_bytes(), &expected);
+    let hex = alice.member_id().to_hex();
+    assert_eq!(hex.len(), 64);
+    assert_eq!(hex, expected.iter().map(|b| format!("{b:02x}")).collect::<String>());
+    assert_eq!(format!("{}", alice.member_id()), hex);
+    assert_eq!(format!("{:?}", alice.member_id()), format!("MemberId({})", &hex[..16]));
+    assert_ne!(alice.member_id(), Client::new("alice").unwrap().member_id(), "same name, other key");
 }
 
 #[test]
@@ -38,84 +62,141 @@ fn new_group_state() {
     let g = alice.create_group().unwrap();
     assert!(g.is_member());
     assert_eq!(g.epoch(), 0);
-    assert_eq!(g.members(), vec!["alice".to_string()]);
+    assert_eq!(g.members(), vec![member(&alice, false)]);
     assert_eq!(g.id().len(), 16, "random 16-byte group id");
     assert!(!g.verification_code().is_empty());
+    assert!(g.pending_commit().is_none());
     let g2 = alice.create_group().unwrap();
     assert_ne!(g.id(), g2.id());
 }
 
-/// Add reports the right names and epochs to every existing member, and
+/// Add reports the right members and epochs to every existing member, and
 /// both sides agree on members and verification code afterwards.
 #[test]
 fn add_reported_to_existing_members() {
     let (alice, bob, mut a, mut b) = two_person_chat();
     assert_eq!(a.epoch(), 1);
     assert_eq!(b.epoch(), 1);
-    assert_eq!(a.members(), vec!["alice", "bob"]);
+    assert_eq!(a.members(), vec![member(&alice, false), member(&bob, false)]);
     assert_eq!(b.members(), a.members());
     assert_eq!(a.verification_code(), b.verification_code());
     assert_eq!(a.id(), b.id());
 
     let carol = Client::new("carol").unwrap();
     let before = a.verification_code();
-    let add = a.add(&alice, &carol.key_package().unwrap()).unwrap();
+    let add = a.add_now(&alice, &carol.key_package().unwrap()).unwrap();
     assert_eq!(a.epoch(), 2);
     assert_ne!(a.verification_code(), before, "code changes with the epoch");
     assert_eq!(
         b.receive(&bob, &add.commit).unwrap(),
-        Incoming::GroupChanged { added: vec!["carol".into()], removed: vec![], epoch: 2 }
+        Incoming::GroupChanged { added: vec![member(&carol, false)], removed: vec![], epoch: 2, own_commit_discarded: false }
     );
     let c = carol.join(&add.welcome).unwrap();
     assert_eq!(c.epoch(), 2);
-    assert_eq!(c.members(), vec!["alice", "bob", "carol"]);
+    assert_eq!(names(&c), vec!["alice", "bob", "carol"]);
     assert_eq!(a.verification_code(), b.verification_code());
     assert_eq!(a.verification_code(), c.verification_code());
 }
 
-/// Remove reports the removed name to the others and `RemovedFromGroup` to
-/// the removed device, which can then neither send nor receive.
+/// All devices of a person are added in one commit (one epoch).
+#[test]
+fn several_devices_added_in_one_commit() {
+    let (alice, bob, mut a, mut b) = two_person_chat();
+    let phone = Client::new("carol").unwrap();
+    let laptop = Client::new("carol").unwrap();
+    let p = a.add(&alice, &[phone.key_package().unwrap(), laptop.key_package().unwrap()]).unwrap();
+    assert_eq!(p.added, vec![phone.member_id(), laptop.member_id()]);
+    a.confirm_commit(&alice).unwrap();
+    assert_eq!(a.epoch(), 2);
+    match b.receive(&bob, &p.commit).unwrap() {
+        Incoming::GroupChanged { added, epoch: 2, .. } => {
+            assert_eq!(added, vec![member(&phone, true), member(&laptop, true)])
+        }
+        other => panic!("{other:?}"),
+    }
+    let w = p.welcome.unwrap();
+    assert_eq!(phone.join(&w).unwrap().verification_code(), a.verification_code());
+    assert_eq!(laptop.join(&w).unwrap().verification_code(), a.verification_code());
+    assert!(matches!(a.add(&alice, &[] as &[Vec<u8>]), Err(TreeError::Group(_))));
+}
+
+/// Remove reports the removed member to the others and `RemovedFromGroup`
+/// to the removed device, which can then neither send nor receive.
 #[test]
 fn remove_reported_and_removed_device_locked_out() {
     let (alice, bob, mut a, mut b) = two_person_chat();
     let carol = Client::new("carol").unwrap();
-    let add = a.add(&alice, &carol.key_package().unwrap()).unwrap();
+    let add = a.add_now(&alice, &carol.key_package().unwrap()).unwrap();
     b.receive(&bob, &add.commit).unwrap();
     let mut c = carol.join(&add.welcome).unwrap();
 
-    let rm = a.remove(&alice, "bob").unwrap();
-    assert_eq!(a.members(), vec!["alice", "carol"]);
+    let rm = a.remove_now(&alice, &[bob.member_id()]).unwrap();
+    assert_eq!(names(&a), vec!["alice", "carol"]);
     assert_eq!(
         c.receive(&carol, &rm).unwrap(),
-        Incoming::GroupChanged { added: vec![], removed: vec!["bob".into()], epoch: 3 }
+        Incoming::GroupChanged { added: vec![], removed: vec![member(&bob, false)], epoch: 3, own_commit_discarded: false }
     );
     assert_eq!(b.receive(&bob, &rm).unwrap(), Incoming::RemovedFromGroup);
     assert!(!b.is_member());
     assert!(a.is_member() && c.is_member());
     assert!(matches!(b.send(&bob, b"still here?"), Err(TreeError::NotAMember)));
+    assert!(matches!(b.refresh_keys(&bob), Err(TreeError::NotAMember)));
     let m = a.send(&alice, b"bye bob").unwrap();
     assert!(matches!(b.receive(&bob, &m), Err(TreeError::NotAMember)));
     assert!(matches!(c.receive(&carol, &m), Ok(Incoming::Message { .. })));
+}
+
+/// F-008: several members (all devices of a person) removed in one commit;
+/// listing an id twice is harmless.
+#[test]
+fn several_members_removed_in_one_commit() {
+    let (alice, bob, mut a, mut b) = two_person_chat();
+    let phone = Client::new("carol").unwrap();
+    let laptop = Client::new("carol").unwrap();
+    let p = a.add(&alice, &[phone.key_package().unwrap(), laptop.key_package().unwrap()]).unwrap();
+    a.confirm_commit(&alice).unwrap();
+    b.receive(&bob, &p.commit).unwrap();
+    let ids = [phone.member_id(), laptop.member_id(), phone.member_id()];
+    let rm = a.remove(&alice, &ids).unwrap();
+    let mut removed = rm.removed.clone();
+    removed.sort();
+    let mut expected = vec![phone.member_id(), laptop.member_id()];
+    expected.sort();
+    assert_eq!(removed, expected);
+    a.confirm_commit(&alice).unwrap();
+    assert_eq!(a.epoch(), 3, "one commit");
+    match b.receive(&bob, &rm.commit).unwrap() {
+        Incoming::GroupChanged { removed, .. } => {
+            assert_eq!(removed.len(), 2);
+            assert!(removed.contains(&member(&phone, true)) && removed.contains(&member(&laptop, true)));
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(names(&b), vec!["alice", "bob"]);
+    assert!(matches!(a.remove(&alice, &[]), Err(TreeError::Group(_))));
 }
 
 #[test]
 fn remove_unknown_member() {
     let (alice, _bob, mut a, _b) = two_person_chat();
     let e = a.epoch();
-    match a.remove(&alice, "nobody") {
-        Err(TreeError::UnknownMember(n)) => assert_eq!(n, "nobody"),
+    let nobody = MemberId([7; 32]);
+    match a.remove(&alice, &[nobody]) {
+        Err(TreeError::UnknownMember(n)) => assert_eq!(n, nobody.to_hex()),
         Err(e) => panic!("wrong error {e:?}"),
         Ok(_) => panic!("removed a non-member"),
     }
     assert_eq!(a.epoch(), e, "failed remove must not change the epoch");
+    assert!(a.pending_commit().is_none());
 }
 
 /// Removing yourself through `remove` is refused and leaves the group usable.
 #[test]
 fn remove_self_refused() {
     let (alice, bob, mut a, mut b) = two_person_chat();
-    assert!(a.remove(&alice, "alice").is_err());
+    assert!(matches!(a.remove(&alice, &[bob.member_id(), alice.member_id()]), Err(TreeError::Group(_))));
     assert!(a.is_member());
+    assert!(a.pending_commit().is_none());
     let m = a.send(&alice, b"still fine").unwrap();
     assert!(matches!(b.receive(&bob, &m), Ok(Incoming::Message { .. })));
 }
@@ -125,17 +206,17 @@ fn remove_self_refused() {
 fn refresh_keys_processed() {
     let (alice, bob, mut a, mut b) = two_person_chat();
     let before = b.verification_code();
-    let c = b.refresh_keys(&bob).unwrap();
+    let c = b.refresh_now(&bob).unwrap();
     assert_eq!(
         a.receive(&alice, &c).unwrap(),
-        Incoming::GroupChanged { added: vec![], removed: vec![], epoch: 2 }
+        Incoming::GroupChanged { added: vec![], removed: vec![], epoch: 2, own_commit_discarded: false }
     );
     assert_ne!(b.verification_code(), before);
     assert_eq!(a.verification_code(), b.verification_code());
     let m = a.send(&alice, b"after refresh").unwrap();
     assert_eq!(
         b.receive(&bob, &m).unwrap(),
-        Incoming::Message { from: "alice".into(), body: b"after refresh".to_vec() }
+        Incoming::Message { from: alice.member_id(), name: "alice".into(), body: b"after refresh".to_vec() }
     );
 }
 
@@ -145,7 +226,7 @@ fn welcome_cannot_be_joined_twice() {
     let alice = Client::new("alice").unwrap();
     let bob = Client::new("bob").unwrap();
     let mut a = alice.create_group().unwrap();
-    let w = a.add(&alice, &bob.key_package().unwrap()).unwrap().welcome;
+    let w = a.add_now(&alice, &bob.key_package().unwrap()).unwrap().welcome;
     assert!(bob.join(&w).is_ok());
     assert!(bob.join(&w).is_err(), "same welcome joined twice");
 }
@@ -157,7 +238,7 @@ fn welcome_for_other_device_refused() {
     let bob = Client::new("bob").unwrap();
     let eve = Client::new("eve").unwrap();
     let mut a = alice.create_group().unwrap();
-    let w = a.add(&alice, &bob.key_package().unwrap()).unwrap().welcome;
+    let w = a.add_now(&alice, &bob.key_package().unwrap()).unwrap().welcome;
     assert!(eve.join(&w).is_err());
     assert!(bob.join(&w).is_ok());
 }
@@ -170,7 +251,7 @@ fn join_with_group_message_refused() {
     assert!(matches!(bob.join(&m), Err(TreeError::Malformed(_))));
     // The MLS part of a commit is a valid MLS message but not a welcome.
     let carol = Client::new("carol").unwrap();
-    let add = a.add(&alice, &carol.key_package().unwrap()).unwrap();
+    let add = a.add_now(&alice, &carol.key_package().unwrap()).unwrap();
     match carol.join(&add.commit[33..]) {
         Err(TreeError::Malformed(s)) => assert!(s.contains("not a welcome"), "{s}"),
         other => panic!("{:?}", other.map(|_| ())),
@@ -184,11 +265,13 @@ fn same_key_package_twice_refused() {
     let bob = Client::new("bob").unwrap();
     let mut a = alice.create_group().unwrap();
     let kp = bob.key_package().unwrap();
-    a.add(&alice, &kp).unwrap();
+    a.add_now(&alice, &kp).unwrap();
     let e = a.epoch();
-    assert!(a.add(&alice, &kp).is_err(), "same key package added twice");
+    assert!(a.add(&alice, &[&kp]).is_err(), "same key package added twice");
+    assert!(a.pending_commit().is_none(), "failed add leaves nothing pending");
     assert_eq!(a.epoch(), e);
-    assert_eq!(a.members(), vec!["alice", "bob"]);
+    assert_eq!(names(&a), vec!["alice", "bob"]);
+    a.refresh_now(&alice).unwrap();
 }
 
 /// A tampered commit is refused and the genuine one still applies.
@@ -196,7 +279,7 @@ fn same_key_package_twice_refused() {
 fn tampered_commit_rejected_genuine_still_applies() {
     let (alice, bob, mut a, mut b) = two_person_chat();
     let carol = Client::new("carol").unwrap();
-    let add = a.add(&alice, &carol.key_package().unwrap()).unwrap();
+    let add = a.add_now(&alice, &carol.key_package().unwrap()).unwrap();
     for frac in [10, 50, 90, 99] {
         let mut t = add.commit.clone();
         let i = t.len() * frac / 100;
@@ -207,59 +290,78 @@ fn tampered_commit_rejected_genuine_still_applies() {
     assert!(matches!(b.receive(&bob, &add.commit), Ok(Incoming::GroupChanged { epoch: 2, .. })));
 }
 
-/// A proposal from a member is stored (`Incoming::Proposal`) and folded into
-/// the next commit made by a Tree client.
+/// The add commit carries no update path (PROTOCOL.md 6.4; BENCHMARKS.md
+/// recommendation 4), the key refresh does.
 #[test]
-fn insider_proposal_stored_and_committed() {
-    use openmls::prelude::LeafNodeParameters;
+fn add_commit_has_no_update_path_refresh_has_one() {
+    let (alice, _bob, mut a, _b, mut m) = chat_with_insider("mallory");
+    let has_path = |m: &mut common::Insider, sealed: &[u8]| {
+        let msg = MlsMessageIn::tls_deserialize_exact(&sealed[1 + TAG_LEN..]).unwrap();
+        let p = msg.try_into_protocol_message().unwrap();
+        let provider = &m.provider;
+        let g = m.group.as_mut().unwrap();
+        match g.process_message(provider, p).unwrap().into_content() {
+            ProcessedMessageContent::StagedCommitMessage(c) => {
+                let path = c.update_path_leaf_node().is_some();
+                g.merge_staged_commit(provider, *c).unwrap();
+                path
+            }
+            _ => panic!("expected a commit"),
+        }
+    };
+    let carol = Client::new("carol").unwrap();
+    let add = a.add_now(&alice, &carol.key_package().unwrap()).unwrap();
+    assert!(!has_path(&mut m, &add.commit));
+    let refresh = a.refresh_now(&alice).unwrap();
+    assert!(has_path(&mut m, &refresh));
+    let rm = a.remove_now(&alice, &[carol.member_id()]).unwrap();
+    assert!(has_path(&mut m, &rm));
+}
+
+// ----- F-007: proposals ------------------------------------------------------
+
+/// F-007 (fixed): a proposal from a member is rejected before MLS and never
+/// stored, so the next honest commit does not carry it.
+#[test]
+fn insider_proposal_rejected_not_stored() {
     let (alice, bob, mut a, mut b, mut m) = chat_with_insider("mallory");
     let (p, s) = (&m.provider, &m.signer);
-    let (prop, _) = m
-        .group
-        .as_mut()
-        .unwrap()
-        .propose_self_update(p, s, LeafNodeParameters::default())
-        .unwrap();
+    let (prop, _) = m.group.as_mut().unwrap().propose_self_update(p, s, LeafNodeParameters::default()).unwrap();
     let sealed = m.seal(&prop.to_bytes().unwrap());
-    assert_eq!(a.receive(&alice, &sealed).unwrap(), Incoming::Proposal);
-    assert_eq!(b.receive(&bob, &sealed).unwrap(), Incoming::Proposal);
-    // Alice's next commit (a key refresh) includes the stored proposal; Bob
-    // processes it and stays in sync.
-    let c = a.refresh_keys(&alice).unwrap();
-    assert!(matches!(b.receive(&bob, &c), Ok(Incoming::GroupChanged { .. })));
+    for r in [a.receive(&alice, &sealed), b.receive(&bob, &sealed)] {
+        assert!(matches!(r, Err(TreeError::Rejected(ref s)) if s.contains("proposals")), "{r:?}");
+    }
+    let c = a.refresh_now(&alice).unwrap();
+    assert_eq!(
+        b.receive(&bob, &c).unwrap(),
+        Incoming::GroupChanged { added: vec![], removed: vec![], epoch: 3, own_commit_discarded: false }
+    );
     assert_eq!(a.verification_code(), b.verification_code());
 }
 
-/// An insider's remove proposal is committed silently by the next honest
-/// commit. The committing client learns nothing, the others see a removal.
-/// (Documented MLS behaviour; see docs/TESTING.md.)
+/// F-007 (fixed): an insider's remove proposal no longer rides on an honest
+/// commit.
 #[test]
-fn insider_remove_proposal_carried_by_honest_commit() {
+fn insider_remove_proposal_not_carried_by_honest_commit() {
     let (alice, bob, mut a, mut b, mut m) = chat_with_insider("mallory");
     let (p, s) = (&m.provider, &m.signer);
     let g = m.group.as_mut().unwrap();
-    let bob_idx = g
-        .members()
-        .find(|x| x.credential.serialized_content() == b"bob")
-        .unwrap()
-        .index;
+    let bob_idx = g.members().find(|x| x.credential.serialized_content() == b"bob").unwrap().index;
     let (prop, _) = g.propose_remove_member(p, s, bob_idx).unwrap();
     let sealed = m.seal(&prop.to_bytes().unwrap());
-    assert_eq!(a.receive(&alice, &sealed).unwrap(), Incoming::Proposal);
-    let commit = a.refresh_keys(&alice).unwrap();
-    assert_eq!(a.members(), vec!["alice", "mallory"], "bob removed by alice's refresh");
-    assert_eq!(b.receive(&bob, &sealed).unwrap(), Incoming::Proposal);
-    assert_eq!(b.receive(&bob, &commit).unwrap(), Incoming::RemovedFromGroup);
+    assert!(a.receive(&alice, &sealed).is_err());
+    let commit = a.refresh_now(&alice).unwrap();
+    assert_eq!(names(&a), vec!["alice", "bob", "mallory"], "bob still there");
+    assert!(b.receive(&bob, &sealed).is_err());
+    assert!(matches!(b.receive(&bob, &commit), Ok(Incoming::GroupChanged { .. })));
+    assert!(b.is_member());
 }
 
-/// A join request (external Add proposal) relayed by a member is stored, and
-/// the next honest commit, here a plain key refresh by alice, adds the
-/// requester. The others see "added" in a commit authored by alice; the
-/// welcome for the new device is discarded by `refresh_keys` (F-007).
+/// F-007 (fixed): a join request (external Add proposal) relayed by a member
+/// is rejected; a key refresh adds nobody.
 #[test]
-fn external_join_proposal_folded_into_key_refresh() {
+fn external_join_proposal_rejected() {
     use openmls::prelude::{GroupEpoch, GroupId, JoinProposal, KeyPackageIn, ProtocolVersion};
-    use openmls::prelude::tls_codec::Deserialize;
     use openmls_traits::OpenMlsProvider;
 
     let (alice, bob, mut a, mut b, mut m) = chat_with_insider("mallory");
@@ -276,65 +378,92 @@ fn external_join_proposal_folded_into_key_refresh() {
     )
     .unwrap();
     let sealed = m.seal(&req.to_bytes().unwrap());
-    assert_eq!(a.receive(&alice, &sealed).unwrap(), Incoming::Proposal);
-    assert_eq!(b.receive(&bob, &sealed).unwrap(), Incoming::Proposal);
-    let c = a.refresh_keys(&alice).unwrap();
-    assert_eq!(
-        b.receive(&bob, &c).unwrap(),
-        Incoming::GroupChanged { added: vec!["outsider".into()], removed: vec![], epoch: 3 }
-    );
-    assert_eq!(a.members(), vec!["alice", "bob", "mallory", "outsider"]);
+    assert!(matches!(a.receive(&alice, &sealed), Err(TreeError::Rejected(_))));
+    assert!(matches!(b.receive(&bob, &sealed), Err(TreeError::Rejected(_))));
+    let c = a.refresh_now(&alice).unwrap();
+    assert!(matches!(b.receive(&bob, &c).unwrap(), Incoming::GroupChanged { ref added, .. } if added.is_empty()));
+    assert_eq!(names(&a), vec!["alice", "bob", "mallory"]);
 }
 
-/// KNOWN ISSUE (F-007): a commit that arrives before a proposal it refers to
-/// is refused, AND its decryption key is consumed, so it can never be
-/// processed, even after the proposal arrives. An insider who sends a
-/// proposal to only some members can cut the others off from the group
-/// through the next honest commit.
+/// F-007: a commit that refers to a proposal by reference (which Tree never
+/// stores) fails cleanly: rejected, nothing merged, the group keeps working.
 #[test]
-fn commit_before_its_proposal_is_lost() {
-    use openmls::prelude::LeafNodeParameters;
+fn commit_with_proposal_by_reference_fails_cleanly() {
     let (alice, bob, mut a, mut b, mut m) = chat_with_insider("mallory");
     let (p, s) = (&m.provider, &m.signer);
-    let (prop, _) = m
-        .group
-        .as_mut()
-        .unwrap()
-        .propose_self_update(p, s, LeafNodeParameters::default())
-        .unwrap();
-    let sealed = m.seal(&prop.to_bytes().unwrap());
-    // Only alice gets the proposal.
-    assert_eq!(a.receive(&alice, &sealed).unwrap(), Incoming::Proposal);
-    let commit = a.refresh_keys(&alice).unwrap();
-    let r = b.receive(&bob, &commit);
-    assert!(matches!(r, Err(TreeError::Rejected(ref s)) if s.contains("MissingProposal")), "{r:?}");
-    // The proposal arrives late; the commit is now permanently unreadable.
-    assert_eq!(b.receive(&bob, &sealed).unwrap(), Incoming::Proposal);
-    let r = b.receive(&bob, &commit);
-    assert!(matches!(r, Err(TreeError::Rejected(ref s)) if s.contains("SecretReuseError")), "{r:?}");
+    let g = m.group.as_mut().unwrap();
+    let alice_idx = g.members().find(|x| x.credential.serialized_content() == b"alice").unwrap().index;
+    // mallory's own remove proposal, kept in her store, committed by reference
+    g.propose_remove_member(p, s, alice_idx).unwrap();
+    let (commit, _, _) = g.commit_to_pending_proposals(p, s).unwrap();
+    let sealed = m.seal(&commit.to_bytes().unwrap());
+    let r = b.receive(&bob, &sealed);
+    assert!(matches!(r, Err(TreeError::Rejected(_))), "{r:?}");
     assert_eq!(b.epoch(), 2);
-    assert_eq!(a.epoch(), 3);
+    assert_eq!(names(&b), vec!["alice", "bob", "mallory"]);
+    let msg = a.send(&alice, b"still working").unwrap();
+    assert!(matches!(b.receive(&bob, &msg), Ok(Incoming::Message { .. })));
 }
 
-/// Names are self-chosen credential contents, not authenticated identities:
-/// two members can carry the same name and `remove(name)` takes the first.
+/// PROTOCOL.md 6.4: a commit with a proposal type Tree does not allow
+/// (here: group context extensions) is rejected before merging.
 #[test]
-fn duplicate_names_are_possible() {
+fn commit_with_disallowed_proposal_rejected() {
+    use openmls::prelude::Extensions;
+    let (_alice, bob, _a, mut b, mut m) = chat_with_insider("mallory");
+    let (p, s) = (&m.provider, &m.signer);
+    let g = m.group.as_mut().unwrap();
+    let (commit, _, _) = g.update_group_context_extensions(p, Extensions::empty(), s).unwrap();
+    let sealed = m.seal(&commit.to_bytes().unwrap());
+    let r = b.receive(&bob, &sealed);
+    assert!(matches!(r, Err(TreeError::Rejected(ref s)) if s.contains("proposal type")), "{r:?}");
+    assert_eq!(b.epoch(), 2);
+}
+
+/// An add-only commit from another member without an update path is
+/// accepted (Tree's own adds look like this).
+#[test]
+fn add_without_path_from_others_accepted() {
+    let (_alice, bob, _a, mut b, mut m) = chat_with_insider("mallory");
+    let carol = Client::new("carol").unwrap();
+    let kp = openmls::prelude::KeyPackageIn::tls_deserialize_exact(carol.key_package().unwrap())
+        .unwrap()
+        .validate(&openmls_rust_crypto::RustCrypto::default(), openmls::prelude::ProtocolVersion::Mls10)
+        .unwrap();
+    let (p, s) = (&m.provider, &m.signer);
+    let g = m.group.as_mut().unwrap();
+    let (commit, _, _) = g.add_members_without_update(p, s, &[kp]).unwrap();
+    let sealed = m.seal(&commit.to_bytes().unwrap());
+    assert!(matches!(b.receive(&bob, &sealed), Ok(Incoming::GroupChanged { epoch: 3, .. })));
+}
+
+// ----- F-008: names are not identities ---------------------------------------
+
+/// F-008 (fixed): two members can carry the same name, but they have
+/// different member ids, are flagged as duplicates, and removal by id
+/// removes exactly the one meant.
+#[test]
+fn duplicate_names_told_apart_by_member_id() {
     let (alice, bob, mut a, mut b) = two_person_chat();
     let fake = Client::new("bob").unwrap();
-    let add = a.add(&alice, &fake.key_package().unwrap()).unwrap();
+    let add = a.add_now(&alice, &fake.key_package().unwrap()).unwrap();
     b.receive(&bob, &add.commit).unwrap();
     let mut f = fake.join(&add.welcome).unwrap();
-    assert_eq!(a.members(), vec!["alice", "bob", "bob"]);
+    assert_eq!(a.members(), vec![member(&alice, false), member(&bob, true), member(&fake, true)]);
 
-    // A message from the impostor is reported with the same `from`.
+    // A message from the impostor carries its own id.
     let m = f.send(&fake, b"it's me, bob").unwrap();
     match a.receive(&alice, &m).unwrap() {
-        Incoming::Message { from, .. } => assert_eq!(from, "bob"),
+        Incoming::Message { from, name, .. } => {
+            assert_eq!(name, "bob");
+            assert_eq!(from, fake.member_id());
+            assert_ne!(from, bob.member_id());
+        }
         other => panic!("{other:?}"),
     }
-    // remove("bob") removes the first leaf: the real bob.
-    let rm = a.remove(&alice, "bob").unwrap();
-    assert_eq!(b.receive(&bob, &rm).unwrap(), Incoming::RemovedFromGroup);
-    assert!(matches!(f.receive(&fake, &rm), Ok(Incoming::GroupChanged { .. })));
+    // Removing the impostor by id leaves the real bob.
+    let rm = a.remove_now(&alice, &[fake.member_id()]).unwrap();
+    assert_eq!(f.receive(&fake, &rm).unwrap(), Incoming::RemovedFromGroup);
+    assert!(matches!(b.receive(&bob, &rm), Ok(Incoming::GroupChanged { .. })));
+    assert_eq!(a.members(), vec![member(&alice, false), member(&bob, false)]);
 }

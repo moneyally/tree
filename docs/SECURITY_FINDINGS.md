@@ -20,36 +20,63 @@ Issues found by testing Tree's own design. Each one has a regression test.
   maintainers whether keys should only be consumed after successful decryption.
 - **Test:** `tampered_copy_does_not_burn_genuine_message` (10 byte positions).
 
-## F-002: messages in flight during a commit are lost (open)
+## F-002: messages in flight during a commit were lost (fixed)
 
 - **Found:** 2026-10-01, attack-scenario test pass, `tests/delivery.rs`
-- **What:** the envelope key and MLS keys come from the receiver's *current*
-  epoch. A message sent in epoch N that arrives after the receiver merged a
-  commit to N+1 fails the seal check and cannot be read.
+- **What:** the envelope key and MLS keys came from the receiver's *current*
+  epoch. A message sent in epoch N that arrived after the receiver merged a
+  commit to N+1 failed the seal check and could not be read.
 - **Severity:** medium (availability). No confidentiality impact.
-- **Fix direction:** keep the previous epoch's envelope key and MLS secrets for
-  a short window, or have the sender resend after it sees the commit.
-- **Test:** `message_from_previous_epoch_after_commit_is_lost`.
+- **Fix:** the core keeps the MLS secrets (`max_past_epochs(2)`), the envelope
+  key and the leaf-to-member-id map of the last 2 epochs (`group_state.rs`,
+  stored with the group). Application messages of N-1 and N-2 are read; a
+  commit for any epoch other than the current one is rejected before MLS.
+  The PrivateMessage header must name this group and the epoch whose key
+  matched.
+- **Cost / residual risk:** forward secrecy: unread messages of up to three
+  epochs are exposed by a device compromise (PROTOCOL.md 6.2, C4). A removed
+  member whose client ignores its removal can keep sending epoch-N messages
+  that members accept until N leaves the window, and can burn keys in that
+  window (C11). Messages are not attributed wrongly: the sender is the member
+  of that epoch.
+- **Tests:** `message_from_previous_epoch_after_commit_is_read`,
+  `past_epoch_window_is_two_epochs`, `past_epoch_sender_is_the_member_of_that_epoch`,
+  `removed_members_old_epoch_messages`, `past_epoch_commit_rejected`,
+  `past_epoch_message_after_restart`.
 
-## F-003: two simultaneous commits fork the group (open)
+## F-003: two simultaneous commits forked the group (fixed in the client)
 
 - **Found:** 2026-10-01, `tests/delivery.rs`
-- **What:** `add`, `remove` and `refresh_keys` merge their own commit at once.
-  If two members commit in the same epoch, each refuses the other's commit and
-  the group splits into two states that cannot read each other.
+- **What:** `add`, `remove` and `refresh_keys` merged their own commit at once.
+  If two members committed in the same epoch, each refused the other's commit
+  and the group split into two states that could not read each other.
 - **Severity:** high (availability), needs no attacker, only bad timing.
-- **Fix direction:** the server must order commits per group, and clients
-  merge their own commit only after the server accepted it.
-- **Test:** `concurrent_commits_fork_the_group`.
+- **Fix (client):** two-phase commits (PROTOCOL.md 7.1). The three calls return
+  a `PendingCommit` and change nothing; `confirm_commit` merges after the
+  server accepted, `discard_commit` drops it after a conflict. While pending no
+  other commit can be made; sending and receiving continue. A winning commit
+  arriving while ours is pending discards ours (`own_commit_discarded`); our
+  own commit arriving from the mailbox is merged (`OwnCommitMerged`). The
+  pending commit is stored with the group and survives a restart.
+- **Still open:** the server side (first commit per group and epoch wins,
+  PROTOCOL.md 7.4) is HANDOFF 3.2. Until then nothing orders commits.
+- **Tests:** `concurrent_commits_no_longer_fork`, `pending_commit_changes_nothing`,
+  `one_pending_commit_at_a_time`, `discard_and_confirm_without_pending`,
+  `own_pending_commit_arriving_is_merged`, `lost_add_retried_with_same_key_package`,
+  `pending_commit_survives_restart`.
 
-## F-004: an echoed own commit is reported as a seal failure (open)
+## F-004: an echoed own commit was reported as a seal failure (fixed)
 
 - **Found:** 2026-10-01, `tests/delivery.rs`
-- **What:** echoed own application messages return `Incoming::OwnEcho`, but an
-  echoed own commit returns `Rejected("envelope seal mismatch")`, because it was
-  sealed with the previous epoch's key. The app cannot tell it from a forgery.
+- **What:** echoed own application messages returned `Incoming::OwnEcho`, but
+  an echoed own commit returned `Rejected("envelope seal mismatch")`, because
+  it was sealed with the previous epoch's key. The app could not tell it from
+  a forgery.
 - **Severity:** low.
-- **Test:** `own_echoes`.
+- **Fix:** the SHA-256 of each own merged commit envelope is kept while its
+  epoch is retained; an identical envelope returns `OwnEcho` before any other
+  processing. Hashes are compared in constant time.
+- **Tests:** `own_echoes`, `own_commit_echo_forgotten_with_its_epoch`.
 
 ## F-005: `Registry::define` could remove a permanent lock (fixed)
 
@@ -77,32 +104,47 @@ Issues found by testing Tree's own design. Each one has a regression test.
 - **Test:** `damaged_welcome_does_not_burn_key_package`,
   `join_mutated_welcome_never_accepted`.
 
-## F-007: proposals from other members are trusted blindly (open)
+## F-007: proposals from other members were trusted blindly (fixed)
 
 - **Found:** 2026-10-01, `tests/membership.rs`
-- **What:** `receive` stores every proposal, and the next commit made by this
-  device (`add`, `remove`, `refresh_keys`) silently includes all of them.
-  1. A member (or anyone they relay for) can get a device added or a member
-     removed through someone else's key refresh; the others see the change as
-     authored by the honest committer, and the committer is not told.
-     For an external join request the welcome is thrown away.
-  2. If a commit arrives before a proposal it refers to, it is refused and its
-     key is consumed (same root cause as F-001), so it can never be processed.
-     A member who sends a proposal to only some devices can cut the others off.
+- **What:** `receive` stored every proposal, and the next commit made by this
+  device (`add`, `remove`, `refresh_keys`) silently included all of them.
+  1. A member (or anyone they relay for) could get a device added or a member
+     removed through someone else's key refresh; the others saw the change as
+     authored by the honest committer, and the committer was not told.
+     For an external join request the welcome was thrown away.
+  2. If a commit arrived before a proposal it referred to, it was refused and
+     its key was consumed (same root cause as F-001), so it could never be
+     processed.
 - **Severity:** medium-high (insider only; availability and misattribution).
-- **Fix direction:** do not accept standalone proposals until there is an
-  explicit policy, or show them to the app and commit only approved ones.
-- **Test:** `insider_remove_proposal_carried_by_honest_commit`,
-  `external_join_proposal_folded_into_key_refresh`,
-  `commit_before_its_proposal_is_lost`.
+- **Fix:** standalone proposals (`content_type = proposal`) and any message
+  that is not a PrivateMessage (external join proposals are PublicMessages)
+  are rejected after the seal check and before MLS, and never stored. Own
+  commits clear the proposal store first. Incoming commits are checked against
+  PROTOCOL.md 6.4 before merging (inline Add/Remove only, no removal of the
+  committer, UpdatePath unless add-only, committer is a member). A commit
+  that refers to a proposal by reference fails cleanly.
+- **Consequence:** a member cannot leave by proposing its own removal;
+  leaving is an application-level request (PROTOCOL.md 6.5, Q9).
+- **Tests:** `insider_proposal_rejected_not_stored`,
+  `insider_remove_proposal_not_carried_by_honest_commit`,
+  `external_join_proposal_rejected`, `commit_with_proposal_by_reference_fails_cleanly`,
+  `commit_with_disallowed_proposal_rejected`, `add_without_path_from_others_accepted`.
 
-## F-008: member names are not authenticated identities (open)
+## F-008: member names were not authenticated identities (fixed)
 
 - **Found:** 2026-10-01, `tests/membership.rs`
-- **What:** names are whatever the key package says. Two members can share a
-  name, `Incoming::Message.from` cannot tell them apart, and `remove(name)`
-  removes the first match, which may be the real person.
-- **Severity:** medium until an identity layer exists (safety numbers from
-  `signature_public_key` must be compared out of band).
-- **Fix direction:** identify members by signature key / leaf, not by name.
-- **Test:** `duplicate_names_are_possible`.
+- **What:** names are whatever the key package says. Two members could share
+  a name, `Incoming::Message.from` could not tell them apart, and
+  `remove(name)` removed the first match, which could be the real person.
+- **Severity:** medium until an identity layer exists.
+- **Fix:** members are identified by member id,
+  `SHA-256("tree/member-id/v1" || signature_key)` (PROTOCOL.md 5.2).
+  `Incoming::Message` carries `from` (member id) and `name`; `members()` returns
+  id, name and a duplicate-name flag; `remove` takes member ids, several in one
+  commit.
+- **Residual risk:** a member id says which key, not which person. Safety
+  numbers must still be compared out of band (Q4) until key transparency.
+- **Tests:** `duplicate_names_told_apart_by_member_id`, `member_id_derivation`,
+  `several_members_removed_in_one_commit`.
+

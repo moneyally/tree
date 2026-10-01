@@ -15,12 +15,13 @@ pub mod client;
 pub mod error;
 pub mod features;
 pub mod group;
+mod group_state;
 pub mod provider;
 pub mod storage;
 
 pub use client::Client;
 pub use error::TreeError;
-pub use group::{Group, Incoming};
+pub use group::{Group, Incoming, Member, MemberId, PendingCommit};
 pub use provider::TreeProvider;
 pub use storage::{KdfParams, KeySource, Passphrase, StoredProvider};
 

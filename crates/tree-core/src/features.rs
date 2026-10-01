@@ -8,7 +8,15 @@
 //! * `AlwaysOn` features can never be released (e.g. end-to-end encryption);
 //! * `AlwaysOff` features can never be applied (e.g. sending points between users);
 //! * a feature released at the server layer locks the same key in lower layers;
-//! * plan-gated features need the plan when applied.
+//! * a user preference released for a chat (by a chat admin) is locked for
+//!   the users of that chat (`LOCKED_BY_CHAT`);
+//! * chat and server settings need an admin, bot settings the bot owner
+//!   ([`Caller::is_admin`] means "has authority over the scope");
+//! * plan-gated features need the plan when applied; security and
+//!   moderation features are never plan-gated (security is not sold).
+//!
+//! Internally every feature has a [`Kind`], derived from its key, lock,
+//! scope and plan, so the public [`Feature`] definition stays as it is.
 
 use std::collections::BTreeMap;
 
@@ -112,7 +120,67 @@ impl FeatureError {
 #[derive(Debug, Clone, Copy)]
 pub struct Caller {
     pub plan: Plan,
+    /// Authority over the feature's scope: chat admin for Chat, operator for
+    /// Server, bot owner for Bot. Not needed for User scope.
     pub is_admin: bool,
+}
+
+/// What a feature is about. Decides which rules apply to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Kind {
+    /// Protects keys, devices or content. Never plan-gated, never locked by
+    /// a chat.
+    SecurityPolicy,
+    /// A setting of the group, set by its admins.
+    ChatPolicy,
+    /// A personal preference. A chat may release it for its members.
+    UserPreference,
+    /// Abuse and safety controls, and operator flags. Never plan-gated.
+    ModerationPolicy,
+    /// Points and paid plans.
+    BillingCapability,
+}
+
+/// Device and content protection.
+const SECURITY_KEYS: &[&str] = &[
+    "chat.e2e",
+    "chat.disappearing",
+    "chat.screenshot_block",
+    "chat.view_once",
+    "chat.private_to_public",
+    "user.app_lock",
+    "user.notification_content",
+    "user.key_change_warning",
+    "user.device_link_code",
+    "user.incognito_keyboard",
+    "user.app_switcher_blur",
+    "user.pc_screen_security",
+    "user.discoverable",
+];
+
+/// Reporting, spam and stranger protection.
+const MODERATION_KEYS: &[&str] = &[
+    "user.report",
+    "user.message_requests",
+    "user.stranger_block",
+    "user.stranger_labels",
+    "user.group_safety_notice",
+    "user.group_add",
+];
+
+pub(crate) fn kind(f: &Feature) -> Kind {
+    let prefix = f.key.split('.').next().unwrap_or("");
+    if SECURITY_KEYS.contains(&f.key) {
+        Kind::SecurityPolicy
+    } else if MODERATION_KEYS.contains(&f.key) || f.scope == Scope::Server {
+        Kind::ModerationPolicy
+    } else if f.plan == Plan::Pro || matches!(prefix, "points" | "pro") || f.key == "bot.pay_out_points" {
+        Kind::BillingCapability
+    } else if f.scope == Scope::Chat {
+        Kind::ChatPolicy
+    } else {
+        Kind::UserPreference
+    }
 }
 
 /// Feature definitions plus current state per scope.
@@ -133,6 +201,8 @@ impl Registry {
 
     /// Adds or replaces a feature definition. A permanently locked feature
     /// can never be redefined, so its lock can never be weakened (F-005).
+    ///
+    /// Security and moderation features can never require a paid plan.
     pub fn define(&mut self, f: Feature) -> Result<(), FeatureError> {
         if let Some(old) = self.defs.get(f.key) {
             match old.lock {
@@ -140,6 +210,10 @@ impl Registry {
                 Lock::AlwaysOff(r) => return Err(FeatureError::ReleasedAlways(r)),
                 Lock::None => {}
             }
+        }
+        // (kind() looks at security and moderation before the plan)
+        if f.plan != Plan::Free && matches!(kind(&f), Kind::SecurityPolicy | Kind::ModerationPolicy) {
+            return Err(FeatureError::LockedAlways(NOT_SOLD));
         }
         self.defs.insert(f.key, f);
         Ok(())
@@ -167,15 +241,25 @@ impl Registry {
                 .is_some_and(|(s, _)| *s == State::Released)
     }
 
+    /// A user preference released by the chat => locked for its users.
+    fn chat_lock(&self, f: &Feature) -> bool {
+        f.scope == Scope::User
+            && self
+                .state
+                .get(&(Scope::Chat, f.key))
+                .is_some_and(|(s, _)| *s == State::Released)
+    }
+
     pub fn status(&self, key: &str) -> Result<Status, FeatureError> {
         let f = self.def(key)?;
         let (state, option) = self.raw_state(f.scope, f);
         let locked_by = match f.lock {
             Lock::AlwaysOn(r) | Lock::AlwaysOff(r) => Some(LockReason::Always(r)),
             Lock::None if self.server_lock(f) => Some(LockReason::Server),
+            Lock::None if self.chat_lock(f) => Some(LockReason::Chat),
             Lock::None => None,
         };
-        let state = if locked_by == Some(LockReason::Server) { State::Released } else { state };
+        let state = if matches!(locked_by, Some(LockReason::Server | LockReason::Chat)) { State::Released } else { state };
         Ok(Status { key: f.key, state, option, locked_by })
     }
 
@@ -216,13 +300,47 @@ impl Registry {
     }
 
     fn check_common(&self, f: &Feature, who: Caller) -> Result<(), FeatureError> {
-        if matches!(f.scope, Scope::Chat | Scope::Server) && !who.is_admin {
+        if matches!(f.scope, Scope::Chat | Scope::Server | Scope::Bot) && !who.is_admin {
             return Err(FeatureError::NotAdmin);
         }
         if self.server_lock(f) {
             return Err(FeatureError::LockedByServer);
         }
+        if self.chat_lock(f) {
+            return Err(FeatureError::LockedByChat);
+        }
         Ok(())
+    }
+
+    /// A chat admin releases a user preference for everyone in the chat
+    /// (e.g. no read receipts in this chat). Members then see it released
+    /// and locked (`LOCKED_BY_CHAT`). Only plain user preferences can be
+    /// locked this way, never security, moderation or billing features.
+    pub fn release_for_chat(&mut self, key: &str, who: Caller) -> Result<Status, FeatureError> {
+        let f = self.chat_lockable(key, who)?;
+        self.state.insert((Scope::Chat, f.key), (State::Released, None));
+        self.status(key)
+    }
+
+    /// Undoes [`Registry::release_for_chat`]: members choose again.
+    pub fn apply_for_chat(&mut self, key: &str, who: Caller) -> Result<Status, FeatureError> {
+        let f = self.chat_lockable(key, who)?;
+        self.state.remove(&(Scope::Chat, f.key));
+        self.status(key)
+    }
+
+    fn chat_lockable(&self, key: &str, who: Caller) -> Result<Feature, FeatureError> {
+        let f = self.def(key)?.clone();
+        if f.scope != Scope::User || f.lock != Lock::None || kind(&f) != Kind::UserPreference {
+            return Err(FeatureError::LockedAlways(NOT_CHAT_LOCKABLE));
+        }
+        if !who.is_admin {
+            return Err(FeatureError::NotAdmin);
+        }
+        if self.server_lock(&f) {
+            return Err(FeatureError::LockedByServer);
+        }
+        Ok(f)
     }
 
     /// Operator flag for a key that also exists at a lower scope.
@@ -230,6 +348,9 @@ impl Registry {
         self.state.insert((Scope::Server, key), (state, None));
     }
 }
+
+const NOT_SOLD: &str = "security and safety features are never sold";
+const NOT_CHAT_LOCKABLE: &str = "a chat can only lock personal preferences, not security settings";
 
 const fn feat(key: &'static str, scope: Scope, default: State, stage: u8) -> Feature {
     Feature { key, scope, default, lock: Lock::None, plan: Plan::Free, stage }
@@ -292,4 +413,31 @@ pub fn standard_features() -> Vec<Feature> {
         v.push(Feature { key, scope, default, lock, plan: Plan::Free, stage: 1 });
     }
     v
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kinds_of_standard_features() {
+        let all = standard_features();
+        let k = |key: &str| kind(all.iter().find(|f| f.key == key).unwrap());
+        assert_eq!(k("chat.e2e"), Kind::SecurityPolicy);
+        assert_eq!(k("user.app_lock"), Kind::SecurityPolicy);
+        assert_eq!(k("user.report"), Kind::ModerationPolicy);
+        assert_eq!(k("server.signups"), Kind::ModerationPolicy);
+        assert_eq!(k("points.send_to_user"), Kind::BillingCapability);
+        assert_eq!(k("bot.pay_out_points"), Kind::BillingCapability);
+        assert_eq!(k("chat.reactions"), Kind::ChatPolicy);
+        assert_eq!(k("user.read_receipts"), Kind::UserPreference);
+        // Every listed key exists, so the lists cannot silently rot.
+        for key in SECURITY_KEYS.iter().chain(MODERATION_KEYS) {
+            assert!(all.iter().any(|f| f.key == *key), "{key}");
+        }
+        let pro = Feature { key: "user.pro_theme", scope: Scope::User, default: State::Released, lock: Lock::None, plan: Plan::Pro, stage: 3 };
+        assert_eq!(kind(&pro), Kind::BillingCapability);
+        let bot = Feature { key: "bot.inline", scope: Scope::Bot, default: State::Released, lock: Lock::None, plan: Plan::Free, stage: 2 };
+        assert_eq!(kind(&bot), Kind::UserPreference);
+    }
 }

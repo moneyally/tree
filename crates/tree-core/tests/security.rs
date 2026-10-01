@@ -2,6 +2,11 @@
 //!
 //! Each test plays an attacker against Tree's own design and asserts it fails.
 
+mod common;
+
+#[allow(unused_imports)]
+use common::Now;
+
 use openmls::prelude::Ciphersuite;
 use tree_core::{
     features::{Caller, FeatureError, Plan, Registry, Scope, State},
@@ -12,7 +17,7 @@ fn two_person_chat() -> (Client, Client, Group, Group) {
     let alice = Client::new("alice").unwrap();
     let bob = Client::new("bob").unwrap();
     let mut a = alice.create_group().unwrap();
-    let w = a.add(&alice, &bob.key_package().unwrap()).unwrap().welcome;
+    let w = a.add_now(&alice, &bob.key_package().unwrap()).unwrap().welcome;
     let b = bob.join(&w).unwrap();
     (alice, bob, a, b)
 }
@@ -23,7 +28,7 @@ fn two_person_chat() -> (Client, Client, Group, Group) {
 fn removed_member_cannot_decrypt_even_if_ignoring_removal() {
     let (alice, bob, mut a, mut b) = two_person_chat();
     let eve = Client::new("eve").unwrap();
-    let add = a.add(&alice, &eve.key_package().unwrap()).unwrap();
+    let add = a.add_now(&alice, &eve.key_package().unwrap()).unwrap();
     b.receive(&bob, &add.commit).unwrap();
     let mut e = eve.join(&add.welcome).unwrap();
 
@@ -32,7 +37,7 @@ fn removed_member_cannot_decrypt_even_if_ignoring_removal() {
     assert!(matches!(e.receive(&eve, &m).unwrap(), Incoming::Message { .. }));
 
     // Alice removes Eve. Eve's client never processes the removal.
-    let rm = a.remove(&alice, "eve").unwrap();
+    let rm = a.remove_now(&alice, &[eve.member_id()]).unwrap();
     b.receive(&bob, &rm).unwrap();
     let _ = rm; // never delivered to eve
 
@@ -80,7 +85,7 @@ fn replay_rejected() {
 fn cross_group_message_rejected() {
     let (alice, bob, mut a1, mut b1) = two_person_chat();
     let mut a2 = alice.create_group().unwrap();
-    let w = a2.add(&alice, &bob.key_package().unwrap()).unwrap().welcome;
+    let w = a2.add_now(&alice, &bob.key_package().unwrap()).unwrap().welcome;
     let _b2 = bob.join(&w).unwrap();
 
     let for_group2 = a2.send(&alice, b"meant for group 2").unwrap();
@@ -133,7 +138,7 @@ fn tampered_key_package_rejected() {
     let last = kp.len() - 5;
     kp[last] ^= 0x01;
     let mut a = alice.create_group().unwrap();
-    assert!(a.add(&alice, &kp).is_err());
+    assert!(a.add_now(&alice, &kp).is_err());
 }
 
 /// A device on a different ciphersuite cannot be added silently: no
@@ -148,7 +153,7 @@ fn ciphersuite_downgrade_rejected() {
     )
     .unwrap();
     let mut a = alice.create_group().unwrap();
-    let res = a.add(&alice, &classical.key_package().unwrap());
+    let res = a.add_now(&alice, &classical.key_package().unwrap());
     assert!(res.is_err(), "classical device was added to a PQ group");
 }
 
@@ -161,12 +166,12 @@ fn xwing_suite_on_libcrux_works() {
     let bob = Client::with_provider("bob", LibcruxProvider::default(), cs).unwrap();
     let kp = bob.key_package().unwrap();
     let mut a = alice.create_group().unwrap();
-    let w = a.add(&alice, &kp).unwrap().welcome;
+    let w = a.add_now(&alice, &kp).unwrap().welcome;
     let mut b = bob.join(&w).unwrap();
     let m = a.send(&alice, b"x-wing").unwrap();
     assert_eq!(
         b.receive(&bob, &m).unwrap(),
-        Incoming::Message { from: "alice".into(), body: b"x-wing".to_vec() }
+        Incoming::Message { from: alice.member_id(), name: "alice".into(), body: b"x-wing".to_vec() }
     );
     println!("x-wing key package: {} bytes", kp.len());
 }

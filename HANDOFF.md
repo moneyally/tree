@@ -1,10 +1,11 @@
 # HANDOFF — continue here in a new session
 
-> 한국어 요약: 0단계(핵심·서버·저장소 암호화·검증·명세·형식 검증·실측)는 main에 들어가 있어.
-> 다음은 ① 핵심 버그 수정 ② 서버 커밋 순서 + 크기 제한 ③ 명령줄 앱으로 서버 경유 대화 ④ 전체 재검증 ⑤ 헤츠너 배포 순서야.
+> 한국어 요약: 0단계(핵심·서버·저장소 암호화·검증·명세·형식 검증·실측)와 ① 핵심 버그 수정(3.1)은 main에 들어가 있어.
+> 다음은 ② 서버 커밋 순서 + 크기 제한 ③ 명령줄 앱으로 서버 경유 대화 ④ 전체 재검증 ⑤ 헤츠너 배포 순서야.
 > 보고는 한국어 반말, 결론 먼저. 직접 돌려본 것만 "됐다".
 
-Read `CLAUDE.md` first (hard rules), then this file, then `docs/PROTOCOL.md`.
+Read `CLAUDE.md` first (hard rules), then this file, then `docs/STATUS.md` (design vs. code, work order),
+then `docs/PROTOCOL.md`. Data layouts: `docs/SCHEMA.md`.
 
 ## 1. GitHub access (no keys from the owner, ever)
 
@@ -20,12 +21,12 @@ Read `CLAUDE.md` first (hard rules), then this file, then `docs/PROTOCOL.md`.
 - The internal design document (Korean, v1–v5) is pasted by the owner into the chat. It names
   other companies: **never commit it or quote it in the repo.**
 
-## 2. What is on `main` (PR #1–#4)
+## 2. What is on `main` (PR #1–#4, plus HANDOFF 3.1)
 
 | Area | Where | State |
 | --- | --- | --- |
-| E2E groups | `crates/tree-core` | MLS on OpenMLS 0.9, hybrid suite `0x004E` (ML-KEM-768 + X25519, AES-256), outer envelope seal (F-001), welcome key-package restore (F-006) |
-| Feature registry | `crates/tree-core/src/features.rs` | apply/release for every feature, permanent locks |
+| E2E groups | `crates/tree-core` | MLS on OpenMLS 0.9, hybrid suite `0x004E` (ML-KEM-768 + X25519, AES-256), outer envelope seal (F-001), welcome key-package restore (F-006), two-phase commits (F-003 client side), member ids (F-008), proposals rejected (F-007), 2 past epochs (F-002), own-commit echoes (F-004), adds without update path |
+| Feature registry | `crates/tree-core/src/features.rs` | apply/release for every feature, permanent locks, internal kinds, chat lock of user preferences (`LOCKED_BY_CHAT`), bot owner check |
 | Encrypted local storage | `crates/tree-core/src/storage` | SQLCipher + Argon2id (64 MiB, 3 passes), restart-safe, `Client::create/open`, `load_group` |
 | Server | `crates/tree-server`, `docs/SERVER_API.md`, `deploy/` | accounts (PoW), signed requests, one-time key packages, mailboxes (30-day purge), operator flags, rate limits, no IP/body logs, Docker + Caddy |
 | Spec | `docs/PROTOCOL.md` | Tree v1 = MLS + hybrid suite (no own ratchet; HQC not in v1), byte formats, claims C1–C11, metadata table, open questions Q1–Q10 |
@@ -36,8 +37,13 @@ Read `CLAUDE.md` first (hard rules), then this file, then `docs/PROTOCOL.md`.
 
 ## 3. Next work, in order
 
-### 3.1 Core fixes (`crates/tree-core`, branch `claude/core-fixes`)
-Follow `docs/PROTOCOL.md` exactly (member id format etc.); sections marked "(in progress)" are the target.
+### 3.1 Core fixes (`crates/tree-core`, branch `claude/core-fixes`) — DONE
+Merged. What was left out on purpose: binary storage encoding (item 6, not contained enough: needs a codec for
+every OpenMLS stored type plus a migration; see `docs/BENCHMARKS.md` rec. 7). Core API for the app / CLI:
+`Group::add(&[key packages]) / remove(&[MemberId]) / refresh_keys -> PendingCommit`, then
+`confirm_commit` (server said 200) or `discard_commit` (409); `pending_commit()` after a restart;
+`Incoming::{Message{from,name,body}, GroupChanged{.., own_commit_discarded}, OwnCommitMerged, RemovedFromGroup, OwnEcho}`;
+`Group::should_refresh_keys()` after joining. Original task list, for reference:
 1. **F-003 two-phase commits.** add/remove/refresh return a pending commit (sealed bytes, optional welcome,
    group id, epoch) and do not merge. `confirm_commit()` after server accept, `discard_commit()` on reject.
    While pending: no new commit, receiving works; a winning commit for that epoch arriving while ours is

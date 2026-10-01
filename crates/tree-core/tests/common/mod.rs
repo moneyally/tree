@@ -10,17 +10,49 @@
 use openmls::prelude::{tls_codec::Deserialize, *};
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_traits::{crypto::OpenMlsCrypto, types::HashType, OpenMlsProvider};
-use tree_core::{Client, DefaultProvider, Group, TREE_CIPHERSUITE};
+use tree_core::{Client, DefaultProvider, Group, MemberId, TreeError, TreeProvider, TREE_CIPHERSUITE};
 
 pub const ENVELOPE_LABEL: &str = "tree/envelope/v1";
 pub const TAG_LEN: usize = 32;
+
+/// Commit and welcome of an add that the "server" accepted at once.
+pub struct Added {
+    pub commit: Vec<u8>,
+    pub welcome: Vec<u8>,
+}
+
+/// Confirm-immediately helpers, for tests only: they skip the server's
+/// commit ordering (a real client waits for acceptance, F-003).
+pub trait Now {
+    fn add_now<P: TreeProvider>(&mut self, me: &Client<P>, kp: &[u8]) -> Result<Added, TreeError>;
+    fn remove_now<P: TreeProvider>(&mut self, me: &Client<P>, ids: &[MemberId]) -> Result<Vec<u8>, TreeError>;
+    fn refresh_now<P: TreeProvider>(&mut self, me: &Client<P>) -> Result<Vec<u8>, TreeError>;
+}
+
+impl Now for Group {
+    fn add_now<P: TreeProvider>(&mut self, me: &Client<P>, kp: &[u8]) -> Result<Added, TreeError> {
+        let p = self.add(me, &[kp])?;
+        self.confirm_commit(me)?;
+        Ok(Added { commit: p.commit, welcome: p.welcome.expect("add has a welcome") })
+    }
+    fn remove_now<P: TreeProvider>(&mut self, me: &Client<P>, ids: &[MemberId]) -> Result<Vec<u8>, TreeError> {
+        let p = self.remove(me, ids)?;
+        self.confirm_commit(me)?;
+        Ok(p.commit)
+    }
+    fn refresh_now<P: TreeProvider>(&mut self, me: &Client<P>) -> Result<Vec<u8>, TreeError> {
+        let p = self.refresh_keys(me)?;
+        self.confirm_commit(me)?;
+        Ok(p.commit)
+    }
+}
 
 /// Alice created a group and added Bob.
 pub fn two_person_chat() -> (Client, Client, Group, Group) {
     let alice = Client::new("alice").unwrap();
     let bob = Client::new("bob").unwrap();
     let mut a = alice.create_group().unwrap();
-    let w = a.add(&alice, &bob.key_package().unwrap()).unwrap().welcome;
+    let w = a.add_now(&alice, &bob.key_package().unwrap()).unwrap().welcome;
     let b = bob.join(&w).unwrap();
     (alice, bob, a, b)
 }
@@ -120,8 +152,21 @@ impl Insider {
 pub fn chat_with_insider(insider_name: &str) -> (Client, Client, Group, Group, Insider) {
     let (alice, bob, mut a, mut b) = two_person_chat();
     let mut m = Insider::new(insider_name);
-    let add = a.add(&alice, &m.key_package()).unwrap();
+    let add = a.add_now(&alice, &m.key_package()).unwrap();
     b.receive(&bob, &add.commit).unwrap();
     m.join(&add.welcome);
     (alice, bob, a, b, m)
+}
+
+/// Display names of the current members, in leaf order.
+pub fn names(g: &Group) -> Vec<String> {
+    g.members().into_iter().map(|m| m.name).collect()
+}
+
+/// The text of an incoming chat message, if it is one.
+pub fn text(r: &Result<tree_core::Incoming, TreeError>) -> Option<(MemberId, String, Vec<u8>)> {
+    match r {
+        Ok(tree_core::Incoming::Message { from, name, body }) => Some((*from, name.clone(), body.clone())),
+        _ => None,
+    }
 }

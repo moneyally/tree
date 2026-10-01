@@ -62,8 +62,9 @@ fn needles(client: &Client<StoredProvider>, name: &str, message: &str) -> Vec<(&
 fn chat(client: &Client<StoredProvider>, message: &str) {
     let peer = Client::new("peer").unwrap();
     let mut g = client.create_group().unwrap();
-    let w = g.add(client, &peer.key_package().unwrap()).unwrap().welcome;
-    let mut p = peer.join(&w).unwrap();
+    let added = g.add(client, &[peer.key_package().unwrap()]).unwrap();
+    g.confirm_commit(client).unwrap();
+    let mut p = peer.join(added.welcome.as_ref().unwrap()).unwrap();
     let m = g.send(client, message.as_bytes()).unwrap();
     assert!(matches!(p.receive(&peer, &m).unwrap(), Incoming::Message { .. }));
     let m = p.send(&peer, message.as_bytes()).unwrap();
@@ -130,5 +131,37 @@ fn files_are_owner_only() {
     for p in [path.clone(), KeyHeader::path_for(&path)] {
         let mode = fs::metadata(&p).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "{} has mode {mode:o}", p.display());
+    }
+}
+
+/// A database of schema version 1 (before `tree_group_state`) is upgraded on
+/// open; versions this code does not know are refused.
+#[test]
+fn schema_v1_is_upgraded() {
+    let dir = TempDir::new("schema");
+    let set_version = |path: &Path, version: i64, drop_table: bool| {
+        let c = Client::open(path, "pw").unwrap();
+        let conn = &c.provider.storage.conn;
+        if drop_table {
+            conn.execute_batch("DROP TABLE tree_group_state").unwrap();
+        }
+        conn.pragma_update(None, "user_version", version).unwrap();
+    };
+    let path = dir.0.join("a.db");
+    drop(Client::create(&path, "pw", "a").unwrap());
+    set_version(&path, 1, true);
+    let c = Client::open(&path, "pw").unwrap();
+    let conn = &c.provider.storage.conn;
+    let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+    assert_eq!(v, TREE_SCHEMA_VERSION);
+    c.provider.save_group_state(b"g", b"state").unwrap();
+    assert_eq!(c.provider.load_group_state(b"g").unwrap(), Some(b"state".to_vec()));
+    assert_eq!(c.provider.load_group_state(b"other").unwrap(), None);
+    drop(c);
+    for bad in [0, TREE_SCHEMA_VERSION + 1] {
+        let path = dir.0.join(format!("v{bad}.db"));
+        drop(Client::create(&path, "pw", "a").unwrap());
+        set_version(&path, bad, false);
+        assert!(matches!(Client::open(&path, "pw"), Err(TreeError::Storage(_))), "version {bad}");
     }
 }

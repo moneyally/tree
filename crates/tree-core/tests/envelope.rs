@@ -2,6 +2,9 @@
 
 mod common;
 
+#[allow(unused_imports)]
+use common::Now;
+
 use common::{chat_with_insider, two_person_chat, Insider, TAG_LEN};
 use tree_core::{Client, Incoming, TreeError};
 
@@ -161,8 +164,8 @@ fn sealing_key_differs_between_groups() {
     let mut m2 = Insider::new("mallory");
     let mut g1 = alice.create_group().unwrap();
     let mut g2 = alice.create_group().unwrap();
-    m.join(&g1.add(&alice, &m.key_package()).unwrap().welcome);
-    m2.join(&g2.add(&alice, &m2.key_package()).unwrap().welcome);
+    m.join(&g1.add_now(&alice, &m.key_package()).unwrap().welcome);
+    m2.join(&g2.add_now(&alice, &m2.key_package()).unwrap().welcome);
     assert_ne!(g1.id(), g2.id());
     let k1 = m.envelope_key();
     let k2 = m2.envelope_key();
@@ -184,7 +187,7 @@ fn sealing_key_differs_between_groups() {
 fn sealing_key_changes_every_epoch() {
     let (alice, bob, mut a, mut b, mut m) = chat_with_insider("mallory");
     let k0 = m.envelope_key();
-    let c = a.refresh_keys(&alice).unwrap();
+    let c = a.refresh_now(&alice).unwrap();
     b.receive(&bob, &c).unwrap();
     m.receive_commit(&c);
     let k1 = m.envelope_key();
@@ -208,4 +211,22 @@ fn insider_sealed_garbage_rejected_by_mls() {
     t[i] ^= 1;
     let r = b.receive(&bob, &m.seal(&t));
     assert!(matches!(r, Err(TreeError::Rejected(_))), "{r:?}");
+}
+
+/// PROTOCOL.md 4.3 step 4: the MLS header must name the epoch whose envelope
+/// key matched. An insider re-seals an unread message of an older epoch with
+/// the current key: the seal passes, the header check refuses it. The same
+/// message sealed for its own epoch is still read (past-epoch window).
+#[test]
+fn header_epoch_must_match_envelope_key() {
+    let (alice, bob, mut a, mut b, mut m) = common::chat_with_insider("mallory");
+    let old = m.raw_message(b"made in epoch 2");
+    let honest = m.seal(&old); // sealed with the epoch-2 key
+    let c = a.refresh_now(&alice).unwrap();
+    b.receive(&bob, &c).unwrap();
+    m.receive_commit(&c);
+    let resealed = m.seal(&old); // same bytes, epoch-3 key
+    let r = b.receive(&bob, &resealed);
+    assert!(matches!(r, Err(TreeError::Rejected(ref s)) if s.contains("header")), "{r:?}");
+    assert!(matches!(b.receive(&bob, &honest), Ok(Incoming::Message { .. })));
 }

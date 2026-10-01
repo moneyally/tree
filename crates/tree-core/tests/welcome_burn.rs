@@ -2,6 +2,11 @@
 //! destroy the one-time key package, or the genuine welcome can never be
 //! used and the new member cannot join.
 
+mod common;
+
+#[allow(unused_imports)]
+use common::Now;
+
 use tree_core::{Client, Incoming};
 
 #[test]
@@ -10,7 +15,7 @@ fn damaged_welcome_does_not_burn_key_package() {
         let alice = Client::new("alice").unwrap();
         let bob = Client::new("bob").unwrap();
         let mut a = alice.create_group().unwrap();
-        let w = a.add(&alice, &bob.key_package().unwrap()).unwrap().welcome;
+        let w = a.add_now(&alice, &bob.key_package().unwrap()).unwrap().welcome;
 
         let mut t = w.clone();
         let i = (t.len() * frac / 100).min(t.len() - 1);

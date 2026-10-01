@@ -10,7 +10,9 @@
 //! * Key: rebuilt on every unlock from the side file `<db>.hdr` by a
 //!   [`KeySource`] ([`Passphrase`] = Argon2id today).
 //! * OpenMLS tables: `openmls_sqlite_storage`, unchanged.
-//! * Tree tables: `tree_meta` (identity) and `tree_groups` (group list).
+//! * Tree tables: `tree_meta` (identity), `tree_groups` (group list) and
+//!   `tree_group_state` (pending commit, past envelope keys; see
+//!   `group_state.rs`).
 //! * Each group operation runs in one transaction ([`TreeProvider::atomically`]),
 //!   so a crash leaves either the old or the new state, never half of each.
 
@@ -35,7 +37,12 @@ pub use key::{DbKey, KdfParams, KeyHeader, KeySource, Passphrase};
 use crate::{error::TreeError, provider::TreeProvider};
 
 /// Version of Tree's own tables (`PRAGMA user_version`).
-const TREE_SCHEMA_VERSION: i64 = 1;
+/// 1: `tree_meta`, `tree_groups`. 2: + `tree_group_state`.
+const TREE_SCHEMA_VERSION: i64 = 2;
+
+/// Tree tables added after version 1 (idempotent).
+const TREE_TABLES_V2: &str =
+    "CREATE TABLE IF NOT EXISTS tree_group_state (group_id BLOB PRIMARY KEY, state BLOB NOT NULL) WITHOUT ROWID;";
 
 /// Serialises OpenMLS objects as JSON before they are stored (and encrypted
 /// by SQLCipher). JSON is the format the OpenMLS storage crates are tested with.
@@ -117,9 +124,29 @@ impl TreeProvider for StoredProvider {
             .map(|_| ())
             .map_err(storage_err)
     }
+
+    fn save_group_state(&self, group_id: &[u8], state: &[u8]) -> Result<(), TreeError> {
+        self.storage
+            .conn
+            .execute(
+                "INSERT OR REPLACE INTO tree_group_state (group_id, state) VALUES (?1, ?2)",
+                params![group_id, state],
+            )
+            .map(|_| ())
+            .map_err(storage_err)
+    }
 }
 
 impl StoredProvider {
+    /// Reads back what [`TreeProvider::save_group_state`] stored.
+    pub(crate) fn load_group_state(&self, group_id: &[u8]) -> Result<Option<Vec<u8>>, TreeError> {
+        self.storage
+            .conn
+            .query_row("SELECT state FROM tree_group_state WHERE group_id = ?1", params![group_id], |r| r.get(0))
+            .optional()
+            .map_err(storage_err)
+    }
+
     /// Creates a new encrypted database at `path` (which must not exist yet)
     /// and its key header next to it.
     pub(crate) fn create(path: &Path, source: &dyn KeySource, params: KdfParams) -> Result<Self, TreeError> {
@@ -151,6 +178,7 @@ impl StoredProvider {
                  COMMIT;",
             )
             .map_err(storage_err)?;
+            conn.execute_batch(TREE_TABLES_V2).map_err(storage_err)?;
             conn.pragma_update(None, "user_version", TREE_SCHEMA_VERSION).map_err(storage_err)?;
             Ok(Self { crypto, storage: SqlStorage { conn } })
         };
@@ -171,10 +199,14 @@ impl StoredProvider {
         let mut conn = open_connection(path, Some(&db_key))?;
         drop(db_key);
         let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).map_err(storage_err)?;
-        if version != TREE_SCHEMA_VERSION {
+        if !(1..=TREE_SCHEMA_VERSION).contains(&version) {
             return Err(TreeError::Storage(format!("unsupported database version {version}")));
         }
         migrate(&mut conn)?;
+        if version < TREE_SCHEMA_VERSION {
+            conn.execute_batch(TREE_TABLES_V2).map_err(storage_err)?;
+            conn.pragma_update(None, "user_version", TREE_SCHEMA_VERSION).map_err(storage_err)?;
+        }
         Ok(Self { crypto: RustCrypto::default(), storage: SqlStorage { conn } })
     }
 
@@ -189,6 +221,7 @@ impl StoredProvider {
              CREATE TABLE tree_groups (seq INTEGER PRIMARY KEY AUTOINCREMENT, group_id BLOB NOT NULL UNIQUE);",
         )
         .map_err(storage_err)?;
+        conn.execute_batch(TREE_TABLES_V2).map_err(storage_err)?;
         Ok(Self { crypto: RustCrypto::default(), storage: SqlStorage { conn } })
     }
 

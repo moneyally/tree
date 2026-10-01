@@ -15,7 +15,8 @@ use openmls_traits::{crypto::OpenMlsCrypto, storage::StorageProvider as _, OpenM
 
 use crate::{
     error::TreeError,
-    group::Group,
+    group::{Group, MemberId},
+    group_state::GroupState,
     provider::TreeProvider,
     storage::{KdfParams, KeySource, Passphrase, StoredProvider},
     DefaultProvider, TREE_CIPHERSUITE,
@@ -125,7 +126,11 @@ impl Client<StoredProvider> {
         let mls = MlsGroup::load(self.provider.storage(), &GroupId::from_slice(group_id))
             .map_err(crate::storage::storage_err)?
             .ok_or(TreeError::NoSuchGroup)?;
-        Ok(Group { mls })
+        let state = match self.provider.load_group_state(group_id)? {
+            Some(bytes) => GroupState::decode(&bytes)?,
+            None => GroupState::default(),
+        };
+        Ok(Group::new(mls, state))
     }
 }
 
@@ -167,6 +172,11 @@ impl<P: TreeProvider> Client<P> {
         self.signer.to_public_vec()
     }
 
+    /// This device's member id in every group it is in.
+    pub fn member_id(&self) -> MemberId {
+        MemberId::of(&self.signer.to_public_vec())
+    }
+
     /// Publishes a fresh one-time key package (uploaded to the server so
     /// others can add this device to a group while it is offline). Its
     /// private part stays in this device's store until it is used.
@@ -189,12 +199,13 @@ impl<P: TreeProvider> Client<P> {
             .use_ratchet_tree_extension(true)
             .padding_size(Group::PADDING)
             .sender_ratchet_configuration(Group::sender_ratchet())
+            .max_past_epochs(Group::PAST_EPOCHS as usize)
             .build();
         self.provider.atomically(|| {
             let mls = MlsGroup::new(&self.provider, &self.signer, &config, self.credential.clone())
                 .map_err(crate::error::group_err)?;
             self.provider.remember_group(mls.group_id().as_slice())?;
-            Ok(Group { mls })
+            Ok(Group::new(mls, GroupState::default()))
         })
     }
 
@@ -223,6 +234,7 @@ impl<P: TreeProvider> Client<P> {
             .use_ratchet_tree_extension(true)
             .padding_size(Group::PADDING)
             .sender_ratchet_configuration(Group::sender_ratchet())
+            .max_past_epochs(Group::PAST_EPOCHS as usize)
             .build();
         self.provider.atomically(|| {
             let result = (|| {
@@ -247,7 +259,10 @@ impl<P: TreeProvider> Client<P> {
                 }
                 let mls = staged.into_group(&self.provider).map_err(crate::error::group_err)?;
                 self.provider.remember_group(mls.group_id().as_slice())?;
-                Ok(Group { mls })
+                // Replace the key from the one-time key package soon.
+                let state = GroupState { should_refresh: true, ..GroupState::default() };
+                self.provider.save_group_state(mls.group_id().as_slice(), &state.encode())?;
+                Ok(Group::new(mls, state))
             })();
             if result.is_err() {
                 // F-006: put back the one-time key package a failed join consumed.

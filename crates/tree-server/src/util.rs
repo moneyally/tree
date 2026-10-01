@@ -72,6 +72,12 @@ pub fn unb64(s: &str, what: &'static str) -> Result<Vec<u8>, ApiError> {
         .map_err(|_| ApiError::bad_request(format!("{what} is not valid base64")))
 }
 
+pub fn unb64_url(s: &str, what: &'static str) -> Result<Vec<u8>, ApiError> {
+    URL_SAFE_NO_PAD
+        .decode(s)
+        .map_err(|_| ApiError::bad_request(format!("{what} is not valid base64url")))
+}
+
 /// True if `s` certainly decodes to more than `max` bytes (checked before decoding).
 /// Padding removes at most 2 bytes from `len / 4 * 3`.
 pub fn b64_exceeds(s: &str, max: usize) -> bool {

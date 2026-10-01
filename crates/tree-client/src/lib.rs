@@ -8,6 +8,7 @@
 
 pub mod api;
 pub mod franking;
+pub mod invites;
 pub mod messages;
 pub mod payload;
 pub mod requests;
@@ -94,6 +95,8 @@ pub enum Event {
     Held,
     /// Could not be used and was dropped.
     Dropped { reason: String },
+    /// Someone used one of this device's invite links and was added.
+    InviteLinkUsed { group: Vec<u8>, account: String },
 }
 
 /// Result of submitting a commit to the server.
@@ -711,6 +714,7 @@ impl Session {
         if events.iter().any(|e| matches!(e, Event::Joined { .. })) {
             self.ensure_key_packages()?;
         }
+        self.handle_invite_requests(&mut events)?;
         // After joining, tell the others our name once we know where they are.
         for key in self.client.app_data_keys("announce/")? {
             let gid = hex::decode(&key["announce/".len()..]).map_err(|_| Error::Protocol("bad key".into()))?;

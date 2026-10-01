@@ -63,6 +63,17 @@ bob sync
 alice send "$G" "밥은 이제 못 읽어"
 bob sync
 
+step "carol, a stranger, joins alice's group through an invite link"
+carol() { TREE_PASSPHRASE="carol pass" "$BIN/tree" --profile "$DIR/carol.db" "$@"; }
+carol init carol "$URL" 12 >/dev/null
+LINK=$(alice invite-link "$G" 1 1 2>/dev/null)
+echo "link: tree://join/…"
+carol join "$LINK"
+alice sync
+carol sync
+alice send "$G" "어서 와 캐럴"
+carol sync
+
 step "alice loses her phone: a new device recovers the account with the recovery phrase"
 PHRASE=$(alice recovery-phrase 24 2>/dev/null)
 echo "(24 words shown once to alice; not printed here)"

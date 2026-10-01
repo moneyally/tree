@@ -21,6 +21,9 @@ commands:
   groups                                 list groups
   create-group                           start a group, print its id
   invite <group> <account-id|@name>      add every device of an account
+  invite-link <group> [hours] [uses]     make an invite link (admins; default 24 h, 10 uses)
+  revoke-links <group>                   revoke my links, release chat.invite_link
+  join <link>                            ask to join a group through its link
   username <name> [hidden]               set my @username (only its hash goes to the server)
   username-release                       drop my @username
   find <@name>                           account id behind a @username
@@ -157,6 +160,20 @@ fn run(args: Vec<String>) -> Result<(), String> {
         ["recovery-release"] => {
             s.release_recovery().map_err(e)?;
             println!("recovery released: this account can no longer be recovered");
+        }
+        ["invite-link", g, more @ ..] => {
+            let hours: i64 = more.first().and_then(|h| h.parse().ok()).unwrap_or(24);
+            let uses: u32 = more.get(1).and_then(|u| u.parse().ok()).unwrap_or(10);
+            println!("{}", s.create_invite_link(&hex_arg(g)?, hours * 3600, uses).map_err(e)?);
+            eprintln!("valid {hours} h, {uses} uses; anyone with the link can ask to join");
+        }
+        ["revoke-links", g] => {
+            s.revoke_invite_links(&hex_arg(g)?).map_err(e)?;
+            println!("links revoked; chat.invite_link released");
+        }
+        ["join", link] => {
+            let owner = s.join_invite_link(link).map_err(e)?;
+            println!("asked {owner} to add you; you join when their device syncs");
         }
         ["create-group"] => println!("{}", hex(&s.create_group().map_err(e)?)),
         ["invite", g, who] => {
@@ -402,5 +419,6 @@ fn print_event(ev: &Event) {
         ),
         Event::Held => println!("(a message was kept for later)"),
         Event::Dropped { reason } => println!("(dropped: {reason})"),
+        Event::InviteLinkUsed { group, account } => println!("[{}] {account} joined through your invite link", &hex(group)[..8]),
     }
 }

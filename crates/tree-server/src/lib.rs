@@ -7,6 +7,7 @@
 //! * [`keypackages`] — one-time MLS key packages
 //! * [`messages`] — per-device mailboxes with long-poll
 //! * [`commits`] — commit ordering: first commit per group and epoch wins
+//! * [`invites`] — group invite links (hash of the secret, expiry, use limit)
 //! * [`recovery`] — a new device joins its account with the recovery phrase
 //! * [`usernames`] — @usernames, stored as hashes only
 //! * [`attachments`] — encrypted attachments (ciphertext blobs)
@@ -24,6 +25,7 @@ pub mod commits;
 pub mod config;
 pub mod error;
 pub mod features;
+pub mod invites;
 pub mod keypackages;
 pub mod limits;
 pub mod messages;
@@ -207,6 +209,11 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/usernames/apply", post(usernames::apply))
         .route("/v1/usernames/release", post(usernames::release))
         .route("/v1/usernames/lookup", post(usernames::lookup))
+        .route("/v1/invites", post(invites::create))
+        .route("/v1/invites/{token_hash}", delete(invites::revoke))
+        .route("/v1/invites/join", post(invites::join))
+        .route("/v1/invites/requests", get(invites::requests))
+        .route("/v1/invites/requests/ack", post(invites::ack))
         .route("/v1/recovery/apply", post(recovery::apply))
         .route("/v1/recovery/release", post(recovery::release))
         .route("/v1/recovery/recover", post(recovery::recover))
@@ -282,7 +289,8 @@ pub async fn purge_expired(state: &AppState, now: i64) -> Result<u64, sqlx::Erro
     .execute(&state.db)
     .await?;
     let files = attachments::purge(state, cutoff).await?;
-    Ok(expired + orphans + files)
+    let invites = invites::purge(&state.db, now).await?;
+    Ok(expired + orphans + files + invites)
 }
 
 /// A running server.

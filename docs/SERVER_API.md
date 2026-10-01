@@ -275,6 +275,35 @@ another account holds it (also when that account hid it).
 `{ "hash": "<32 bytes>" }` → `200 { "account_id": "..." }`, or `404 NOT_FOUND`
 if no account holds it or it is hidden. Costs 10 rate-limit tokens.
 
+## Invite links (PROTOCOL.md 8.7)
+
+### `POST /v1/invites` — register a link
+
+`{ "token_hash": "<32 bytes: SHA-256(\"tree/invite/v1\" || secret)>", "lifetime": 86400, "max_uses": 10 }`
+→ `201 { "expires_at": ... }`. Lifetime 60 s .. 30 days, uses 1 .. 10,000, at
+most 100 open links per device (`LIMIT_EXCEEDED`). `409 ALREADY_EXISTS` for a
+known hash.
+
+### `DELETE /v1/invites/{token_hash}` — revoke (base64url, no padding)
+
+Only the device that made it; idempotent. `200 { "state": "released" }`.
+
+### `POST /v1/invites/join` — use a link
+
+`{ "token": "<16 bytes>" }` → `202 { "owner_account": "..." }`. `404` if
+unknown, expired or used up; `400` for the owner's own account. A repeated
+request by the same account counts once. Costs 5 rate tokens.
+
+### `GET /v1/invites/requests` — requests for my links
+
+`200 { "requests": [{ "id", "token_hash", "account_id" }] }`, oldest first,
+at most 100.
+
+### `POST /v1/invites/requests/ack` — handled
+
+`{ "ids": [...] }` (at most 100) → `200 { "deleted": n }`; only the owner
+device's requests.
+
 ## Recovery (PROTOCOL.md 8.6)
 
 ### `POST /v1/recovery/apply` — set my account's recovery key
@@ -376,6 +405,7 @@ Errors: `UNAUTHORIZED`, `UNKNOWN_FEATURE`.
 | reports | reported and reporting account, reason, the reported messages' plaintext as the reporter sent it, verified flags, day; until the operator deletes them |
 | suspensions | account id, day, optional reason; until released |
 | recovery | the Ed25519 public key derived from the phrase, day set; never the phrase |
+| invite links | hash of the secret, owner account and device, expiry, use limit and count; until 7 days after expiry. Join requests: link hash, requesting account, time; until the owner's device handles them. Never the group |
 
 Logs contain method, route template, status and latency only.
 

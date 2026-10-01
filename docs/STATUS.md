@@ -49,7 +49,7 @@ in section 5.
 | Encrypted device storage (SQLCipher, hardware-wrapped key) | partial | SQLCipher + Argon2id done; hardware key (Secure Enclave / Keystore) needs the apps (`KeySource` is the hook) |
 | Feature registry: apply/release for every feature, permanent locks, layers | done | `features.rs`; server, chat, user, bot layers; `LOCKED_BY_CHAT` |
 | All 34 stage-1 feature keys in the registry | done | all 34, plus `user.recovery_phrase` (behaviour behind most of them: see next row) |
-| Behaviour behind the keys (disappearing timer, edit window, view once, ...) | partial | enforced on every device: chat.media, chat.edit (window), chat.delete_for_all (window), chat.reactions, chat.view_once, chat.disappearing, user.search_index, user.message_requests, user.stranger_block, user.group_add, user.key_change_warning (APP_PROTOCOL.md 3). Not yet: chat.voice, chat.formatting, chat.mention_all, chat.screenshot_block, chat.invite_link, read receipts, typing, link previews, folders, note to self, app lock and other device-level settings (they need the apps) |
+| Behaviour behind the keys (disappearing timer, edit window, view once, ...) | partial | enforced on every device: chat.media, chat.edit (window), chat.delete_for_all (window), chat.reactions, chat.view_once, chat.disappearing, chat.invite_link, user.search_index, user.message_requests, user.stranger_block, user.group_add, user.key_change_warning (APP_PROTOCOL.md 3). Not yet: chat.voice, chat.formatting, chat.mention_all, chat.screenshot_block, read receipts, typing, link previews, folders, note to self, app lock and other device-level settings (they need the apps) |
 | Message history and on-device search | done | `tree_messages` in the encrypted database; `history`, `search` |
 | Recovery phrase (12-24 words) | done | PROTOCOL.md 8.6: BIP-39 (English, Korean), HKDF → Ed25519 recovery key; `/v1/recovery/*`; new device with optional revoke of the others; `user.recovery_phrase`; CLI `recovery-phrase`, `recover`. Not yet: notify other devices and a waiting period |
 | Safety number / QR comparison, key change warning | done | PROTOCOL.md 5.4 (Q4 decided); pinning on first use, warning on any new device key; CLI `safety`, `verify` |
@@ -57,7 +57,7 @@ in section 5.
 | Per-file encryption for attachments | done | PROTOCOL.md 6.12: AES-256-GCM STREAM per file, key in the message, ciphertext and plaintext hashes as key commitment; `chat.media` enforced; CLI `send-file`, `download` |
 | Message franking for reports | done | PROTOCOL.md 8.5: HMAC commitment per message, server tag bound to the account; every text, edit and file is franked; CLI `report` |
 | Admin roles inside the group (admins, kick) | done | PROTOCOL.md 6.11: admins, name and chat settings in the MLS group context; non-admin settings changes and removals rejected by every device; CLI `make-admin`, `name`, `group-apply` |
-| Invite links with expiry / use count | missing | |
+| Invite links with expiry / use count | done | PROTOCOL.md 8.7: secret in the link, only its hash on the server, expiry and use limit enforced by the server, the owner's admin device adds the requester; `chat.invite_link`; CLI `invite-link`, `join`, `revoke-links` |
 | Official test vectors before merging crypto | partial | the libraries carry their own; Tree has no vector file of its own yet |
 
 ### 2.2 Server (`crates/tree-server`, `deploy/`)

@@ -234,6 +234,24 @@ CREATE TABLE suspensions (account_id TEXT PRIMARY KEY, since_day INTEGER NOT NUL
 
 `server_secrets` is a secret: back it up with the database, never log it.
 
+### 2.6 Invite links (migration `0007_invites.sql`, PROTOCOL.md 8.7)
+
+```sql
+CREATE TABLE invites (
+    token_hash BLOB PRIMARY KEY,            -- SHA-256("tree/invite/v1" || secret)
+    owner_account TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    owner_device  TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    expires_at INTEGER NOT NULL, max_uses INTEGER NOT NULL, uses INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE invite_requests (
+    id TEXT PRIMARY KEY,
+    token_hash BLOB NOT NULL REFERENCES invites(token_hash) ON DELETE CASCADE,
+    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    created_at INTEGER NOT NULL,
+    UNIQUE (token_hash, account_id)
+);
+```
+
 ### 2.5 Recovery (migration `0006_recovery.sql`, PROTOCOL.md 8.6)
 
 ```sql

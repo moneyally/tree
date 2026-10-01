@@ -182,6 +182,39 @@ impl Api {
         Ok(Creds { account_id: field(&v, "account_id")?, device_id: field(&v, "device_id")?, key: key.clone() })
     }
 
+    /// Registers an invite link's hash (PROTOCOL.md 8.7).
+    pub fn invite_create(&self, c: &Creds, hash: &[u8; 32], lifetime: i64, max_uses: u32) -> Result<Value, Error> {
+        let body = json!({ "token_hash": b64(hash), "lifetime": lifetime, "max_uses": max_uses });
+        self.call(c, Method::POST, "/v1/invites", Some(&body))?.ok()
+    }
+
+    pub fn invite_revoke(&self, c: &Creds, hash: &[u8]) -> Result<(), Error> {
+        let path = format!("/v1/invites/{}", URL_SAFE_NO_PAD.encode(hash));
+        self.call(c, Method::DELETE, &path, None)?.ok()?;
+        Ok(())
+    }
+
+    /// Uses a link; returns the owner's account id.
+    pub fn invite_join(&self, c: &Creds, token_b64: &str) -> Result<String, Error> {
+        let v = self.call(c, Method::POST, "/v1/invites/join", Some(&json!({ "token": token_b64 })))?.ok()?;
+        field(&v, "owner_account")
+    }
+
+    /// Join requests for this device's links: (id, token hash, account).
+    pub fn invite_requests(&self, c: &Creds) -> Result<Vec<(String, Vec<u8>, String)>, Error> {
+        let v = self.call(c, Method::GET, "/v1/invites/requests", None)?.ok()?;
+        let mut out = Vec::new();
+        for r in v["requests"].as_array().cloned().unwrap_or_default() {
+            out.push((field(&r, "id")?, unb64(&field(&r, "token_hash")?)?, field(&r, "account_id")?));
+        }
+        Ok(out)
+    }
+
+    pub fn invite_ack(&self, c: &Creds, ids: &[String]) -> Result<(), Error> {
+        self.call(c, Method::POST, "/v1/invites/requests/ack", Some(&json!({ "ids": ids })))?.ok()?;
+        Ok(())
+    }
+
     /// Registers (`Some`) or drops (`None`) the account's recovery key.
     pub fn set_recovery(&self, c: &Creds, recovery_pub: Option<&[u8; 32]>) -> Result<(), Error> {
         match recovery_pub {

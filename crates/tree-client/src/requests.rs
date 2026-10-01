@@ -127,6 +127,10 @@ impl Session {
             events.push(decline("blocked"));
             return self.decline(gid, false);
         }
+        // The user opened this account's invite link: they asked to join.
+        if self.take_link_join(adder)? {
+            return self.set_group_status(gid, &GroupStatus::Accepted);
+        }
         let group_add = self.feature("user.group_add")?;
         if !direct && group_add.state == tree_core::features::State::Applied && group_add.option.as_deref() == Some("nobody") {
             events.push(decline("nobody may add you to groups (user.group_add = nobody)"));

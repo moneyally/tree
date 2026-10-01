@@ -967,6 +967,41 @@ period in which they can cancel it (RECOVERY_THREAT_MODEL.md 2.3 item 6 asks
 this for PINs; for the phrase it is planned with the apps), encrypted
 backups keyed from the phrase (stage 3).
 
+### 8.7 Group invite links
+
+`chat.invite_link` (chat scope, admins; released by default). Code:
+`crates/tree-client/src/invites.rs`, `crates/tree-server/src/invites.rs`.
+
+1. An admin device makes a 16-byte random secret; the link is
+   `tree://join/<base64url secret>`. It registers
+   `SHA-256("tree/invite/v1" || secret)` with a lifetime (1 minute to 30
+   days) and a use limit (1 to 10,000), and keeps locally which group the
+   link is for. Making a link applies `chat.invite_link` in the group
+   settings (a commit) if it was released.
+2. A device that opens the link sends the secret (`POST /v1/invites/join`,
+   5 rate tokens). The server checks expiry and uses, counts one use per
+   account, queues a join request for the owner's device and returns the
+   owner's account id. The joining device remembers (for one day) that the
+   user asked to join that account's group, so the welcome is accepted
+   rather than shown as a message request (APP_PROTOCOL.md 5).
+3. The owner's device, on sync, fetches its requests and adds the requester
+   through the normal path (key-package claim, commit, welcome) only if the
+   link is still in its store, the group's settings still apply
+   `chat.invite_link`, the device is still an admin, and the requester is not
+   blocked. Otherwise it drops the request. Requests are acknowledged
+   (deleted) either way.
+4. Revoking deletes the device's links on the server and releases
+   `chat.invite_link` for the group, which makes every admin device refuse
+   requests for its links too.
+
+The server never learns the group: only the hash of the secret, the owner
+account and device, the limits, and which accounts asked. Whoever holds the
+link can ask to join; the limits and the admin's control of the setting
+bound that. The joiner sees the members once it is in (and contacts' key
+changes as usual); it cannot learn anything about the group before. Expired
+links stay 7 days on the server so requests made in time are still
+handled, then are purged.
+
 ---
 
 ## 9. Security claims

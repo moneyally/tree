@@ -108,6 +108,9 @@ request until the adder's account is known from its `roster`. Then
 | stranger, `user.stranger_block` applied | declined | declined |
 | stranger | request if `user.message_requests` applied (default), else accepted | declined if `user.group_add` applied (default: contacts only), else as for a 1:1 chat |
 
+An adder whose invite link the user opened in the last day (PROTOCOL.md 8.7)
+is accepted after the blocked check: the user asked to join.
+
 Messages in a request are shown as such (`request: true`) until accepted.
 Declining sends `leave` and ignores the group from then on; it can also
 block the adder. Messages from a blocked account are dropped in every group.
@@ -152,4 +155,7 @@ In the same encrypted database as the core (`tree_app` table, SCHEMA.md):
 | `feature/<key>` | the user's setting: applied or released, option |
 | `profile/username` | the own @username |
 | `file/<attachment id>` | a received `file` reference and its group (deleted after a view-once download) |
+| `invite/<link hash hex>` | a link this device made: group, expiry, use limit (PROTOCOL.md 8.7) |
+| `linkjoin/<account id>` | time the user opened that account's invite link (one day) |
+| `feature/user.recovery_phrase` | applied once a recovery phrase was made (the phrase itself is never stored) |
 | table `tree_messages` | message history with franking records (SCHEMA.md 1.2) |

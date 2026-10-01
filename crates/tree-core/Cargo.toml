@@ -1,0 +1,24 @@
+[package]
+name = "tree-core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Tree messenger core: end-to-end encrypted groups, identities and the feature registry."
+
+[features]
+default = ["pq"]
+# Post-quantum hybrid ciphersuites (IETF draft, provisional code points).
+pq = [
+    "openmls/draft-ietf-mls-pq-ciphersuites",
+    "openmls_rust_crypto/draft-ietf-mls-pq-ciphersuites",
+    "openmls_libcrux_crypto/draft-ietf-mls-pq-ciphersuites",
+    "openmls_basic_credential/draft-ietf-mls-pq-ciphersuites",
+]
+
+[dependencies]
+openmls = "0.9.0"
+openmls_rust_crypto = "0.6.0"
+openmls_libcrux_crypto = "0.4.0"
+openmls_basic_credential = "0.6.0"
+openmls_traits = "0.6.0"
+thiserror = "2"

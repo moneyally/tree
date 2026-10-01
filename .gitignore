@@ -5,3 +5,7 @@ target/
 .claude/worktrees/
 mutants.out/
 mutants.out.old/
+bindings/generated/
+bindings/kotlin-jvm/build/
+bindings/kotlin-jvm/.gradle/
+bindings/kotlin-jvm/.kotlin/

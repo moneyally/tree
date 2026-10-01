@@ -88,7 +88,7 @@ in section 5.
 | --- | --- | --- |
 | Client logic library shared by all apps | done | `crates/tree-client`: server API, sync, two-phase commits, rosters, names, held messages (APP_PROTOCOL.md) |
 | Command-line client through the server | done | `crates/tree-cli`, `scripts/cli_demo.sh`; end-to-end test with a real server (HANDOFF 3.3) |
-| UniFFI bindings | missing | |
+| UniFFI bindings | done | `crates/tree-ffi` (`TreeSession`); Kotlin bindings run on the JVM against a real server (`scripts/ffi_kotlin_demo.sh`), Python likewise (`scripts/ffi_demo.sh`); Swift generated. Android/iOS library builds need the NDK / Xcode |
 | Android app (Kotlin + Compose Multiplatform) | missing | |
 | Desktop app (same code) | missing | |
 | iOS app (Swift + SwiftUI) | missing | needs macOS (GitHub Actions runner) and an Apple developer account |

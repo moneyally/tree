@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{names, Now};
+use common::{ids, Now};
 
 use std::path::{Path, PathBuf};
 
@@ -51,7 +51,7 @@ fn restart(client: Stored, group: Group, path: &Path, pass: &str) -> (Stored, Gr
 fn says(ev: Incoming, from: &Client<impl tree_core::TreeProvider>, text: &str) {
     assert_eq!(
         ev,
-        Incoming::Message { from: from.member_id(), name: from.name().into(), body: text.as_bytes().to_vec() }
+        Incoming::Message { from: from.member_id(), body: text.as_bytes().to_vec() }
     );
 }
 
@@ -100,7 +100,7 @@ fn conversation_survives_restarts() {
     let (alice, mut a) = restart(alice, a, &pa, "alice pass");
     let (bob, mut b) = restart(bob, b, &pb, "bob pass");
     let (charlie, mut c2) = restart(charlie, c, &pc, "charlie pass");
-    assert_eq!(names(&a), vec!["alice", "bob", "charlie"]);
+    assert_eq!(a.members(), ids(&[&alice, &bob, &charlie]));
     assert_eq!(c2.members(), a.members());
     let m = c2.send(&charlie, b"hi from charlie").unwrap();
     says(a.receive(&alice, &m).unwrap(), &charlie, "hi from charlie");
@@ -124,7 +124,7 @@ fn conversation_survives_restarts() {
     let m = a.send(&alice, b"without bob").unwrap();
     says(c.receive(&charlie, &m).unwrap(), &alice, "without bob");
     assert!(b.receive(&bob, &m).is_err());
-    assert_eq!(names(&a), vec!["alice", "charlie"]);
+    assert_eq!(a.members(), ids(&[&alice, &charlie]));
 
     // Add Bob back (fresh key package, after all those restarts).
     let add = a.add_now(&alice, &bob.key_package().unwrap()).unwrap();
@@ -159,7 +159,7 @@ fn several_groups_are_listed_and_loaded() {
         let m = g.send(&alice, id).unwrap();
         assert_eq!(
             peer.receive(&bob, &m).unwrap(),
-            Incoming::Message { from: alice.member_id(), name: "alice".into(), body: id.clone() }
+            Incoming::Message { from: alice.member_id(), body: id.clone() }
         );
     }
     assert!(matches!(alice.load_group(b"no such group"), Err(TreeError::NoSuchGroup)));

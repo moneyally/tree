@@ -120,6 +120,22 @@ impl Client<StoredProvider> {
         self.provider.group_ids()
     }
 
+    /// App data kept in the same encrypted database (contacts, rosters,
+    /// server credentials, ...). Keys are free-form text.
+    pub fn app_data(&self, key: &str) -> Result<Option<Vec<u8>>, TreeError> {
+        self.provider.app(key)
+    }
+
+    /// Stores (`Some`) or deletes (`None`) one app data value.
+    pub fn set_app_data(&self, key: &str, value: Option<&[u8]>) -> Result<(), TreeError> {
+        self.provider.atomically(|| self.provider.put_app(key, value))
+    }
+
+    /// App data keys starting with `prefix`, sorted.
+    pub fn app_data_keys(&self, prefix: &str) -> Result<Vec<String>, TreeError> {
+        self.provider.app_keys(prefix)
+    }
+
     /// Loads a stored group. Load each group once and keep the [`Group`]:
     /// two live copies of the same group would get out of step.
     pub fn load_group(&self, group_id: &[u8]) -> Result<Group, TreeError> {
@@ -151,14 +167,19 @@ impl<P: TreeProvider> Client<P> {
             .store(provider.storage())
             .map_err(|e| TreeError::Identity(format!("{e:?}")))?;
 
+        // The credential holds only the signature key. The display name stays
+        // on the device: key packages are public, so anything in the
+        // credential would be readable by the server (F-009).
         let credential = CredentialWithKey {
-            credential: BasicCredential::new(name.as_bytes().to_vec()).into(),
+            credential: BasicCredential::new(signer.to_public_vec()).into(),
             signature_key: signer.to_public_vec().into(),
         };
 
         Ok(Self { name: name.to_string(), provider, signer, credential, ciphersuite })
     }
 
+    /// The display name chosen at creation. Kept only on this device; apps
+    /// share it with group members inside the group.
     pub fn name(&self) -> &str {
         &self.name
     }

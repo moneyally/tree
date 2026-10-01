@@ -73,7 +73,10 @@ commit and welcome 4 MiB, 2048 devices; tests in `crates/tree-server/tests/commi
    limits for commits/welcomes (or deliver the tree separately) and handle >1000 recipients.
 3. Update `docs/SERVER_API.md` and server tests (incl. concurrent commits for the same epoch).
 
-### 3.3 CLI client (`crates/tree-cli`, new)
+### 3.3 CLI client (`crates/tree-cli`, new) — DONE
+`crates/tree-client` (all client logic, for the apps too) + `crates/tree-cli` (`tree` binary);
+`scripts/cli_demo.sh` runs a real server and two CLIs; `crates/tree-client/tests/end_to_end.rs`.
+Found and fixed F-009 (names in key packages). App payloads: `docs/APP_PROTOCOL.md`. Original task:
 Encrypted profile (`Client::create/open`), signup with PoW, key package upload, create group,
 invite by account id (claim key packages), send/receive via long-poll, confirm/discard pending commits.
 Demonstrate two CLIs chatting end to end through a locally running server (and later the Hetzner one).

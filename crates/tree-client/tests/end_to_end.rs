@@ -1,0 +1,159 @@
+//! Three devices with encrypted profiles talk through a real Tree server over
+//! HTTP: invite, chat, a commit race, a restart, removal, leaving. Then the
+//! server's database is searched for the plaintext.
+
+use std::path::PathBuf;
+
+use tree_client::{CommitOutcome, Event, Session};
+use tree_server::Config;
+
+struct Env {
+    dir: PathBuf,
+    url: String,
+    db: PathBuf,
+    _rt: tokio::runtime::Runtime,
+}
+
+impl Env {
+    fn new(tag: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("tree-e2e-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("server.db");
+        let cfg = Config {
+            database_url: format!("sqlite://{}", db.display()),
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            pow_bits: 8,
+            ..Config::default()
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let server = rt.block_on(tree_server::start(cfg)).unwrap();
+        let url = format!("http://{}", server.addr);
+        std::mem::forget(server); // runs until the runtime is dropped
+        Self { dir, url, db, _rt: rt }
+    }
+
+    fn device(&self, name: &str) -> Session {
+        let p = self.profile(name);
+        Session::create(&p, &format!("{name} passphrase"), name, &self.url, 8).unwrap()
+    }
+
+    fn profile(&self, name: &str) -> String {
+        self.dir.join(format!("{name}.db")).display().to_string()
+    }
+}
+
+impl Drop for Env {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+fn texts(events: &[Event]) -> Vec<(String, String)> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Text { name, text, .. } => Some((name.clone().unwrap_or_else(|| "?".into()), text.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn three_devices_chat_through_the_server() {
+    let env = Env::new("chat");
+    let mut alice = env.device("alice");
+    let mut bob = env.device("bob");
+    let mut carol = env.device("carol");
+
+    // alice starts a group and invites bob's account.
+    let g = alice.create_group().unwrap();
+    assert_eq!(alice.invite(&g, bob.account_id()).unwrap(), CommitOutcome::Accepted { epoch: 1 });
+    let ev = bob.sync(0).unwrap();
+    assert!(ev.contains(&Event::Joined { group: g.clone() }), "{ev:?}");
+    assert!(ev.contains(&Event::RosterUpdated { group: g.clone() }), "{ev:?}");
+
+    alice.send_text(&g, "안녕 밥, 서버를 거쳐 가는 첫 메시지 7f3a").unwrap();
+    let ev = bob.sync(0).unwrap();
+    assert_eq!(texts(&ev), vec![("alice".into(), "안녕 밥, 서버를 거쳐 가는 첫 메시지 7f3a".into())]);
+    match &ev[0] {
+        Event::Text { from, .. } => assert_eq!(*from, alice.member_id()),
+        other => panic!("{other:?}"),
+    }
+    bob.send_text(&g, "잘 받았어").unwrap();
+    assert_eq!(texts(&alice.sync(0).unwrap()), vec![("bob".into(), "잘 받았어".into())]);
+
+    // Race for epoch 1 -> 2: bob refreshes his keys first, alice's invite of carol loses.
+    assert_eq!(bob.refresh_keys(&g).unwrap(), CommitOutcome::Accepted { epoch: 2 });
+    assert_eq!(alice.invite(&g, carol.account_id()).unwrap(), CommitOutcome::Lost);
+    let ev = alice.sync(0).unwrap();
+    assert!(ev.iter().any(|e| matches!(e, Event::Changed { epoch: 2, .. })), "{ev:?}");
+    // alice decides again in epoch 2 and wins.
+    assert_eq!(alice.invite(&g, carol.account_id()).unwrap(), CommitOutcome::Accepted { epoch: 3 });
+    let ev = carol.sync(0).unwrap();
+    assert!(ev.contains(&Event::Joined { group: g.clone() }), "{ev:?}");
+    let ev = bob.sync(0).unwrap();
+    assert!(ev.iter().any(|e| matches!(e, Event::Changed { epoch: 3, added, .. } if added.len() == 1)), "{ev:?}");
+
+    carol.send_text(&g, "나도 왔어").unwrap();
+    assert_eq!(texts(&alice.sync(0).unwrap()), vec![("carol".into(), "나도 왔어".into())]);
+    assert_eq!(texts(&bob.sync(0).unwrap()), vec![("carol".into(), "나도 왔어".into())]);
+    let code = alice.verification_code(&g).unwrap();
+    assert_eq!(bob.verification_code(&g).unwrap(), code, "one group state, no fork");
+    assert_eq!(carol.verification_code(&g).unwrap(), code);
+
+    // alice's app restarts: everything comes back from her encrypted profile.
+    drop(alice);
+    let (mut alice, resubmitted) = Session::open(&env.profile("alice"), "alice passphrase").unwrap();
+    assert!(resubmitted.is_empty());
+    alice.send_text(&g, "재시작 후에도 그대로").unwrap();
+    assert_eq!(texts(&bob.sync(0).unwrap()), vec![("alice".into(), "재시작 후에도 그대로".into())]);
+    assert_eq!(texts(&carol.sync(0).unwrap()).len(), 1);
+
+    // alice removes bob (by member id). bob learns it and reads nothing after.
+    assert_eq!(alice.remove(&g, &[bob.member_id()]).unwrap(), CommitOutcome::Accepted { epoch: 4 });
+    let ev = bob.sync(0).unwrap();
+    assert!(ev.contains(&Event::RemovedFromGroup { group: g.clone() }), "{ev:?}");
+    alice.send_text(&g, "밥 없는 비밀 b0b").unwrap();
+    assert!(texts(&bob.sync(0).unwrap()).is_empty());
+    assert_eq!(texts(&carol.sync(0).unwrap()), vec![("alice".into(), "밥 없는 비밀 b0b".into())]);
+    assert!(bob.send_text(&g, "아직 있어?").is_err());
+
+    // carol asks to leave; alice removes her.
+    carol.leave(&g).unwrap();
+    let ev = alice.sync(0).unwrap();
+    assert!(ev.contains(&Event::LeaveRequested { group: g.clone(), member: carol.member_id() }), "{ev:?}");
+    assert_eq!(alice.remove(&g, &[carol.member_id()]).unwrap(), CommitOutcome::Accepted { epoch: 5 });
+    assert!(carol.sync(0).unwrap().contains(&Event::RemovedFromGroup { group: g.clone() }));
+    let members = alice.members(&g).unwrap();
+    assert_eq!(members.len(), 1);
+    assert_eq!(members[0].name.as_deref(), Some("alice"));
+
+    // The server's database never held any plaintext or names.
+    drop((alice, bob, carol));
+    let mut raw = std::fs::read(&env.db).unwrap();
+    for ext in ["-wal", "-shm"] {
+        if let Ok(b) = std::fs::read(format!("{}{ext}", env.db.display())) {
+            raw.extend(b);
+        }
+    }
+    for needle in ["7f3a", "b0b", "안녕", "alice", "carol", "재시작"] {
+        assert!(!raw.windows(needle.len()).any(|w| w == needle.as_bytes()), "server stored {needle:?}");
+    }
+}
+
+/// A message for a group the device has not joined yet is held and read
+/// once the welcome arrives (PROTOCOL.md 6.7).
+#[test]
+fn held_until_readable() {
+    let env = Env::new("held");
+    let mut alice = env.device("alice");
+    let mut bob = env.device("bob");
+    let g = alice.create_group().unwrap();
+    alice.invite(&g, bob.account_id()).unwrap();
+    alice.send_text(&g, "first").unwrap();
+    // bob receives both in one sync, in mailbox order: works without holding.
+    let ev = bob.sync(0).unwrap();
+    assert_eq!(texts(&ev), vec![("alice".into(), "first".into())]);
+    assert!(!ev.contains(&Event::Held));
+}

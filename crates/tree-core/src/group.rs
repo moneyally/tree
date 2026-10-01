@@ -33,8 +33,9 @@ pub struct Group {
 /// Identifies a member (one device) of a group:
 /// `SHA-256("tree/member-id/v1" || signature_key)` (PROTOCOL.md section 5.2).
 ///
-/// Unlike the display name it cannot be chosen freely: it is bound to the
-/// device's MLS signature key, which is unique within a group.
+/// It is bound to the device's MLS signature key, which is unique within a
+/// group. Display names are not part of MLS at all (F-009): apps exchange
+/// them inside the group, end-to-end encrypted.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct MemberId(pub [u8; 32]);
 
@@ -44,6 +45,25 @@ impl MemberId {
     /// Member id of the device with this MLS signature public key.
     pub fn of(signature_key: &[u8]) -> Self {
         Self(Sha256::new().chain_update(Self::LABEL).chain_update(signature_key).finalize().into())
+    }
+
+    /// Member id the device behind a key package will have.
+    pub fn of_key_package(key_package: &[u8]) -> Result<Self, TreeError> {
+        let kp = KeyPackageIn::tls_deserialize_exact(key_package)
+            .map_err(|e| TreeError::Malformed(format!("{e:?}")))?;
+        Ok(Self::of(kp.unverified_credential().signature_key.as_slice()))
+    }
+
+    /// Parses 64 lowercase or uppercase hex digits.
+    pub fn from_hex(s: &str) -> Option<Self> {
+        if s.len() != 64 || !s.is_ascii() {
+            return None;
+        }
+        let mut out = [0u8; 32];
+        for (i, b) in out.iter_mut().enumerate() {
+            *b = u8::from_str_radix(&s[2 * i..2 * i + 2], 16).ok()?;
+        }
+        Some(Self(out))
     }
 
     pub fn as_bytes(&self) -> &[u8; 32] {
@@ -68,18 +88,6 @@ impl fmt::Display for MemberId {
     }
 }
 
-/// A member as shown to the user.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Member {
-    pub id: MemberId,
-    /// Self-chosen display name. NOT authenticated (F-008): never use it for
-    /// a security decision.
-    pub name: String,
-    /// Another member of the group carries the same name. The app must
-    /// tell them apart by `id` (safety number), not by name.
-    pub duplicate_name: bool,
-}
-
 /// A commit this device made that the server has not accepted yet.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PendingCommit {
@@ -99,13 +107,13 @@ pub struct PendingCommit {
 /// What an incoming message turned out to be.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Incoming {
-    /// A chat message. `from` is authenticated; `name` is not (F-008).
-    Message { from: MemberId, name: String, body: Vec<u8> },
+    /// A chat message from the member `from` (authenticated by MLS).
+    Message { from: MemberId, body: Vec<u8> },
     /// Another member's commit was merged: members joined, were removed, or
     /// someone refreshed their keys. If this device had a pending commit for
     /// the same epoch, it lost and was discarded (`own_commit_discarded`);
     /// decide again in the new epoch.
-    GroupChanged { added: Vec<Member>, removed: Vec<Member>, epoch: u64, own_commit_discarded: bool },
+    GroupChanged { added: Vec<MemberId>, removed: Vec<MemberId>, epoch: u64, own_commit_discarded: bool },
     /// Our pending commit came back from the server, so it was accepted and
     /// is now merged (same as [`Group::confirm_commit`]).
     OwnCommitMerged { epoch: u64 },
@@ -150,19 +158,8 @@ impl Group {
     }
 
     /// Current members in leaf order.
-    pub fn members(&self) -> Vec<Member> {
-        let list: Vec<(MemberId, String)> = self
-            .mls
-            .members()
-            .map(|m| (MemberId::of(&m.signature_key), name_of(&m.credential)))
-            .collect();
-        list.iter()
-            .map(|(id, name)| Member {
-                id: *id,
-                name: name.clone(),
-                duplicate_name: list.iter().filter(|(_, n)| n == name).count() > 1,
-            })
-            .collect()
+    pub fn members(&self) -> Vec<MemberId> {
+        self.mls.members().map(|m| MemberId::of(&m.signature_key)).collect()
     }
 
     /// Value both sides can compare out of band (QR / safety number) to
@@ -201,6 +198,9 @@ impl Group {
                     .map_err(|e| TreeError::InvalidKeyPackage(format!("{e:?}")))?;
                 if kp.ciphersuite() != me.ciphersuite {
                     return Err(TreeError::InvalidKeyPackage("ciphersuite mismatch".into()));
+                }
+                if !credential_is_key(kp.leaf_node()) {
+                    return Err(TreeError::InvalidKeyPackage("credential must be the signature key (F-009)".into()));
                 }
                 Ok(kp)
             })
@@ -423,7 +423,6 @@ impl Group {
             .process_message(&me.provider, protocol)
             .map_err(|e| TreeError::Rejected(format!("{e:?}")))?;
         let sender = processed.sender().clone();
-        let name = name_of(processed.credential());
         let aad_empty = processed.aad().is_empty();
 
         match processed.into_content() {
@@ -432,7 +431,7 @@ impl Group {
                     return Err(TreeError::Rejected("authenticated data must be empty".into()));
                 }
                 let from = self.sender_id(epoch, &sender)?;
-                Ok(Incoming::Message { from, name, body: m.into_bytes() })
+                Ok(Incoming::Message { from, body: m.into_bytes() })
             }
             ProcessedMessageContent::StagedCommitMessage(staged) => {
                 let Sender::Member(committer) = sender else {
@@ -445,12 +444,11 @@ impl Group {
                     .add_proposals()
                     .map(|p| MemberId::of(p.add_proposal().key_package().leaf_node().signature_key().as_slice()))
                     .collect();
-                let removed: Vec<Member> = self
+                let removed: Vec<MemberId> = self
+                    .mls
                     .members()
-                    .into_iter()
-                    .zip(self.mls.members())
-                    .filter(|(_, m)| removed_leaves.contains(&m.index))
-                    .map(|(member, _)| member)
+                    .filter(|m| removed_leaves.contains(&m.index))
+                    .map(|m| MemberId::of(&m.signature_key))
                     .collect();
                 let own_commit_discarded = self.state.pending.is_some();
                 let past = self.past_epoch(me)?;
@@ -463,8 +461,7 @@ impl Group {
                 if !self.mls.is_active() {
                     return Ok(Incoming::RemovedFromGroup);
                 }
-                let added = self.members().into_iter().filter(|m| added_ids.contains(&m.id)).collect();
-                Ok(Incoming::GroupChanged { added, removed, epoch: self.epoch(), own_commit_discarded })
+                Ok(Incoming::GroupChanged { added: added_ids, removed, epoch: self.epoch(), own_commit_discarded })
             }
             ProcessedMessageContent::OwnPrivateMessage => Ok(Incoming::OwnEcho),
             _ => Err(TreeError::Rejected("message type not accepted in Tree v1".into())),
@@ -577,6 +574,9 @@ fn check_commit(staged: &StagedCommit, committer: LeafNodeIndex) -> Result<(), T
             return reject("proposal by reference");
         }
         match q.proposal() {
+            Proposal::Add(a) if !credential_is_key(a.key_package().leaf_node()) => {
+                return reject("credential is not the signature key")
+            }
             Proposal::Add(_) => {}
             Proposal::Remove(r) if r.removed() == committer => return reject("committer removes itself"),
             Proposal::Remove(_) => only_adds = false,
@@ -589,8 +589,11 @@ fn check_commit(staged: &StagedCommit, committer: LeafNodeIndex) -> Result<(), T
     Ok(())
 }
 
-fn name_of(credential: &Credential) -> String {
-    String::from_utf8_lossy(credential.serialized_content()).into_owned()
+/// Tree credentials carry nothing but the signature key (F-009): any other
+/// content would be readable by the server in key packages.
+fn credential_is_key(leaf: &LeafNode) -> bool {
+    leaf.credential().credential_type() == CredentialType::Basic
+        && leaf.credential().serialized_content() == leaf.signature_key().as_slice()
 }
 
 fn sha256(data: &[u8]) -> [u8; 32] {

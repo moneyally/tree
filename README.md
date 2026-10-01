@@ -9,7 +9,8 @@ An end-to-end encrypted messenger where the server knows as little as possible.
 - **Every feature can be applied and released**, through the API and with a button in the app. The few that cannot (like encryption itself) say why.
 - **Open source**, built only on published standards (MLS, RFC 9420) and independent, audited libraries. No home-made cryptography.
 
-> **Status: early development (stage 0).** Not audited. Do not rely on Tree for sensitive communication yet.
+> **Status: early development (stage 1 started).** Not audited. Do not rely on Tree for sensitive communication yet.
+> What exists and what does not: [docs/STATUS.md](docs/STATUS.md).
 
 ## What works today
 
@@ -21,10 +22,15 @@ The Rust core (`crates/tree-core`) can:
 - reject tampered, replayed, cross-group and outsider messages
 - manage features through the apply/release registry
 
+The server (`crates/tree-server`) orders commits and stores ciphertext only;
+the client library (`crates/tree-client`) and the `tree` command line
+(`crates/tree-cli`) chat through it.
+
 Try it:
 
 ```sh
-cargo run -p tree-core --example demo   # three people chatting end to end
+cargo build -p tree-server -p tree-cli && sh scripts/cli_demo.sh   # two people chat through a real server
+cargo run -p tree-core --example demo   # three people chatting end to end (no server)
 cargo test -p tree-core                 # attack-scenario tests on the reference implementation
 formal/run.sh                           # formal models (needs ProVerif)
 ```
@@ -37,7 +43,10 @@ assumptions, and which parts are machine-checked is in
 
 ```
 crates/tree-core   end-to-end encryption, groups, feature registry
-crates/tree-server server: mailboxes and one-time key packages (ciphertext only)
+crates/tree-server server: mailboxes, one-time key packages, commit ordering (ciphertext only)
+crates/tree-client client logic for all apps: server API, sync, commits, rosters
+crates/tree-cli    `tree` command-line client
+scripts/           demos
 deploy/            Docker image and compose file for running the server
 docs/              protocol specification, threat models, server API, security findings
 formal/            ProVerif models of the parts Tree adds on top of MLS
@@ -45,7 +54,8 @@ formal/            ProVerif models of the parts Tree adds on top of MLS
 
 The server API is described in [docs/SERVER_API.md](docs/SERVER_API.md).
 
-Coming next: Android app, desktop app, iOS app.
+Coming next: identity and safety basics (recovery phrase, safety numbers,
+usernames, blocking, reporting), then the Android, desktop and iOS apps.
 
 ## Security
 

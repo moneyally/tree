@@ -69,8 +69,9 @@ impl Insider {
         let provider = DefaultProvider::default();
         let signer = SignatureKeyPair::new(TREE_CIPHERSUITE.signature_algorithm()).unwrap();
         signer.store(provider.storage()).unwrap();
+        let _ = name; // names are not part of MLS (F-009)
         let credential = CredentialWithKey {
-            credential: BasicCredential::new(name.as_bytes().to_vec()).into(),
+            credential: BasicCredential::new(signer.to_public_vec()).into(),
             signature_key: signer.to_public_vec().into(),
         };
         Self { provider, signer, credential, group: None }
@@ -158,15 +159,14 @@ pub fn chat_with_insider(insider_name: &str) -> (Client, Client, Group, Group, I
     (alice, bob, a, b, m)
 }
 
-/// Display names of the current members, in leaf order.
-pub fn names(g: &Group) -> Vec<String> {
-    g.members().into_iter().map(|m| m.name).collect()
+/// Member ids of the given clients, in the order given.
+pub fn ids<P: TreeProvider>(clients: &[&Client<P>]) -> Vec<MemberId> {
+    clients.iter().map(|c| c.member_id()).collect()
 }
 
-/// The text of an incoming chat message, if it is one.
-pub fn text(r: &Result<tree_core::Incoming, TreeError>) -> Option<(MemberId, String, Vec<u8>)> {
-    match r {
-        Ok(tree_core::Incoming::Message { from, name, body }) => Some((*from, name.clone(), body.clone())),
-        _ => None,
+impl Insider {
+    /// Member id of the insider (credential = signature key).
+    pub fn member_id(&self) -> MemberId {
+        MemberId::of(&self.signer.to_public_vec())
     }
 }

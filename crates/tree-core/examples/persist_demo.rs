@@ -15,8 +15,8 @@ type Stored = Client<StoredProvider>;
 
 fn show(who: &str, ev: &Incoming) {
     match ev {
-        Incoming::Message { name, body, .. } => {
-            println!("  {who:<8} <- {name}: {}", String::from_utf8_lossy(body))
+        Incoming::Message { from, body } => {
+            println!("  {who:<8} <- [{}]: {}", &from.to_hex()[..8], String::from_utf8_lossy(body))
         }
         other => println!("  {who:<8} <- {other:?}"),
     }
@@ -115,8 +115,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (bob, gb) = open(&pb, "bob: staple purple tiger")?;
     let (charlie, mut gc) = open(&pc, "charlie: river stone lamp")?;
     let (mut a, mut c) = (ga.remove(0), gc.remove(0));
-    let names: Vec<String> = a.members().into_iter().map(|m| m.name).collect();
-    println!("  members: {names:?}; bob still a member: {}", gb[0].is_member());
+    println!("  members: {}; bob still a member: {}", a.members().len(), gb[0].is_member());
     let m = a.send(&alice, "밥 없는 비밀 이야기".as_bytes())?;
     show("charlie", &c.receive(&charlie, &m)?);
     let mut b = gb.into_iter().next().unwrap();

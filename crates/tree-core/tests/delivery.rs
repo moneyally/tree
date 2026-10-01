@@ -63,7 +63,7 @@ fn message_from_previous_epoch_after_commit_is_read() {
     assert_eq!(a.epoch(), 2);
     assert_eq!(
         a.receive(&alice, &in_flight).unwrap(),
-        Incoming::Message { from: bob.member_id(), name: "bob".into(), body: b"sent at epoch 1".to_vec() }
+        Incoming::Message { from: bob.member_id(), body: b"sent at epoch 1".to_vec() }
     );
     b.receive(&bob, &c).unwrap();
     let m = b.send(&bob, b"epoch 2").unwrap();
@@ -100,10 +100,7 @@ fn past_epoch_sender_is_the_member_of_that_epoch() {
     a.add_now(&alice, &dave.key_package().unwrap()).unwrap();
     assert_eq!(a.epoch(), 4);
     match a.receive(&alice, &from_eve).unwrap() {
-        Incoming::Message { from, name, .. } => {
-            assert_eq!(from, eve.member_id());
-            assert_eq!(name, "eve");
-        }
+        Incoming::Message { from, .. } => assert_eq!(from, eve.member_id()),
         other => panic!("{other:?}"),
     }
 }
@@ -253,7 +250,7 @@ fn pending_commit_changes_nothing() {
     assert!(p.welcome.is_some());
     assert_eq!(a.epoch(), 1);
     assert_eq!(a.verification_code(), code);
-    assert_eq!(common::names(&a), vec!["alice", "bob"]);
+    assert_eq!(a.members(), common::ids(&[&alice, &bob]));
     assert_eq!(a.pending_commit(), Some(p.clone()));
     // Messages still flow in epoch 1 both ways.
     let m = a.send(&alice, b"while pending").unwrap();
@@ -263,7 +260,7 @@ fn pending_commit_changes_nothing() {
     // Confirm: now the change applies.
     assert_eq!(a.confirm_commit(&alice).unwrap(), 2);
     assert!(a.pending_commit().is_none());
-    assert_eq!(common::names(&a), vec!["alice", "bob", "carol"]);
+    assert_eq!(a.members(), common::ids(&[&alice, &bob, &carol]));
     b.receive(&bob, &p.commit).unwrap();
     let c = carol.join(p.welcome.as_ref().unwrap()).unwrap();
     assert_eq!(c.verification_code(), a.verification_code());

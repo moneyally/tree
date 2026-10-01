@@ -268,12 +268,12 @@ fn add_random_or_mutated_key_package_never_accepted() {
             prop_assert!(r.is_err(), "bad key package accepted");
             let g = a.borrow();
             prop_assert_eq!(g.epoch(), 0);
-            prop_assert_eq!(common::names(&g), vec!["alice".to_string()]);
+            prop_assert_eq!(g.members(), vec![alice.member_id()]);
             Ok(())
         })
         .unwrap();
     a.borrow_mut().add_now(&alice, &kp).expect("genuine key package refused");
-    assert_eq!(common::names(&a.borrow()), vec!["alice", "bob"]);
+    assert_eq!(a.borrow().members(), vec![alice.member_id(), bob.member_id()]);
 }
 
 // ---------------------------------------------------------------- features

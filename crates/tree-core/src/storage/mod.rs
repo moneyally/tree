@@ -37,12 +37,13 @@ pub use key::{DbKey, KdfParams, KeyHeader, KeySource, Passphrase};
 use crate::{error::TreeError, provider::TreeProvider};
 
 /// Version of Tree's own tables (`PRAGMA user_version`).
-/// 1: `tree_meta`, `tree_groups`. 2: + `tree_group_state`.
+/// 1: `tree_meta`, `tree_groups`. 2: + `tree_group_state`, `tree_app`.
 const TREE_SCHEMA_VERSION: i64 = 2;
 
 /// Tree tables added after version 1 (idempotent).
 const TREE_TABLES_V2: &str =
-    "CREATE TABLE IF NOT EXISTS tree_group_state (group_id BLOB PRIMARY KEY, state BLOB NOT NULL) WITHOUT ROWID;";
+    "CREATE TABLE IF NOT EXISTS tree_group_state (group_id BLOB PRIMARY KEY, state BLOB NOT NULL) WITHOUT ROWID;
+     CREATE TABLE IF NOT EXISTS tree_app (key TEXT PRIMARY KEY, value BLOB NOT NULL) WITHOUT ROWID;";
 
 /// Serialises OpenMLS objects as JSON before they are stored (and encrypted
 /// by SQLCipher). JSON is the format the OpenMLS storage crates are tested with.
@@ -223,6 +224,34 @@ impl StoredProvider {
         .map_err(storage_err)?;
         conn.execute_batch(TREE_TABLES_V2).map_err(storage_err)?;
         Ok(Self { crypto: RustCrypto::default(), storage: SqlStorage { conn } })
+    }
+
+    pub(crate) fn put_app(&self, key: &str, value: Option<&[u8]>) -> Result<(), TreeError> {
+        let conn = &self.storage.conn;
+        match value {
+            Some(v) => conn.execute("INSERT OR REPLACE INTO tree_app (key, value) VALUES (?1, ?2)", params![key, v]),
+            None => conn.execute("DELETE FROM tree_app WHERE key = ?1", params![key]),
+        }
+        .map(|_| ())
+        .map_err(storage_err)
+    }
+
+    pub(crate) fn app(&self, key: &str) -> Result<Option<Vec<u8>>, TreeError> {
+        self.storage
+            .conn
+            .query_row("SELECT value FROM tree_app WHERE key = ?1", params![key], |r| r.get(0))
+            .optional()
+            .map_err(storage_err)
+    }
+
+    pub(crate) fn app_keys(&self, prefix: &str) -> Result<Vec<String>, TreeError> {
+        let mut stmt = self
+            .storage
+            .conn
+            .prepare("SELECT key FROM tree_app WHERE substr(key, 1, length(?1)) = ?1 ORDER BY key")
+            .map_err(storage_err)?;
+        let rows = stmt.query_map(params![prefix], |r| r.get(0)).map_err(storage_err)?;
+        rows.collect::<Result<Vec<String>, _>>().map_err(storage_err)
     }
 
     pub(crate) fn put_meta(&self, key: &str, value: &[u8]) -> Result<(), TreeError> {

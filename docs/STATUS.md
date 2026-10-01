@@ -42,6 +42,7 @@ in section 5.
 | Commit ordering, no forks | done | client (F-003) and server (`POST /v1/commits`, HANDOFF 3.2); no app uses it yet |
 | Messages in flight during a commit | done | 2 past epochs (F-002) |
 | Members identified by key, not name | done | member ids (F-008) |
+| Server never sees display names | done | names only inside groups (F-009) |
 | Proposals from others not trusted | done | F-007 |
 | Message size padding | done | 256-byte buckets |
 | Forward secrecy / post-compromise security by key refresh | partial | refresh exists; no scheduler that triggers it (PROTOCOL.md 6.9) |
@@ -84,7 +85,8 @@ in section 5.
 
 | Requirement | Status | Note |
 | --- | --- | --- |
-| Command-line client through the server | missing | HANDOFF 3.3: first end-to-end proof through a real server |
+| Client logic library shared by all apps | done | `crates/tree-client`: server API, sync, two-phase commits, rosters, names, held messages (APP_PROTOCOL.md) |
+| Command-line client through the server | done | `crates/tree-cli`, `scripts/cli_demo.sh`; end-to-end test with a real server (HANDOFF 3.3) |
 | UniFFI bindings | missing | |
 | Android app (Kotlin + Compose Multiplatform) | missing | |
 | Desktop app (same code) | missing | |
@@ -149,7 +151,9 @@ Each needs the owner's confirmation; the reasons are in PROTOCOL.md.
 ## 5. What counts as evidence here
 
 - Done: unit, integration and property tests; mutation testing; symbolic
-  formal models of Tree's own additions; measured benchmarks; demos that run.
+  formal models of Tree's own additions; measured benchmarks; demos that run;
+  an end-to-end test with a real server over HTTP that also searches the
+  server's database for plaintext and names (none found).
 - Not done: external review, real apps, a deployed server, load tests,
   reproducible builds. Until the external review, no security claim is final.
 
@@ -157,7 +161,7 @@ Each needs the owner's confirmation; the reasons are in PROTOCOL.md.
 
 1. HANDOFF 3.1 core fixes — done.
 2. HANDOFF 3.2 server commit ordering + size limits — done.
-3. HANDOFF 3.3 command-line client: two devices chat through a local server.
+3. HANDOFF 3.3 command-line client: two devices chat through a local server — done.
 4. Identity and safety basics in core + server: recovery phrase, safety
    numbers and key-change warning, usernames (hash) with QR, message
    requests and blocking, reporting with message franking.

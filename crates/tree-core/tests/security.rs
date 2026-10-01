@@ -171,7 +171,7 @@ fn xwing_suite_on_libcrux_works() {
     let m = a.send(&alice, b"x-wing").unwrap();
     assert_eq!(
         b.receive(&bob, &m).unwrap(),
-        Incoming::Message { from: alice.member_id(), name: "alice".into(), body: b"x-wing".to_vec() }
+        Incoming::Message { from: alice.member_id(), body: b"x-wing".to_vec() }
     );
     println!("x-wing key package: {} bytes", kp.len());
 }

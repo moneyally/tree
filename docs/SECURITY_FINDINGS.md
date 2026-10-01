@@ -148,3 +148,19 @@ Issues found by testing Tree's own design. Each one has a regression test.
 - **Tests:** `duplicate_names_told_apart_by_member_id`, `member_id_derivation`,
   `several_members_removed_in_one_commit`.
 
+## F-009: display names were readable by the server (fixed)
+
+- **Found:** 2026-10-01, `crates/tree-client/tests/end_to_end.rs` (the first
+  test that runs a real server and searches its database for plaintext)
+- **What:** the MLS credential held the display name. Key packages carry the
+  credential in the clear and are uploaded to the server, so the server
+  stored every user's name next to their device id. The design says the
+  server never knows profile names.
+- **Severity:** medium (metadata: links a chosen name to an account and,
+  through recipient lists, to groups).
+- **Fix:** the credential now holds only the signature key; `Group::add`
+  refuses other key packages and receivers reject commits that add them.
+  Names are sent inside the group as an end-to-end encrypted `profile`
+  payload (APP_PROTOCOL.md). The core no longer knows names.
+- **Test:** `key_package_carries_no_name`, `name_credentials_refused`, and the
+  end-to-end test's search of the server database (names and message texts).

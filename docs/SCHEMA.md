@@ -19,7 +19,7 @@ Schema version: `PRAGMA user_version`.
 | Version | Change |
 | --- | --- |
 | 1 | `tree_meta`, `tree_groups` + OpenMLS tables |
-| 2 | `tree_group_state` (HANDOFF 3.1). Version-1 files are upgraded on open; other versions are refused |
+| 2 | `tree_group_state` (HANDOFF 3.1), `tree_app` (HANDOFF 3.3). Version-1 files are upgraded on open; other versions are refused |
 
 ### 1.1 Key header `<db>.hdr` (not secret)
 
@@ -36,16 +36,21 @@ CREATE TABLE tree_groups (
     group_id BLOB NOT NULL UNIQUE
 );
 CREATE TABLE tree_group_state (group_id BLOB PRIMARY KEY, state BLOB NOT NULL) WITHOUT ROWID;
+CREATE TABLE tree_app (key TEXT PRIMARY KEY, value BLOB NOT NULL) WITHOUT ROWID;
 ```
+
+`tree_app`: app data under the same encryption (`Client::app_data`,
+`set_app_data`, `app_data_keys`). Keys used by `tree-client` are listed in
+[APP_PROTOCOL.md](APP_PROTOCOL.md) section 4.
 
 `tree_meta` rows (the device identity):
 
 | key | value |
 | --- | --- |
-| `name` | display name, UTF-8 |
+| `name` | display name, UTF-8 (never leaves the device except inside groups, F-009) |
 | `ciphersuite` | MLS ciphersuite, 2 bytes big-endian (`0x004E`) |
 | `signature_public_key` | Ed25519 public key (32 bytes); the private key is in `openmls_signature_keys` |
-| `credential` | TLS-serialised MLS `Credential` |
+| `credential` | TLS-serialised MLS `Credential` (identity = the signature public key) |
 
 `tree_groups`: every group this device created or joined, oldest first
 (including groups it was later removed from).
@@ -90,8 +95,8 @@ needs a codec for every stored type and a migration; not done.
 
 ### 1.4 Not stored yet
 
-Message history, contacts, pinned safety numbers, feature-registry state and
-held future-epoch messages are not in the core database yet. When they are
+Message history, contacts, pinned safety numbers and feature-registry state
+are not stored yet. When they are
 added they belong in new `tree_*` tables of the same encrypted file, listed
 here.
 

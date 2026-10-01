@@ -291,9 +291,15 @@ Each device has:
   request signatures (section 8). The server does not know the MLS key and
   the MLS layer does not know the server key.
 
-The MLS credential is a `BasicCredential` whose identity bytes are a display
-name chosen by the user. The name is **not authenticated** and MUST NOT be
-used for any security decision (finding F-008).
+The MLS credential is a `BasicCredential` whose identity bytes are exactly
+the device's MLS signature public key. It carries **no display name**: key
+packages are public and stored on the server, so anything in the credential
+is readable by the server (finding F-009). A client MUST refuse a key package
+whose credential is anything else (`Group::add`), and MUST reject a commit
+that adds one (section 6.4). Display names travel only inside the group,
+end-to-end encrypted, as application payloads ([APP_PROTOCOL.md](APP_PROTOCOL.md)).
+They are not authenticated beyond "this member says so" and MUST NOT be used
+for any security decision (F-008).
 
 ### 5.2 Member id
 
@@ -307,11 +313,10 @@ where `signature_key` is the raw `LeafNode.signature_key` bytes (32 bytes for
 Ed25519). RFC 9420 §7.3 requires signature keys to be unique among the
 leaves of a group, so member ids are unique in a group.
 
-Rules: `Incoming::Message` reports the sender's `member_id` (and the
-unauthenticated name next to it); `Group::remove` takes member ids, several
-in one commit (all devices of a person); `Group::members` returns id, name
-and a flag set when another member carries the same name; the app shows
-names only next to a member id it has verified or pinned. The safety number
+Rules: `Incoming::Message` reports the sender's `member_id`; `Group::remove`
+takes member ids, several in one commit (all devices of a person);
+`Group::members` returns member ids; the app shows names (learned inside the
+group) only next to a member id and flags two members using the same name. The safety number
 a user compares out of band is derived from the signature key (format: open
 question Q4).
 
@@ -324,8 +329,8 @@ different member in the current epoch.
 
 - Format: the TLS-serialised `KeyPackage` struct (RFC 9420 §10), **not**
   wrapped in an `MLSMessage`.
-- Content: ciphersuite `0x004E`, `BasicCredential`, the device's MLS
-  signature key, a fresh HPKE init key, lifetime `not_before = now - 1 h`,
+- Content: ciphersuite `0x004E`, `BasicCredential` holding the signature
+  key (no name), the device's MLS signature key, a fresh HPKE init key, lifetime `not_before = now - 1 h`,
   `not_after = now + 84 days` (library default).
 - One-time use: each key package is used for at most one add. There is no
   last-resort key package in v1; a device with none left cannot be added
@@ -441,7 +446,7 @@ inline. Allowed commit contents in v1:
 
 | Content | Allowed |
 | --- | --- |
-| inline Add proposals | yes |
+| inline Add proposals | yes, if the added credential is the signature key (section 5.1) |
 | inline Remove proposals (not of the committer itself) | yes |
 | UpdatePath | required, except in a commit that contains only Add proposals (RFC 9420 §12.4 allows that). Tree's own adds carry **no** UpdatePath (`add_members_without_update`: 3 KB instead of 30 KB to 2.3 MB at 2,000 leaves, [BENCHMARKS.md](BENCHMARKS.md)); its removes and key refreshes always carry one |
 | proposals by reference | no |
@@ -901,7 +906,7 @@ confirmation tag agreement (RFC 9420 §8.2).
   authentication service beyond the user comparing safety numbers; a
   malicious server can substitute key packages (section 5.3). Key
   transparency is planned for stage 4.
-- That display names are genuine (F-008).
+- That display names are genuine (F-008); they are claims made inside the group.
 - Authentication against A-q: Ed25519 is not post-quantum (section 2.4).
 - Deniability (the opposite holds).
 - Global ordering of messages from different senders.
@@ -1122,6 +1127,7 @@ the server cannot learn it from what it sees or stores.
 | Item | Stage 1 | What the server sees | Later |
 | --- | --- | --- | --- |
 | Message content, media keys, group name and settings | protected | ciphertext only | — |
+| Display names | protected | nothing: not in key packages or credentials (F-009), only inside the group | — |
 | Sender identity | **not protected** from the server | the authenticated device id of every send request (not stored) and the connection address | stage 4: sealed sender with anonymous delivery tokens |
 | Sender identity towards other members | not hidden (by design) | — | — |
 | Recipient device | **not protected** | mailbox id = device id, stored with each entry | stage 4: rotating mailbox ids |
@@ -1163,9 +1169,11 @@ the server cannot learn it from what it sees or stores.
 - **Q7 Replay cache.** Persist the replay cache or shard it so restarts and
   multiple instances keep C10.
 - **Q8 Device id binding.** v1 has no in-band binding between an MLS member
-  and its server device id (needed to address mailboxes). Today the app keeps
-  this mapping from key-package claims; an in-band binding (leaf extension or
-  credential content) needs a decision.
+  and its server device id (needed to address mailboxes). Decided for v1: the
+  app keeps the mapping as a roster that the adding member sends inside the
+  group ([APP_PROTOCOL.md](APP_PROTOCOL.md)). A wrong entry misroutes
+  messages (availability) but reveals nothing. An in-band binding stays a
+  possible v2 change.
 - **Q9 Leaving a group** without proposals (section 6.5): a self-remove
   mechanism once a standard one exists.
 - **Q10 Commit freezing by insiders** (C11): a recovery path short of a new

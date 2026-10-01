@@ -360,3 +360,25 @@ fn should_refresh_survives_restart() {
     let (_bob, b) = restart(bob, b, &pb, "pw");
     assert!(!b.should_refresh_keys());
 }
+
+/// App data lives in the same encrypted database and survives a restart.
+#[test]
+fn app_data_round_trip() {
+    let dir = TempDir::new("appdata");
+    let p = dir.db("alice");
+    let alice = Client::create(&p, "pw", "alice").unwrap();
+    assert_eq!(alice.app_data("a/1").unwrap(), None);
+    alice.set_app_data("a/1", Some(b"one")).unwrap();
+    alice.set_app_data("a/2", Some(b"two")).unwrap();
+    alice.set_app_data("b/1", Some(b"other")).unwrap();
+    alice.set_app_data("a/1", Some(b"uno")).unwrap();
+    drop(alice);
+    let alice = Client::open(&p, "pw").unwrap();
+    assert_eq!(alice.app_data("a/1").unwrap().as_deref(), Some(&b"uno"[..]));
+    assert_eq!(alice.app_data_keys("a/").unwrap(), vec!["a/1", "a/2"]);
+    alice.set_app_data("a/1", None).unwrap();
+    assert_eq!(alice.app_data("a/1").unwrap(), None);
+    assert_eq!(alice.app_data_keys("a/").unwrap(), vec!["a/2"]);
+    assert_eq!(alice.app_data_keys("").unwrap().len(), 2);
+    assert!(alice.app_data_keys("zzz").unwrap().is_empty());
+}

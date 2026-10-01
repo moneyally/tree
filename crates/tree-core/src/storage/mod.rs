@@ -135,17 +135,18 @@ impl TreeProvider for StoredProvider {
             .map(|_| ())
             .map_err(storage_err)
     }
+}
 
-    fn load_group_state(&self, group_id: &[u8]) -> Result<Option<Vec<u8>>, TreeError> {
+impl StoredProvider {
+    /// Reads back what [`TreeProvider::save_group_state`] stored.
+    pub(crate) fn load_group_state(&self, group_id: &[u8]) -> Result<Option<Vec<u8>>, TreeError> {
         self.storage
             .conn
             .query_row("SELECT state FROM tree_group_state WHERE group_id = ?1", params![group_id], |r| r.get(0))
             .optional()
             .map_err(storage_err)
     }
-}
 
-impl StoredProvider {
     /// Creates a new encrypted database at `path` (which must not exist yet)
     /// and its key header next to it.
     pub(crate) fn create(path: &Path, source: &dyn KeySource, params: KdfParams) -> Result<Self, TreeError> {

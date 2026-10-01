@@ -212,3 +212,21 @@ fn insider_sealed_garbage_rejected_by_mls() {
     let r = b.receive(&bob, &m.seal(&t));
     assert!(matches!(r, Err(TreeError::Rejected(_))), "{r:?}");
 }
+
+/// PROTOCOL.md 4.3 step 4: the MLS header must name the epoch whose envelope
+/// key matched. An insider re-seals an unread message of an older epoch with
+/// the current key: the seal passes, the header check refuses it. The same
+/// message sealed for its own epoch is still read (past-epoch window).
+#[test]
+fn header_epoch_must_match_envelope_key() {
+    let (alice, bob, mut a, mut b, mut m) = common::chat_with_insider("mallory");
+    let old = m.raw_message(b"made in epoch 2");
+    let honest = m.seal(&old); // sealed with the epoch-2 key
+    let c = a.refresh_now(&alice).unwrap();
+    b.receive(&bob, &c).unwrap();
+    m.receive_commit(&c);
+    let resealed = m.seal(&old); // same bytes, epoch-3 key
+    let r = b.receive(&bob, &resealed);
+    assert!(matches!(r, Err(TreeError::Rejected(ref s)) if s.contains("header")), "{r:?}");
+    assert!(matches!(b.receive(&bob, &honest), Ok(Incoming::Message { .. })));
+}

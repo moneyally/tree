@@ -23,13 +23,9 @@ pub trait TreeProvider: OpenMlsProvider {
 
     /// Saves Tree's own state of a group (pending commit, past envelope
     /// keys, ...), inside the running [`TreeProvider::atomically`] operation.
+    /// In-memory providers keep it only in the [`crate::Group`].
     fn save_group_state(&self, _group_id: &[u8], _state: &[u8]) -> Result<(), TreeError> {
         Ok(())
-    }
-
-    /// Reads back what [`TreeProvider::save_group_state`] stored.
-    fn load_group_state(&self, _group_id: &[u8]) -> Result<Option<Vec<u8>>, TreeError> {
-        Ok(None)
     }
 }
 

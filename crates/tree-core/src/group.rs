@@ -325,7 +325,8 @@ impl Group {
         if !self.mls.is_active() {
             return Err(TreeError::NotAMember);
         }
-        if self.state.pending.is_some() || self.mls.pending_commit().is_some() {
+        // (OpenMLS's own pending commit is always stored together with ours.)
+        if self.state.pending.is_some() {
             return Err(TreeError::CommitPending);
         }
         let epoch = self.epoch();

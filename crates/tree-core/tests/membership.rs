@@ -634,3 +634,69 @@ fn settings_without_admin_rejected() {
     assert!(matches!(r, Err(TreeError::Rejected(ref e)) if e.contains("admin")), "{r:?}");
 }
 
+
+/// An admin's group-context commit may hold exactly Tree's settings and the
+/// required-capabilities extension naming only them (PROTOCOL.md 6.11).
+/// Anything else is rejected by receivers.
+#[test]
+fn group_context_holds_only_tree_settings() {
+    use openmls::prelude::{CredentialType, Extension, ExtensionType, Extensions, ProposalType, RequiredCapabilitiesExtension, UnknownExtension};
+    let (alice, bob, mut a, mut b, mut m) = chat_with_insider("mallory");
+    let mut s = a.settings();
+    s.admins.push(m.member_id());
+    let p = a.change_settings(&alice, &s).unwrap();
+    a.confirm_commit(&alice).unwrap();
+    b.receive(&bob, &p.commit).unwrap();
+    m.receive_commit(&p.commit);
+    let et = ExtensionType::Unknown(tree_core::group_settings::EXTENSION_TYPE);
+    let settings = || Extension::Unknown(tree_core::group_settings::EXTENSION_TYPE, UnknownExtension(s.encode().unwrap()));
+    let required = |p: &[ProposalType], c: &[CredentialType]| Extension::RequiredCapabilities(RequiredCapabilitiesExtension::new(&[et], p, c));
+    let cases: Vec<(&str, Vec<Extension>)> = vec![
+        ("settings without required capabilities", vec![settings()]),
+        ("required capabilities without settings", vec![required(&[], &[])]),
+        ("a required proposal type", vec![required(&[ProposalType::Add], &[]), settings()]),
+        ("a required credential type", vec![required(&[], &[CredentialType::Basic]), settings()]),
+        ("an empty context", vec![]),
+    ];
+    let epoch = b.epoch();
+    let mut reached_tree = Vec::new();
+    for (what, list) in cases {
+        let (pr, sg) = (&m.provider, &m.signer);
+        let g = m.group.as_mut().unwrap();
+        let ext = Extensions::from_vec(list).unwrap();
+        // Some shapes MLS itself refuses to build; they cannot reach Tree.
+        let Ok((commit, _, _)) = g.update_group_context_extensions(pr, ext, sg) else { continue };
+        reached_tree.push(what);
+        g.clear_pending_commit(openmls::prelude::OpenMlsProvider::storage(pr)).unwrap();
+        let sealed = m.seal(&commit.to_bytes().unwrap());
+        let r = b.receive(&bob, &sealed);
+        assert!(matches!(r, Err(TreeError::Rejected(ref e)) if e.contains("only Tree's settings")), "{what}: {r:?}");
+        assert_eq!(b.epoch(), epoch, "{what}: nothing applied");
+    }
+    assert!(
+        ["required capabilities without settings", "a required proposal type", "a required credential type"]
+            .iter()
+            .all(|w| reached_tree.contains(w)),
+        "{reached_tree:?}"
+    );
+    // The well-formed change is accepted (the checks are not over-strict).
+    let (pr, sg) = (&m.provider, &m.signer);
+    let g = m.group.as_mut().unwrap();
+    let ext = Extensions::from_vec(vec![required(&[], &[]), settings()]).unwrap();
+    let (commit, _, _) = g.update_group_context_extensions(pr, ext, sg).unwrap();
+    let sealed = m.seal(&commit.to_bytes().unwrap());
+    assert!(b.receive(&bob, &sealed).is_ok());
+    assert_eq!(b.epoch(), epoch + 1);
+}
+
+#[test]
+fn member_id_hex_parsing() {
+    let id = MemberId([0xab; 32]);
+    assert_eq!(MemberId::from_hex(&id.to_hex()), Some(id));
+    assert_eq!(MemberId::from_hex(&id.to_hex().to_uppercase()), Some(id));
+    assert_eq!(MemberId::from_hex(&"a".repeat(63)), None);
+    assert_eq!(MemberId::from_hex(&"a".repeat(65)), None);
+    assert_eq!(MemberId::from_hex(&"g".repeat(64)), None);
+    // 64 bytes but not ASCII: refused, never sliced inside a character.
+    assert_eq!(MemberId::from_hex(&"é".repeat(32)), None);
+}

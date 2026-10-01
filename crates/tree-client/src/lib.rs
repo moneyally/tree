@@ -1001,6 +1001,21 @@ mod tests {
     }
 
     #[test]
+    fn per_group_keys_differ() {
+        let (a, b) = ([1u8; 16], [2u8; 16]);
+        for f in [roster_key, names_key, accounts_key, pending_key] {
+            assert_ne!(f(&a), f(&b));
+            assert!(f(&a).ends_with(&hex::encode(a)));
+        }
+        let all = [roster_key(&a), names_key(&a), accounts_key(&a), pending_key(&a)];
+        for (i, x) in all.iter().enumerate() {
+            for y in &all[i + 1..] {
+                assert_ne!(x, y, "kinds do not collide");
+            }
+        }
+    }
+
+    #[test]
     fn pinning_rules() {
         // first contact: trusted as is, no warning
         let (c, ev) = merge_pins(None, "acc", &[id(1), id(1)]).unwrap();

@@ -90,6 +90,16 @@ impl GroupSettings {
 mod tests {
     use super::*;
 
+    #[test]
+    fn size_limit_is_exact() {
+        assert_eq!(MAX_LEN, 16 * 1024);
+        let base = GroupSettings { name: Some(String::new()), ..Default::default() }.encode().unwrap().len();
+        let at = GroupSettings { name: Some("a".repeat(MAX_LEN - base)), ..Default::default() };
+        assert_eq!(at.encode().unwrap().len(), MAX_LEN);
+        let over = GroupSettings { name: Some("a".repeat(MAX_LEN - base + 1)), ..Default::default() };
+        assert!(over.encode().is_err());
+    }
+
     fn id(b: u8) -> MemberId {
         MemberId([b; 32])
     }

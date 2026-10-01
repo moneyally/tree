@@ -74,6 +74,9 @@ fn three_devices_chat_through_the_server() {
     // devices from alice's roster too.
     let n = alice.safety_number(bob.account_id()).unwrap();
     assert_eq!(n, bob.safety_number(alice.account_id()).unwrap());
+    assert_eq!(n.split(' ').count(), 12, "12 groups of 5 digits: {n}");
+    assert!(n.split(' ').all(|g| g.len() == 5 && g.bytes().all(|b| b.is_ascii_digit())), "{n}");
+    assert_ne!(n, alice.safety_number(carol.account_id()).unwrap(), "per contact");
     assert!(bob.contact(carol.account_id()).unwrap().is_some());
     let qr = bob.safety_qr(alice.account_id()).unwrap();
     alice.verify(bob.account_id(), Some(&qr)).unwrap();
@@ -82,11 +85,20 @@ fn three_devices_chat_through_the_server() {
     let code = alice.verification_code(&g).unwrap();
     assert_eq!(bob.verification_code(&g).unwrap(), code, "one group state, no fork");
     assert_eq!(carol.verification_code(&g).unwrap(), code);
+    assert_eq!(code.len(), 48, "SHA-384 epoch authenticator");
+    assert_eq!(alice.group_ids().unwrap(), vec![g.clone()]);
+    let g2 = alice.create_group().unwrap();
+    assert_ne!(alice.verification_code(&g2).unwrap(), code, "per group state");
+    assert_eq!(alice.group_ids().unwrap().len(), 2);
 
-    // alice's app restarts: everything comes back from her encrypted profile.
+    // alice's app restarts: everything comes back from her encrypted profile,
+    // her settings included.
+    alice.release_feature("user.search_index").unwrap();
     drop(alice);
     let (mut alice, resubmitted) = Session::open(&env.profile("alice"), "alice passphrase").unwrap();
     assert!(resubmitted.is_empty());
+    assert_eq!(alice.feature("user.search_index").unwrap().state, tree_core::features::State::Released);
+    alice.apply_feature("user.search_index", None).unwrap();
     alice.send_text(&g, "재시작 후에도 그대로").unwrap();
     assert_eq!(texts(&bob.sync(0).unwrap()), vec![("alice".into(), "재시작 후에도 그대로".into())]);
     assert_eq!(texts(&carol.sync(0).unwrap()).len(), 1);

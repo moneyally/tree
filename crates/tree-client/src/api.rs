@@ -371,3 +371,20 @@ impl Api {
 fn field(v: &Value, name: &str) -> Result<String, Error> {
     v[name].as_str().map(str::to_string).ok_or_else(|| Error::Protocol(format!("server reply lacks {name}")))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn proof_of_work_bits() {
+        assert_eq!(leading_zero_bits(&[0, 0, 0x0f, 0xff]), 20);
+        assert_eq!(leading_zero_bits(&[0x80]), 0);
+        assert_eq!(leading_zero_bits(&[0x01]), 7);
+        assert_eq!(leading_zero_bits(&[0, 0x40]), 9);
+        assert_eq!(leading_zero_bits(&[0, 0]), 16);
+        let key = [5u8; 32];
+        let n = solve_pow(&key, 10);
+        assert!(leading_zero_bits(&Sha256::digest([&b"tree-signup-v1"[..], &key[..], &n.to_be_bytes()[..]].concat())) >= 10);
+    }
+}

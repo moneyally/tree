@@ -436,3 +436,12 @@ impl Session {
         Ok(Ok(m))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    /// The design's edit / delete window: 24 hours.
+    #[test]
+    fn default_window_is_a_day() {
+        assert_eq!(super::DEFAULT_WINDOW, 86_400);
+    }
+}

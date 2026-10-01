@@ -120,6 +120,19 @@ pub fn decrypt(ciphertext: &[u8], fk: &FileKey) -> Result<Vec<u8>, TreeError> {
 mod tests {
     use super::*;
 
+    /// PROTOCOL.md 6.12: 64 KiB chunks, a 16-byte tag each; the key never
+    /// shows up in logs.
+    #[test]
+    fn format_constants_and_debug() {
+        assert_eq!(CHUNK, 65_536);
+        assert_eq!(ciphertext_len(65_536), 65_536 + 16);
+        assert_eq!(ciphertext_len(65_537), 65_537 + 32);
+        let (_, fk) = encrypt(b"secret").unwrap();
+        let d = format!("{fk:?}");
+        assert!(d.starts_with("FileKey") && d.contains("size: 6"), "{d}");
+        assert!(!d.contains(&format!("{:?}", &fk.key[..4])) && !d.contains("key"), "{d}");
+    }
+
     #[test]
     fn round_trip_sizes() {
         for n in [0, 1, CHUNK - 1, CHUNK, CHUNK + 1, 3 * CHUNK, 3 * CHUNK + 17] {

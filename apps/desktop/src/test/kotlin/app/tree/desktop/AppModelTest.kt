@@ -1,5 +1,7 @@
 package app.tree.desktop
 
+import app.tree.shared.*
+
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import java.nio.file.Files

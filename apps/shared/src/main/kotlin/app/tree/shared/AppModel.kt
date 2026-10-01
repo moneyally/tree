@@ -1,4 +1,4 @@
-package app.tree.desktop
+package app.tree.shared
 
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -41,6 +41,8 @@ data class UiState(
     /** Members of the open chat, and its chat settings. */
     val members: List<Member> = emptyList(),
     val chatFeatures: List<Feature> = emptyList(),
+    /** The open chat asks the app to block screenshots (chat.screenshot_block). */
+    val screenshotBlocked: Boolean = false,
     /** Files received in this session: message id -> reference. */
     val files: Map<String, Attachment> = emptyMap(),
     val notice: String? = null,
@@ -149,7 +151,10 @@ class AppModel(
         val me = session?.memberId()
         val names = members.associate { m -> m.id to if (m.id == me) "" else (m.name ?: m.id.take(6)) }
         val chatFeatures = if (open != null) call { it.chatFeatures(open) } ?: emptyList() else emptyList()
-        _state.update { it.copy(chats = chats, messages = messages, names = names, members = members, chatFeatures = chatFeatures) }
+        val blocked = open != null && (call { it.screenshotBlocked(open) } ?: false)
+        _state.update {
+            it.copy(chats = chats, messages = messages, names = names, members = members, chatFeatures = chatFeatures, screenshotBlocked = blocked)
+        }
     }
 
     suspend fun openChat(group: String?) {
@@ -187,7 +192,17 @@ class AppModel(
     suspend fun sendFile(group: String, file: java.io.File): Boolean {
         val bytes = withContext(io) { file.readBytes() }
         val mime = withContext(io) { java.nio.file.Files.probeContentType(file.toPath()) } ?: "application/octet-stream"
-        return (call { it.sendFile(group, bytes, file.name, mime, false) } != null).also { refresh() }
+        return sendBytes(group, bytes, file.name, mime)
+    }
+
+    /** For platforms that hand over file contents (Android content URIs). */
+    suspend fun sendBytes(group: String, bytes: ByteArray, name: String, mime: String): Boolean =
+        (call { it.sendFile(group, bytes, name, mime, false) } != null).also { refresh() }
+
+    /** Decrypted contents of a received file, for platforms that write via streams. */
+    suspend fun fileBytes(msgId: String): ByteArray? {
+        val f = _state.value.files[msgId] ?: return null
+        return call { it.download(f) }
     }
 
     /** Downloads, checks and decrypts a received file into `dest`. */

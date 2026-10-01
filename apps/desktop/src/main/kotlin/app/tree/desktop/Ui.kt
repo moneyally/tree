@@ -1,5 +1,7 @@
 package app.tree.desktop
 
+import app.tree.shared.*
+
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box

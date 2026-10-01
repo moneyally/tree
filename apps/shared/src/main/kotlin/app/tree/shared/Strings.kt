@@ -1,4 +1,4 @@
-package app.tree.desktop
+package app.tree.shared
 
 /** UI language. Korean first; English for everyone else. */
 enum class Lang { KO, EN }

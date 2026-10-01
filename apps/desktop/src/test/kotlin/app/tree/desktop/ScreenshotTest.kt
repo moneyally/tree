@@ -1,5 +1,7 @@
 package app.tree.desktop
 
+import app.tree.shared.*
+
 import androidx.compose.ui.ImageComposeScene
 import androidx.compose.ui.use
 import kotlinx.coroutines.Dispatchers

@@ -32,7 +32,8 @@ val bindings by tasks.registering(Exec::class) {
     )
 }
 
-sourceSets { main { kotlin.srcDir(generated) } }
+// The model and texts are shared with the Android app.
+sourceSets { main { kotlin.srcDirs(generated, File(rootDir, "../shared/src/main/kotlin")) } }
 tasks.named("compileKotlin") { dependsOn(bindings) }
 
 dependencies {

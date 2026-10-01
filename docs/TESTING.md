@@ -102,7 +102,39 @@ without a default) and are not counted.
 
 ### Equivalent mutants
 
-None. Every viable mutant changes behaviour that a test can observe.
+None at PR #3. Every viable mutant changed behaviour that a test could observe.
+
+### HANDOFF 3.1 (core fixes)
+
+Pass 1 on the files 3.1 changed (`group.rs`, `group_state.rs`, `features.rs`,
+`client.rs`, `provider.rs`, `storage/mod.rs`, `error.rs`): 277 mutants, 211
+caught, 13 missed, 53 unviable. Of the 13:
+
+- fixed by a new test: the header epoch must equal the epoch of the matching
+  envelope key (`header_epoch_must_match_envelope_key`);
+- fixed by removing redundant code: a second pending-commit check in
+  `begin_commit`, and the trait default `load_group_state` (now only on the
+  stored provider);
+- equivalent (no observable difference):
+  - `check_commit`: committer-removes-itself guard set to `false`: OpenMLS
+    rejects such a commit first (RFC 9420 §12.2);
+  - `check_commit`: `&&` -> `||` in the add-only rule: MLS already requires
+    an UpdatePath for any commit with a Remove or with no proposals, so the
+    differing cases never reach the check;
+  - `StoredProvider::crypto` / `rand` -> `Default::default()`: the RustCrypto
+    provider is stateless;
+  - schema upgrade `version < 2` -> `<= 2`: re-runs an idempotent
+    `CREATE TABLE IF NOT EXISTS` and sets the same version;
+  - open flags `|` -> `^`: the two flag bits are disjoint;
+- accepted test gaps (documented, not reachable without fault injection):
+  - `Client::join` "already active" guard -> `false`: needs a second welcome
+    for a device that is already a member; an honest adder cannot create one
+    (MLS forbids two leaves with one signature key);
+  - `open_connection`: `NotADatabase` guard -> `true`: would report an I/O
+    error while reading page 1 as a wrong key.
+
+Pass 2 (after the fixes) on `group.rs`: only the two equivalent
+`check_commit` mutants above remain.
 
 ## Findings from this pass
 

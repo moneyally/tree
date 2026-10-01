@@ -141,7 +141,7 @@ pub async fn join(State(state): State<AppState>, req: Signed<JoinReq>) -> ApiRes
         .bind(new_id())
         .bind(&h[..])
         .bind(&req.device.account_id)
-        .bind(now_secs())
+        .bind(crate::util::round_to_minute(now_secs()))
         .execute(&mut *tx)
         .await?
         .rows_affected();

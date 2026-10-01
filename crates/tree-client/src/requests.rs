@@ -116,7 +116,8 @@ impl Session {
     }
 
     /// Decides a group that is still a request once its adder is known.
-    pub(crate) fn decide_request(&mut self, gid: &[u8], adder: &str, events: &mut Vec<Event>) -> Result<(), Error> {
+    /// `link`: the invite link hash the adder says this device used.
+    pub(crate) fn decide_request(&mut self, gid: &[u8], adder: &str, link: Option<&str>, events: &mut Vec<Event>) -> Result<(), Error> {
         if !matches!(self.group_status(gid)?, GroupStatus::Request { .. }) {
             return Ok(());
         }
@@ -127,8 +128,9 @@ impl Session {
             events.push(decline("blocked"));
             return self.decline(gid, false);
         }
-        // The user opened this account's invite link: they asked to join.
-        if self.take_link_join(adder)? {
+        // The user opened exactly this invite link of this account: they
+        // asked to join (once per link use).
+        if self.take_link_join(adder, link)? {
             return self.set_group_status(gid, &GroupStatus::Accepted);
         }
         let group_add = self.feature("user.group_add")?;

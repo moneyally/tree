@@ -45,10 +45,25 @@ pub fn check_endpoint(cfg: &Config, endpoint: &str) -> Result<String, &'static s
         return Err("endpoint must not carry credentials");
     }
     let host = url.host_str().ok_or("endpoint has no host")?.to_ascii_lowercase();
-    if !cfg.push_allowed_hosts.contains(&host) {
+    let port = url.port_or_known_default().ok_or("endpoint has no port")?;
+    // "host" allows the scheme's default port only; "host:port" that port.
+    let default_port = url.port().is_none() || Some(port) == default_port(url.scheme());
+    let allowed = cfg.push_allowed_hosts.iter().any(|h| match h.rsplit_once(':') {
+        Some((h, p)) if p.parse::<u16>().is_ok() => *h == host && p.parse() == Ok(port),
+        _ => *h == host && default_port,
+    });
+    if !allowed {
         return Err("this push gateway is not allowed on this server");
     }
     Ok(url.to_string())
+}
+
+fn default_port(scheme: &str) -> Option<u16> {
+    match scheme {
+        "https" => Some(443),
+        "http" => Some(80),
+        _ => None,
+    }
 }
 
 #[derive(Deserialize)]
@@ -81,8 +96,14 @@ pub async fn clear(State(state): State<AppState>, req: Signed<NoBody>) -> ApiRes
     Ok(Json(json!({ "state": "released" })))
 }
 
-/// Starts the sender task; returns the queue that [`AppState::wake`] feeds.
-pub fn spawn(state: AppState, mut rx: mpsc::UnboundedReceiver<String>) -> tokio::task::JoinHandle<()> {
+/// Wake-ups waiting to be sent; beyond this the newest are dropped (each
+/// device is woken again by its next message).
+pub const QUEUE: usize = 10_000;
+/// Gateways contacted at once, so one slow gateway does not hold up others.
+pub const PARALLEL: usize = 16;
+
+/// Starts the sender task that [`AppState::wake`] feeds.
+pub fn spawn(state: AppState, mut rx: mpsc::Receiver<String>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -93,6 +114,7 @@ pub fn spawn(state: AppState, mut rx: mpsc::UnboundedReceiver<String>) -> tokio:
         let mut dirty: HashSet<String> = HashSet::new();
         let mut last: HashMap<String, Instant> = HashMap::new();
         let mut tick = tokio::time::interval(Duration::from_millis(250));
+        let slots = std::sync::Arc::new(tokio::sync::Semaphore::new(PARALLEL));
         loop {
             tokio::select! {
                 d = rx.recv() => match d {
@@ -104,9 +126,15 @@ pub fn spawn(state: AppState, mut rx: mpsc::UnboundedReceiver<String>) -> tokio:
                     last.retain(|_, t| now.duration_since(*t) < interval);
                     let due: Vec<String> = dirty.iter().filter(|d| !last.contains_key(*d)).cloned().collect();
                     for d in due {
+                        // No free slot: try again on a later tick.
+                        let Ok(permit) = slots.clone().try_acquire_owned() else { break };
                         dirty.remove(&d);
                         last.insert(d.clone(), now);
-                        send(&state, &http, &d).await;
+                        let (state, http) = (state.clone(), http.clone());
+                        tokio::spawn(async move {
+                            send(&state, &http, &d).await;
+                            drop(permit);
+                        });
                     }
                 }
             }
@@ -157,7 +185,11 @@ mod tests {
         assert_eq!(check_endpoint(&cfg, "https://push.example/x"), Err("push is not enabled on this server"));
         cfg.push_allowed_hosts = vec!["push.example".into()];
         assert!(check_endpoint(&cfg, "https://push.example/up/abc?x=1").is_ok());
-        assert!(check_endpoint(&cfg, "https://PUSH.example:8443/a").is_ok());
+        assert!(check_endpoint(&cfg, "https://PUSH.example:443/a").is_ok());
+        assert_eq!(check_endpoint(&cfg, "https://push.example:8443/a"), Err("this push gateway is not allowed on this server"), "other ports need host:port");
+        cfg.push_allowed_hosts.push("alt.example:8443".into());
+        assert!(check_endpoint(&cfg, "https://alt.example:8443/a").is_ok());
+        assert_eq!(check_endpoint(&cfg, "https://alt.example/a"), Err("this push gateway is not allowed on this server"));
         assert_eq!(check_endpoint(&cfg, "http://push.example/a"), Err("endpoint must use https"));
         assert_eq!(check_endpoint(&cfg, "ftp://push.example/a"), Err("endpoint must use https"));
         assert_eq!(check_endpoint(&cfg, "https://other.example/a"), Err("this push gateway is not allowed on this server"));

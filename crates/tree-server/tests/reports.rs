@@ -59,6 +59,10 @@ async fn report_review_suspend() {
     let (st, _) = api.call(&bob, Method::POST, "/v1/reports", Some(report("not an id", vec![frank(api, &alice, b"g", "{}").await]))).await;
     assert_eq!(st, StatusCode::BAD_REQUEST);
 
+    // Unknown accounts cannot be reported.
+    let (st, _) = api.call(&bob, Method::POST, "/v1/reports", Some(report(&"A".repeat(22), vec![franked.clone()]))).await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+
     // Operator review: needs the token.
     assert_eq!(op(api, None, Method::GET, "/v1/reports").await.0, StatusCode::UNAUTHORIZED);
     assert_eq!(op(api, Some("wrong"), Method::GET, "/v1/reports").await.0, StatusCode::UNAUTHORIZED);
@@ -111,5 +115,46 @@ async fn franking_key_survives_restart_and_tags_need_32_bytes() {
     let (_, v) = api.call(&a, Method::POST, "/v1/franking", Some(json!({ "com": b64(&com) }))).await;
     let want = tree_server::reports::tag(&k1, &com, &a.account_id, v["minute"].as_i64().unwrap());
     assert_eq!(unb64(v["tag"].as_str().unwrap()), want);
+    ts.stop().await;
+}
+
+#[tokio::test]
+async fn reports_per_day_are_limited_and_resolved_ones_purged() {
+    let ts = boot(|_| {}).await;
+    let api = &ts.api;
+    let (a, b) = (api.signup().await, api.signup().await);
+    let m = frank(api, &a, b"g", "{}").await;
+    let body = json!({ "reported_account": a.account_id, "reason": "x", "messages": [m] });
+    for _ in 0..tree_server::reports::MAX_PER_DAY {
+        assert_eq!(api.call(&b, Method::POST, "/v1/reports", Some(body.clone())).await.0, StatusCode::CREATED);
+    }
+    let (st, v) = api.call(&b, Method::POST, "/v1/reports", Some(body.clone())).await;
+    assert_eq!((st, code(&v)), (StatusCode::CONFLICT, "LIMIT_EXCEEDED"));
+    // Large payloads are refused.
+    let mut big = frank(api, &a, b"g", "{}").await;
+    big["payload"] = json!("x".repeat(16 * 1024 + 1));
+    let (st, _) = api.call(&a, Method::POST, "/v1/reports", Some(json!({ "reported_account": b.account_id, "reason": "x", "messages": [big] }))).await;
+    assert_eq!(st, StatusCode::PAYLOAD_TOO_LARGE);
+
+    // Resolved reports are deleted 30 days after resolution; open ones stay.
+    let (_, v) = op(api, Some(ADMIN_TOKEN), Method::GET, "/v1/reports").await;
+    let id = v["reports"][0]["id"].as_str().unwrap().to_string();
+    op(api, Some(ADMIN_TOKEN), Method::POST, &format!("/v1/reports/{id}/resolve")).await;
+    let today = tree_server::util::today();
+    let db = &ts.server.state.db;
+    assert_eq!(tree_server::reports::purge(db, today + 30).await.unwrap(), 0);
+    assert_eq!(tree_server::reports::purge(db, today + 31).await.unwrap(), 1);
+    let n: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM reports").fetch_one(db).await.unwrap();
+    assert_eq!(n.0, tree_server::reports::MAX_PER_DAY - 1);
+    ts.stop().await;
+}
+
+#[tokio::test]
+async fn a_damaged_franking_key_is_an_error_not_a_new_key() {
+    let ts = boot(|_| {}).await;
+    let db = &ts.server.state.db;
+    tree_server::reports::franking_key(db).await.unwrap();
+    sqlx::query("UPDATE server_secrets SET value = x'0102' WHERE name = 'franking'").execute(db).await.unwrap();
+    assert!(tree_server::reports::franking_key(db).await.is_err());
     ts.stop().await;
 }

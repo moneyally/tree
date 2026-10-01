@@ -164,3 +164,81 @@ Issues found by testing Tree's own design. Each one has a regression test.
   payload (APP_PROTOCOL.md). The core no longer knows names.
 - **Test:** `key_package_carries_no_name`, `name_credentials_refused`, and the
   end-to-end test's search of the server database (names and message texts).
+
+## F-010: a stolen device could replace the recovery key (fixed)
+
+- **Found:** 2026-10-01, internal review of the stage-1 server additions.
+- **What:** any signed device of an account could replace or delete the
+  recovery key at once. A thief with an unlocked phone could register a
+  phrase of their own, recover with it, revoke the owner's devices, and the
+  owner's real phrase would no longer work: recovery failed in exactly the
+  case it exists for.
+- **Severity:** high.
+- **Fix:** a new key needs a proof of possession; while a key is active,
+  replacing or releasing it is immediate only with a signature by the
+  current key (the old phrase), otherwise it waits 7 days, visible to every
+  device (`GET /v1/recovery`). During the wait the old phrase still
+  recovers, and recovering cancels the pending change (PROTOCOL.md 8.6).
+- **Test:** `crates/tree-server/tests/recovery.rs` (stolen-device scenario,
+  delay, signed changes), `crates/tree-client/tests/recovery.rs`.
+
+## F-011: recovery signatures could be replayed later (fixed)
+
+- **Found:** 2026-10-01, same review.
+- **What:** the recovery signature covered only the new request key and the
+  revoke flag. Whoever kept an old device's request key and the signature it
+  once sent could repeat the recovery after that device was removed, until
+  the phrase changed.
+- **Severity:** low to medium.
+- **Fix:** the signed message includes the time; the server accepts it only
+  within the clock-skew window.
+- **Test:** `recovery_rules` (an hour-old signature gets `TIMESTAMP_SKEW`, a
+  changed time does not verify).
+
+## F-012: reports could fill the server's disk (fixed)
+
+- **Found:** 2026-10-01, same review.
+- **What:** up to 20 × 64 KiB per report, about two reports per second per
+  device, never deleted, for any account id.
+- **Severity:** medium (availability).
+- **Fix:** 20 reports per account per day, 16 KiB per message, only existing
+  accounts, resolved reports deleted after 30 days.
+- **Test:** `reports_per_day_are_limited_and_resolved_ones_purged`.
+
+## F-013: unfranked messages were accepted (fixed)
+
+- **Found:** 2026-10-01, same review.
+- **What:** receivers accepted `text`, `edit` and `file` without franking, so
+  a modified client could make all its messages unreportable as verified.
+- **Severity:** medium.
+- **Fix:** receivers drop them. Remaining limit (documented in PROTOCOL.md
+  8.5): a receiver cannot check the server's tag (it is a MAC), so a sender
+  with a garbage tag is only exposed when a report fails to verify.
+- **Test:** `franking::tests::unfranked_messages_are_dropped`.
+
+## F-014: an invite-link owner could pull the user into other groups (fixed)
+
+- **Found:** 2026-10-01, same review.
+- **What:** opening a link marked the owner's account as "asked to join" for
+  a day, so any group from that account skipped the request inbox and the
+  `user.group_add` setting.
+- **Severity:** low.
+- **Fix:** the marker is tied to the link (its hash), the adding device names
+  that hash in its roster, and the marker is used once.
+- **Test:** `strangers_join_through_a_link` (a second group from the owner
+  arrives as a request).
+
+## F-015: push hardening (fixed)
+
+- **Found:** 2026-10-01, same review.
+- **What:** allowed push hosts were matched without the port; one slow
+  gateway delayed every wake-up; the queue was unbounded. Also: a damaged
+  franking key was silently replaced (old reports would stop verifying), and
+  one failing invite request blocked the acknowledgement of the others.
+- **Severity:** low.
+- **Fix:** host entries allow the default port only (`host:port` for
+  others); at most 16 gateways contacted at once; a bounded queue; a damaged
+  franking key is an error; invite requests are handled one by one and
+  always acknowledged.
+- **Test:** `push::tests::endpoints_are_checked`, `wakeups_are_contentless_*`,
+  `a_damaged_franking_key_is_an_error_not_a_new_key`.

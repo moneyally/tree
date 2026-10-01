@@ -112,6 +112,23 @@ pub enum Event {
     InviteLinkUsed { group: Vec<u8>, account: String },
 }
 
+/// Recovery as the server has it (PROTOCOL.md 8.6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveryStatus {
+    pub active: bool,
+    /// `replace` or `release`, and when it takes effect (unix seconds).
+    pub pending: Option<(String, i64)>,
+}
+
+impl RecoveryStatus {
+    fn from_json(v: &Value) -> Self {
+        RecoveryStatus {
+            active: v["state"] == "applied",
+            pending: v["pending"]["action"].as_str().map(|a| (a.to_string(), v["pending"]["effective_at"].as_i64().unwrap_or(0))),
+        }
+    }
+}
+
 /// Result of submitting a commit to the server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommitOutcome {
@@ -127,6 +144,9 @@ struct PendingExtra {
     /// (member id hex, device id) of added devices.
     added: Vec<(String, String)>,
     removed_devices: Vec<String>,
+    /// Invite link hash (hex) the added account used.
+    #[serde(default)]
+    link: Option<String>,
 }
 
 type Roster = BTreeMap<String, String>;
@@ -241,8 +261,9 @@ impl Session {
         let phrase = Phrase::parse(phrase)?;
         let rk = phrase.recovery_key();
         Self::create_with(path, passphrase, name, server, |api, key| {
-            let sig = rk.sign_recovery(&key.verifying_key().to_bytes(), revoke_others);
-            api.recover(key, &rk.public_key(), &sig, revoke_others, pow_bits)
+            let ts = messages::now();
+            let sig = rk.sign_recovery(&key.verifying_key().to_bytes(), revoke_others, ts);
+            api.recover(key, &rk.public_key(), &sig, ts, revoke_others, pow_bits)
         })
     }
 
@@ -447,18 +468,34 @@ impl Session {
     }
 
     /// Makes a new recovery phrase for this account and registers its
-    /// recovery key with the server (replacing any earlier phrase). The
-    /// phrase is returned once to be shown to the user and is not stored.
-    pub fn new_recovery_phrase(&self, words: usize, list: Words) -> Result<Phrase, Error> {
+    /// recovery key (PROTOCOL.md 8.6). The phrase is returned once to be
+    /// shown to the user and is not stored. If the account already has a
+    /// phrase, `current` (the old phrase) makes the change immediate;
+    /// without it the change waits 7 days, during which the old phrase still
+    /// recovers the account (see [`Session::recovery_status`]).
+    pub fn new_recovery_phrase(&self, words: usize, list: Words, current: Option<&str>) -> Result<(Phrase, RecoveryStatus), Error> {
         let p = Phrase::generate(words, list)?;
-        self.api.set_recovery(&self.creds, Some(&p.recovery_key().public_key()))?;
+        let rk = p.recovery_key();
+        let account = self.account_id();
+        let cur = current.map(Phrase::parse).transpose()?.map(|c| c.recovery_key().sign_change(account, Some(&rk.public_key())));
+        let v = self.api.recovery_apply(&self.creds, &rk.public_key(), &rk.sign_set(account), cur.as_ref())?;
         self.change(settings::RECOVERY, true, None)?;
-        Ok(p)
+        Ok((p, RecoveryStatus::from_json(&v)))
     }
 
-    /// Drops the recovery key: the account can then not be recovered.
-    pub fn release_recovery(&self) -> Result<(), Error> {
-        self.release_feature(settings::RECOVERY).map(|_| ())
+    /// Drops the recovery key: immediate with the current phrase, otherwise
+    /// after 7 days.
+    pub fn release_recovery(&self, current: Option<&str>) -> Result<RecoveryStatus, Error> {
+        let cur = current.map(Phrase::parse).transpose()?.map(|c| c.recovery_key().sign_change(self.account_id(), None));
+        let v = self.api.recovery_release(&self.creds, cur.as_ref())?;
+        self.change(settings::RECOVERY, false, None)?;
+        Ok(RecoveryStatus::from_json(&v))
+    }
+
+    /// The server's view: active or not, and a pending change. Apps warn
+    /// about a pending change ("if this was not you, recover now").
+    pub fn recovery_status(&self) -> Result<RecoveryStatus, Error> {
+        Ok(RecoveryStatus::from_json(&self.api.recovery_status(&self.creds)?))
     }
 
     /// Whether this device registered a recovery phrase.
@@ -545,6 +582,11 @@ impl Session {
     /// Adds every device of `account_id` in one commit. Returns the outcome
     /// and any key-change warnings for that account.
     pub fn invite(&mut self, gid: &[u8], account_id: &str) -> Result<(CommitOutcome, Vec<Event>), Error> {
+        self.invite_via(gid, account_id, None)
+    }
+
+    /// [`Session::invite`], naming the invite link (hash hex) the account used.
+    pub(crate) fn invite_via(&mut self, gid: &[u8], account_id: &str, link: Option<String>) -> Result<(CommitOutcome, Vec<Event>), Error> {
         self.group(gid)?;
         let claimed = self.api.claim(&self.creds, account_id)?;
         if claimed.is_empty() {
@@ -567,7 +609,7 @@ impl Session {
         self.save_map(&accounts_key(gid), &accounts)?;
         let kps: Vec<&[u8]> = claimed.iter().map(|(_, kp)| kp.as_slice()).collect();
         self.with(gid, |g, c| g.add(c, &kps))?;
-        self.save_pending(gid, &PendingExtra { added, removed_devices: vec![] })?;
+        self.save_pending(gid, &PendingExtra { added, removed_devices: vec![], link })?;
         Ok((self.submit(gid)?, events))
     }
 
@@ -576,7 +618,7 @@ impl Session {
         let roster = self.roster(gid)?;
         let removed_devices = members.iter().filter_map(|m| roster.get(&m.to_hex()).cloned()).collect();
         self.with(gid, |g, c| g.remove(c, members))?;
-        self.save_pending(gid, &PendingExtra { added: vec![], removed_devices })?;
+        self.save_pending(gid, &PendingExtra { added: vec![], removed_devices, link: None })?;
         self.submit(gid)
     }
 
@@ -645,7 +687,7 @@ impl Session {
             let mut accounts = self.map(&accounts_key(gid))?;
             accounts.retain(|m, _| members.contains(m));
             self.save_map(&accounts_key(gid), &accounts)?;
-            self.send_payload(gid, &Payload::Roster { devices: roster, names, accounts })?;
+            self.send_payload(gid, &Payload::Roster { devices: roster, names, accounts, link: extra.link.clone() })?;
         }
         Ok(CommitOutcome::Accepted { epoch })
     }
@@ -715,8 +757,13 @@ impl Session {
         } else {
             p.encode()
         };
-        let bytes = self.with(gid, |g, c| g.send(c, &encoded))?;
-        let v: Value = self.api.send(&self.creds, &to, &bytes)?;
+        self.send_encoded(gid, &to, &encoded)
+    }
+
+    /// Encrypts an encoded payload for the group and sends it to `to`.
+    fn send_encoded(&mut self, gid: &[u8], to: &[String], encoded: &[u8]) -> Result<usize, Error> {
+        let bytes = self.with(gid, |g, c| g.send(c, encoded))?;
+        let v: Value = self.api.send(&self.creds, to, &bytes)?;
         Ok(v["delivered"].as_u64().unwrap_or(0) as usize)
     }
 
@@ -839,6 +886,12 @@ impl Session {
                     return Ok(());
                 }
             },
+            // Every honest client franks chat messages; one that does not
+            // would make its messages unreportable (PROTOCOL.md 8.5).
+            Some(p) if p.is_franked_kind() => {
+                events.push(Event::Dropped { reason: "unfranked message".into() });
+                return Ok(());
+            }
             other => (other, None),
         };
         match payload {
@@ -851,7 +904,7 @@ impl Session {
                 }
                 self.on_message(gid, from, p, franking, events)?;
             }
-            Some(Payload::Roster { devices, names, accounts }) => {
+            Some(Payload::Roster { devices, names, accounts, link }) => {
                 // Only entries for current members are taken; names only as
                 // hints where the member has not announced its own.
                 let members: Vec<String> = self.group(gid)?.members().iter().map(|m| m.to_hex()).collect();
@@ -889,7 +942,7 @@ impl Session {
                 }
                 // The roster's sender added us if we are still a request.
                 if let Some(adder) = self.map(&accounts_key(gid))?.get(&from.to_hex()).cloned() {
-                    self.decide_request(gid, &adder, events)?;
+                    self.decide_request(gid, &adder, link.as_deref(), events)?;
                 }
                 events.push(Event::RosterUpdated { group: gid.to_vec() });
             }

@@ -33,6 +33,10 @@ const SALT: &[u8] = b"tree/recovery/v1";
 const INFO_ACCOUNT: &[u8] = b"account-recovery-key";
 /// Context of the recovery signature (PROTOCOL.md 8.6).
 pub const RECOVER_CONTEXT: &[u8] = b"tree-recover-v1";
+/// Proof of holding a new recovery key.
+pub const SET_CONTEXT: &[u8] = b"tree-recovery-set-v1";
+/// The current key agrees to a replacement or release.
+pub const CHANGE_CONTEXT: &[u8] = b"tree-recovery-change-v1";
 
 /// Word list of a new phrase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,18 +112,39 @@ impl RecoveryKey {
         self.0.verifying_key().to_bytes()
     }
 
-    /// Signs a recovery request for a new device's request key.
-    pub fn sign_recovery(&self, auth_pub: &[u8; 32], revoke_others: bool) -> [u8; 64] {
-        self.0.sign(&recovery_message(auth_pub, revoke_others)).to_bytes()
+    /// Signs a recovery request for a new device's request key at time `ts`.
+    pub fn sign_recovery(&self, auth_pub: &[u8; 32], revoke_others: bool, ts: i64) -> [u8; 64] {
+        self.0.sign(&recovery_message(auth_pub, revoke_others, ts)).to_bytes()
+    }
+
+    /// Proof that this (new) key is held, for `account`.
+    pub fn sign_set(&self, account: &str) -> [u8; 64] {
+        self.0.sign(&change_message(SET_CONTEXT, account, &self.public_key())).to_bytes()
+    }
+
+    /// This (current) key agrees to replace it with `new`, or to release
+    /// recovery (`None`).
+    pub fn sign_change(&self, account: &str, new: Option<&[u8; 32]>) -> [u8; 64] {
+        self.0.sign(&change_message(CHANGE_CONTEXT, account, new.unwrap_or(&[0; 32]))).to_bytes()
     }
 }
 
-/// `"tree-recover-v1" || auth_pub || revoke_others (1 byte)`.
-pub fn recovery_message(auth_pub: &[u8; 32], revoke_others: bool) -> Vec<u8> {
-    let mut m = Vec::with_capacity(RECOVER_CONTEXT.len() + 33);
+/// `"tree-recover-v1" || auth_pub || revoke_others (1 byte) || ts (8 bytes BE)`.
+pub fn recovery_message(auth_pub: &[u8; 32], revoke_others: bool, ts: i64) -> Vec<u8> {
+    let mut m = Vec::with_capacity(RECOVER_CONTEXT.len() + 41);
     m.extend_from_slice(RECOVER_CONTEXT);
     m.extend_from_slice(auth_pub);
     m.push(u8::from(revoke_others));
+    m.extend_from_slice(&ts.to_be_bytes());
+    m
+}
+
+/// `context || u32(len(account)) || account || key`.
+pub fn change_message(context: &[u8], account: &str, key: &[u8; 32]) -> Vec<u8> {
+    let mut m = context.to_vec();
+    m.extend_from_slice(&(account.len() as u32).to_be_bytes());
+    m.extend_from_slice(account.as_bytes());
+    m.extend_from_slice(key);
     m
 }
 
@@ -190,11 +215,18 @@ mod tests {
     fn signature_binds_key_and_flag() {
         let k = Phrase::generate(12, Words::English).unwrap().recovery_key();
         let auth = [7u8; 32];
-        let sig = Signature::from_bytes(&k.sign_recovery(&auth, true));
+        let sig = Signature::from_bytes(&k.sign_recovery(&auth, true, 100));
         let vk = VerifyingKey::from_bytes(&k.public_key()).unwrap();
-        assert!(vk.verify(&recovery_message(&auth, true), &sig).is_ok());
-        assert!(vk.verify(&recovery_message(&auth, false), &sig).is_err());
-        assert!(vk.verify(&recovery_message(&[8; 32], true), &sig).is_err());
-        assert_eq!(&recovery_message(&auth, true)[..15], b"tree-recover-v1");
+        assert!(vk.verify(&recovery_message(&auth, true, 100), &sig).is_ok());
+        assert!(vk.verify(&recovery_message(&auth, false, 100), &sig).is_err());
+        assert!(vk.verify(&recovery_message(&auth, true, 101), &sig).is_err());
+        assert!(vk.verify(&recovery_message(&[8; 32], true, 100), &sig).is_err());
+        assert_eq!(&recovery_message(&auth, true, 0)[..15], b"tree-recover-v1");
+        let set = Signature::from_bytes(&k.sign_set("acc"));
+        assert!(vk.verify(&change_message(SET_CONTEXT, "acc", &k.public_key()), &set).is_ok());
+        assert!(vk.verify(&change_message(SET_CONTEXT, "acd", &k.public_key()), &set).is_err());
+        let rel = Signature::from_bytes(&k.sign_change("acc", None));
+        assert!(vk.verify(&change_message(CHANGE_CONTEXT, "acc", &[0; 32]), &rel).is_ok());
+        assert!(vk.verify(&change_message(SET_CONTEXT, "acc", &[0; 32]), &rel).is_err(), "contexts differ");
     }
 }

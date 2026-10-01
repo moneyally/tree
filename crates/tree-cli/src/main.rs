@@ -17,7 +17,8 @@ commands:
                                          new device for my account from the recovery phrase
                                          (TREE_RECOVERY_PHRASE or stdin); revoke = remove all other devices
   recovery-phrase [12|24] [ko]           make a new recovery phrase (replaces the old one)
-  recovery-release                       no recovery for this account
+  recovery-release                       no recovery for this account (TREE_CURRENT_PHRASE: at once)
+  recovery-status                        is recovery on; any pending change
   push <endpoint-url> | push off          content-free wake-ups through a push gateway
   groups                                 list groups
   create-group                           start a group, print its id
@@ -156,10 +157,14 @@ fn run(args: Vec<String>) -> Result<(), String> {
         ["recovery-phrase", more @ ..] => {
             let words = more.iter().find_map(|w| w.parse().ok()).unwrap_or(24);
             let list = if more.contains(&"ko") { Words::Korean } else { Words::English };
-            let p = s.new_recovery_phrase(words, list).map_err(e)?;
+            let current = std::env::var("TREE_CURRENT_PHRASE").ok();
+            let (p, st) = s.new_recovery_phrase(words, list, current.as_deref()).map_err(e)?;
             println!("{}", p.words());
             eprintln!("write these words down and keep them offline; they are shown only now.");
-            eprintln!("whoever has them can take over this account. a new phrase replaces this one.");
+            eprintln!("whoever has them can take over this account.");
+            if let Some((_, at)) = st.pending {
+                eprintln!("the old phrase stays valid until {at} (unix time): give TREE_CURRENT_PHRASE to replace it at once");
+            }
         }
         ["push", "off"] => {
             s.set_push_endpoint(None).map_err(e)?;
@@ -170,8 +175,18 @@ fn run(args: Vec<String>) -> Result<(), String> {
             println!("push wake-ups to {url}");
         }
         ["recovery-release"] => {
-            s.release_recovery().map_err(e)?;
-            println!("recovery released: this account can no longer be recovered");
+            let current = std::env::var("TREE_CURRENT_PHRASE").ok();
+            match s.release_recovery(current.as_deref()).map_err(e)?.pending {
+                Some((_, at)) => println!("recovery ends at {at} (unix time); until then the phrase still works"),
+                None => println!("recovery released: this account can no longer be recovered"),
+            }
+        }
+        ["recovery-status"] => {
+            let st = s.recovery_status().map_err(e)?;
+            println!("recovery {}", if st.active { "on" } else { "off" });
+            if let Some((action, at)) = st.pending {
+                println!("!! pending {action} at {at} (unix time). If this was not you, recover the account with your phrase now.");
+            }
         }
         ["invite-link", g, more @ ..] => {
             let hours: i64 = more.first().and_then(|h| h.parse().ok()).unwrap_or(24);

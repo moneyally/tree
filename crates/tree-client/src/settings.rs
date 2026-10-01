@@ -59,7 +59,7 @@ impl Session {
     /// Releasing `user.recovery_phrase` drops the recovery key on the server.
     pub fn release_feature(&self, k: &str) -> Result<Status, Error> {
         if k == RECOVERY {
-            self.api.set_recovery(&self.creds, None)?;
+            self.api.recovery_release(&self.creds, None)?;
         }
         self.change(k, false, None)
     }

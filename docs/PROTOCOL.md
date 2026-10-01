@@ -912,6 +912,12 @@ was sent by the reported account, without storing anything per message
    account (`apply` / `release`): every signed request of a suspended
    account is refused with `403 SUSPENDED`.
 
+Receivers drop `text`, `edit` and `file` that arrive unfranked (F-013).
+Limits: 20 reports per account per day, 16 KiB per message, only existing
+accounts; resolved reports are deleted 30 days after resolution (F-012).
+Reporting a `file` hands the operator its file key, so the operator can
+read that attachment; apps say so before the user sends the report.
+
 What a valid tag proves: the reported account's device asked for a tag on
 exactly `P` for this group. A reporter cannot frame another account (the
 tag binds the account), alter the text (binds `P` through `com`) or move it
@@ -941,17 +947,24 @@ device for it), never MLS state (RECOVERY_THREAT_MODEL.md 1). Code:
   entropy, info "account-recovery-key", 32)`, Ed25519 key pair from `seed`
   (RFC 8032). Test vector for the all-zero 128-bit entropy ("abandon … about"):
   public key `c5dda56a7105f6429ee484c58047cff5f59701f7ebb53a95d9f899597a02efed`.
-- **Registration.** A device of the account sends the public key
-  (`POST /v1/recovery/apply`, signed request); a new phrase replaces it,
-  `release` deletes it (`user.recovery_phrase`). One key belongs to at most
-  one account.
+- **Registration.** A device of the account sends the public key with a
+  proof of possession, `Sig_new("tree-recovery-set-v1" || u32 len || account
+  || new_pub)` (`POST /v1/recovery/apply`). One key belongs to at most one
+  account. While a key is active, replacing it or releasing it
+  (`user.recovery_phrase`) is immediate only with
+  `Sig_current("tree-recovery-change-v1" || u32 len || account || new_pub or
+  32 zero bytes)`, i.e. the old phrase; without it the change is pending for
+  7 days, shown to every device (`GET /v1/recovery`), and the old phrase
+  still recovers meanwhile. A recovery cancels any pending change. This
+  keeps a stolen unlocked device from locking the owner out (F-010).
 - **Recovery.** A new device generates its request key, solves the signup
   proof of work and sends, signed with its new key (as signup),
-  `recovery_pub`, its `auth_pub`, and
-  `Sig_recovery("tree-recover-v1" || auth_pub || revoke_others)`. The server
-  checks the proof of work, the request signature, the recovery signature
-  (`verify_strict`) and finds the account by `recovery_pub`; then adds the
-  device. With `revoke_others` it first deletes every other device of the
+  `recovery_pub`, its `auth_pub`, `ts` and
+  `Sig_recovery("tree-recover-v1" || auth_pub || revoke_others || i64 ts)`.
+  The server checks the proof of work, the request signature, that `ts` is
+  within the clock-skew window (F-011), the recovery signature
+  (`verify_strict`) and finds the account whose active key is
+  `recovery_pub`; then adds the device. With `revoke_others` it first deletes every other device of the
   account with its mailbox and key packages (lost or stolen phone). Wrong
   key and unknown key get the same answer, `403 RECOVERY_REFUSED`. Per-IP
   limit as for signup.
@@ -982,10 +995,12 @@ backups keyed from the phrase (stage 3).
    5 rate tokens). The server checks expiry and uses, counts one use per
    account, queues a join request for the owner's device and returns the
    owner's account id. The joining device remembers (for one day) that the
-   user asked to join that account's group, so the welcome is accepted
-   rather than shown as a message request (APP_PROTOCOL.md 5).
+   user opened this link (keyed by its hash, with the owner's account).
 3. The owner's device, on sync, fetches its requests and adds the requester
-   through the normal path (key-package claim, commit, welcome) only if the
+   through the normal path (key-package claim, commit, welcome, and a roster
+   naming the link hash; the joiner accepts the group without a request
+   only if the hash matches a link it opened from that account, once: F-014)
+   only if the
    link is still in its store, the group's settings still apply
    `chat.invite_link`, the device is still an admin, and the requester is not
    blocked. Otherwise it drops the request. Requests are acknowledged
@@ -1016,9 +1031,11 @@ over its own authenticated connection and decrypts locally. Code:
   most one per device per `PUSH_INTERVAL_SECS`, default 5 s), which also
   blurs message counts.
 - Server-side request forgery: the server only accepts and only contacts
-  hosts listed in `PUSH_ALLOWED_HOSTS` (https only, no credentials in the
-  URL, no redirects followed, 10 s timeout). Push is off when the list is
-  empty.
+  hosts listed in `PUSH_ALLOWED_HOSTS` (`host` = default port only,
+  `host:port` for another; https only, no credentials in the URL, no
+  redirects followed, 10 s timeout). At most 16 gateways are contacted at
+  once and the queue is bounded, so a slow gateway delays nobody else. Push
+  is off when the list is empty.
 - The vendor push services of the phone platforms need a gateway with the
   operator's credentials; that gateway receives the same `wake` only.
   Setting one up is part of deployment (HANDOFF 3.5, needs the owner).

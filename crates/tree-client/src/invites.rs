@@ -19,8 +19,15 @@ use crate::{CommitOutcome, Error, Event, Session};
 
 const PREFIX: &str = "tree://join/";
 const FEATURE: &str = "chat.invite_link";
-/// How long a "I opened this account's link" marker counts.
+/// How long a "I opened this link" marker counts.
 const JOIN_WINDOW: i64 = 86400;
+
+/// "The user opened this link of `owner` at `at`" (`linkjoin/<hash hex>`).
+#[derive(Serialize, Deserialize)]
+struct LinkJoin {
+    owner: String,
+    at: i64,
+}
 
 /// A link this device made.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -107,17 +114,56 @@ impl Session {
     pub fn join_invite_link(&mut self, link: &str) -> Result<String, Error> {
         let token = parse_link(link)?;
         let owner = self.api.invite_join(&self.creds, &STANDARD.encode(&token))?;
-        self.client.set_app_data(&format!("linkjoin/{owner}"), Some(now().to_string().as_bytes()))?;
+        let mark = LinkJoin { owner: owner.clone(), at: now() };
+        self.client.set_app_data(&format!("linkjoin/{}", hex::encode(token_hash(&token))), Some(&serde_json::to_vec(&mark).expect("JSON")))?;
         Ok(owner)
     }
 
-    /// True (once) if the user recently opened an invite link of `account`.
-    pub(crate) fn take_link_join(&mut self, account: &str) -> Result<bool, Error> {
-        let k = format!("linkjoin/{account}");
-        let Some(v) = self.client.app_data(&k)? else { return Ok(false) };
+    /// True (once) if the user recently opened invite link `link` (hash
+    /// hex) and it belongs to `account`. Tying it to the link means the
+    /// owner can bring the user into one group, the one this use was for.
+    pub(crate) fn take_link_join(&mut self, account: &str, link: Option<&str>) -> Result<bool, Error> {
+        let Some(h) = link.filter(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit())) else { return Ok(false) };
+        let k = format!("linkjoin/{h}");
+        let Some(mark) = self.client.app_data(&k)?.and_then(|v| serde_json::from_slice::<LinkJoin>(&v).ok()) else {
+            return Ok(false);
+        };
+        if mark.owner != account {
+            return Ok(false);
+        }
         self.client.set_app_data(&k, None)?;
-        let at: i64 = String::from_utf8_lossy(&v).parse().unwrap_or(0);
-        Ok(now() - at <= JOIN_WINDOW)
+        Ok(now() - mark.at <= JOIN_WINDOW)
+    }
+
+    fn handle_invite_request(&mut self, hash: &[u8], account: &str, events: &mut Vec<Event>) -> Result<(), Error> {
+        let k = key(hash);
+        let Some(rec) = self.client.app_data(&k)?.and_then(|v| serde_json::from_slice::<InviteLink>(&v).ok()) else {
+            return Ok(()); // revoked here, or made by another device
+        };
+        let gid = hex::decode(&rec.group).map_err(|_| Error::Protocol("bad invite record".into()))?;
+        let refuse = |events: &mut Vec<Event>, why: &str| events.push(Event::Dropped { reason: format!("invite link request from {account}: {why}") });
+        if self.group(&gid).is_err() {
+            self.client.set_app_data(&k, None)?;
+            refuse(events, "the group is gone");
+            return Ok(());
+        }
+        let me = self.member_id();
+        if !self.group(&gid)?.is_admin(&me) || !self.chat_feature(&gid, FEATURE)?.0 {
+            refuse(events, "links are no longer allowed in this group");
+            return Ok(());
+        }
+        if self.contact(account)?.is_some_and(|c| c.blocked) {
+            refuse(events, "blocked account");
+            return Ok(());
+        }
+        match self.invite_via(&gid, account, Some(hex::encode(hash)))? {
+            (CommitOutcome::Accepted { .. }, ev) => {
+                events.extend(ev);
+                events.push(Event::InviteLinkUsed { group: gid, account: account.to_string() });
+            }
+            (CommitOutcome::Lost, _) => refuse(events, "the group changed meanwhile; ask again"),
+        }
+        Ok(())
     }
 
     /// Handles join requests for this device's links (called by `sync`).
@@ -128,33 +174,9 @@ impl Session {
         let mut done = Vec::new();
         for (id, hash, account) in self.api.invite_requests(&self.creds)? {
             done.push(id);
-            let k = key(&hash);
-            let Some(rec) = self.client.app_data(&k)?.and_then(|v| serde_json::from_slice::<InviteLink>(&v).ok()) else {
-                continue; // revoked here, or made by another device
-            };
-            let gid = hex::decode(&rec.group).map_err(|_| Error::Protocol("bad invite record".into()))?;
-            let refuse = |events: &mut Vec<Event>, why: &str| events.push(Event::Dropped { reason: format!("invite link request from {account}: {why}") });
-            if self.group(&gid).is_err() {
-                self.client.set_app_data(&k, None)?;
-                refuse(events, "the group is gone");
-                continue;
-            }
-            let me = self.member_id();
-            if !self.group(&gid)?.is_admin(&me) || !self.chat_feature(&gid, FEATURE)?.0 {
-                refuse(events, "links are no longer allowed in this group");
-                continue;
-            }
-            if self.contact(&account)?.is_some_and(|c| c.blocked) {
-                refuse(events, "blocked account");
-                continue;
-            }
-            match self.invite(&gid, &account) {
-                Ok((CommitOutcome::Accepted { .. }, ev)) => {
-                    events.extend(ev);
-                    events.push(Event::InviteLinkUsed { group: gid, account });
-                }
-                Ok((CommitOutcome::Lost, _)) => refuse(events, "the group changed meanwhile; ask again"),
-                Err(e) => refuse(events, &e.to_string()),
+            // One bad request must not stop the others or block the ack.
+            if let Err(e) = self.handle_invite_request(&hash, &account, events) {
+                events.push(Event::Dropped { reason: format!("invite link request from {account}: {e}") });
             }
         }
         if !done.is_empty() {

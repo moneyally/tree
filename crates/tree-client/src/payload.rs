@@ -50,6 +50,10 @@ pub enum Payload {
         /// key-package claim. Lets every member pin the devices of a contact.
         #[serde(default)]
         accounts: BTreeMap<String, String>,
+        /// Hash (hex) of the invite link the new member used, if any, so
+        /// it can accept this group without a request (PROTOCOL.md 8.7).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        link: Option<String>,
     },
     /// The sender's own display name. Names never go to the server (F-009);
     /// they travel only inside the group, end-to-end encrypted.
@@ -131,6 +135,7 @@ mod tests {
             devices: [("ab".to_string(), "dev".to_string())].into(),
             names: Default::default(),
             accounts: [("ab".to_string(), "acc".to_string())].into(),
+            link: Some("cd".into()),
         };
         assert_eq!(Payload::decode(&r.encode()), Some(r));
         assert!(Payload::decode(br#"{"t":"roster","devices":{}}"#).is_some(), "names optional");

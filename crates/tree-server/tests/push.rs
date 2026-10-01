@@ -58,7 +58,7 @@ async fn set(api: &Api, dev: &Device, url: String) -> (StatusCode, serde_json::V
 async fn wakeups_are_contentless_coalesced_and_only_to_allowed_hosts() {
     let (gw, base) = gateway().await;
     let ts = boot(|c| {
-        c.push_allowed_hosts = vec!["127.0.0.1".into()];
+        c.push_allowed_hosts = vec![base.trim_start_matches("http://").to_string()];
         c.push_allow_http = true;
         c.push_interval_secs = 1;
     })
@@ -68,6 +68,7 @@ async fn wakeups_are_contentless_coalesced_and_only_to_allowed_hosts() {
 
     // Only allowed hosts.
     assert_eq!(set(api, &b, "http://localhost:1/up/x".into()).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(set(api, &b, "http://127.0.0.1:1/up/x".into()).await.0, StatusCode::BAD_REQUEST, "same host, other port");
     assert_eq!(set(api, &b, "http://10.0.0.1/up/x".into()).await.0, StatusCode::BAD_REQUEST);
     assert_eq!(set(api, &b, format!("{base}/up/bob")).await.0, StatusCode::OK);
 

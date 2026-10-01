@@ -40,6 +40,22 @@ fn strangers_join_through_a_link() {
     let ev = bob.sync(0).unwrap();
     assert!(ev.iter().any(|e| matches!(e, Event::Text { id: i, .. } if *i == id)), "{ev:?}");
 
+    // The marker of a link use covers that link's group only: the owner
+    // cannot use it to pull dave into another group (it arrives as a
+    // request, as from any stranger).
+    let link_d = alice.create_invite_link(&g, 3600, 1).unwrap();
+    dave.join_invite_link(&link_d).unwrap();
+    let other = alice.create_group().unwrap();
+    alice.invite(&other, dave.account_id()).unwrap();
+    let ev = dave.sync(0).unwrap();
+    assert!(ev.iter().any(|e| matches!(e, Event::Request { .. })), "{ev:?}");
+    assert!(matches!(dave.group_status(&other).unwrap(), GroupStatus::Request { .. }));
+    alice.sync(0).unwrap(); // handles the link request for g
+    dave.sync(0).unwrap();
+    assert_eq!(dave.group_status(&g).unwrap(), GroupStatus::Accepted);
+    bob.sync(0).unwrap();
+    carol.sync(0).unwrap();
+
     // A damaged link, a link of another kind.
     assert!(dave.join_invite_link("tree://join/abc").is_err());
     assert!(dave.join_invite_link("https://example.org").is_err());
@@ -53,14 +69,15 @@ fn strangers_join_through_a_link() {
         other => panic!("{other:?}"),
     }
 
-    // A new link with one use: dave joins; then it is used up.
+    // A new link with one use: erin joins; then it is used up.
+    let mut erin = env.device("erin");
     let link2 = alice.create_invite_link(&g, 3600, 1).unwrap();
-    dave.join_invite_link(&link2).unwrap();
+    erin.join_invite_link(&link2).unwrap();
     let mut eve = env.device("eve");
     assert!(matches!(eve.join_invite_link(&link2), Err(Error::Server { status: 404, .. })));
     alice.sync(0).unwrap();
-    assert!(dave.sync(0).unwrap().iter().any(|e| matches!(e, Event::Joined { .. })));
-    assert_eq!(alice.members(&g).unwrap().len(), 4);
+    assert!(erin.sync(0).unwrap().iter().any(|e| matches!(e, Event::Joined { .. })));
+    assert_eq!(alice.members(&g).unwrap().len(), 5);
 
     // A blocked account's request is refused by the owner's device.
     let link3 = alice.create_invite_link(&g, 3600, 5).unwrap();
@@ -68,5 +85,5 @@ fn strangers_join_through_a_link() {
     eve.join_invite_link(&link3).unwrap();
     let ev = alice.sync(0).unwrap();
     assert!(ev.iter().any(|e| matches!(e, Event::Dropped { reason } if reason.contains("blocked"))), "{ev:?}");
-    assert_eq!(alice.members(&g).unwrap().len(), 4);
+    assert_eq!(alice.members(&g).unwrap().len(), 5);
 }

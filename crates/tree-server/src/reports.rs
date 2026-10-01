@@ -42,23 +42,36 @@ pub const COMMIT_LABEL: &[u8] = b"tree/franking/v1";
 pub const TAG_LABEL: &[u8] = b"tree/franking-tag/v1";
 /// Messages per report, and size limits.
 pub const MAX_MESSAGES: usize = 20;
-pub const MAX_PAYLOAD: usize = 64 * 1024;
+pub const MAX_PAYLOAD: usize = 16 * 1024;
 pub const MAX_REASON: usize = 500;
+/// Reports one account may file per day.
+pub const MAX_PER_DAY: i64 = 20;
+/// Resolved reports are deleted this many days after resolution.
+pub const RESOLVED_KEEP_DAYS: i64 = 30;
+
+/// Deletes resolved reports older than [`RESOLVED_KEEP_DAYS`].
+pub async fn purge(db: &sqlx::SqlitePool, today: i64) -> Result<u64, sqlx::Error> {
+    Ok(sqlx::query("DELETE FROM reports WHERE resolved = 1 AND resolved_day < ?")
+        .bind(today - RESOLVED_KEEP_DAYS)
+        .execute(db)
+        .await?
+        .rows_affected())
+}
 
 /// The server's franking key, created on first start and kept in the database.
 pub async fn franking_key(db: &sqlx::SqlitePool) -> Result<[u8; 32], sqlx::Error> {
     if let Some(r) = sqlx::query("SELECT value FROM server_secrets WHERE name = 'franking'").fetch_optional(db).await? {
         let v: Vec<u8> = r.try_get("value")?;
-        if let Ok(k) = <[u8; 32]>::try_from(v.as_slice()) {
-            return Ok(k);
-        }
+        return v.as_slice().try_into().map_err(|_| sqlx::Error::Protocol("the stored franking key is damaged".into()));
     }
     let k: [u8; 32] = random_bytes();
     sqlx::query("INSERT OR IGNORE INTO server_secrets (name, value) VALUES ('franking', ?)").bind(k.as_slice()).execute(db).await?;
     // Another process may have won the insert: read back what is stored.
     let r = sqlx::query("SELECT value FROM server_secrets WHERE name = 'franking'").fetch_one(db).await?;
     let v: Vec<u8> = r.try_get("value")?;
-    Ok(v.as_slice().try_into().unwrap_or(k))
+    // A damaged key must not be silently replaced: every stored tag would
+    // stop verifying.
+    v.as_slice().try_into().map_err(|_| sqlx::Error::Protocol("the stored franking key is damaged".into()))
 }
 
 fn mac(key: &[u8], parts: &[&[u8]]) -> [u8; 32] {
@@ -135,6 +148,19 @@ pub async fn report(State(state): State<AppState>, req: Signed<ReportReq>) -> Ap
         return Err(ApiError::too_large("report too large"));
     }
     state.rate_device(&req.device.device_id, 10.0)?;
+    let known = sqlx::query("SELECT 1 FROM accounts WHERE id = ?").bind(&r.reported_account).fetch_optional(&state.db).await?;
+    if known.is_none() {
+        return Err(ApiError::not_found("no such account"));
+    }
+    let filed: i64 = sqlx::query("SELECT COUNT(*) AS n FROM reports WHERE reporter_account = ? AND created_day = ?")
+        .bind(&req.device.account_id)
+        .bind(today())
+        .fetch_one(&state.db)
+        .await?
+        .try_get("n")?;
+    if filed >= MAX_PER_DAY {
+        return Err(ApiError::limit_exceeded("too many reports from this account today"));
+    }
     let key = state.franking_key().await?;
     let checked: Vec<Value> = r
         .messages
@@ -194,8 +220,9 @@ pub async fn resolve(State(state): State<AppState>, Path(id): Path<String>, head
     check_admin(&state.cfg, &headers)?;
     check_id(&id, "report id")?;
     let req: ResolveReq = if body.is_empty() { ResolveReq::default() } else { parse_json(&body)? };
-    let n = sqlx::query("UPDATE reports SET resolved = 1, resolution = ? WHERE id = ?")
+    let n = sqlx::query("UPDATE reports SET resolved = 1, resolution = ?, resolved_day = ? WHERE id = ?")
         .bind(req.resolution)
+        .bind(today())
         .bind(&id)
         .execute(&state.db)
         .await?

@@ -271,6 +271,26 @@ pub struct GroupInfo {
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
+pub struct Recovery {
+    pub active: bool,
+    /// `replace` or `release`, pending until `pending_at` (unix seconds).
+    pub pending: Option<String>,
+    pub pending_at: Option<i64>,
+}
+
+impl From<tree_client::RecoveryStatus> for Recovery {
+    fn from(s: tree_client::RecoveryStatus) -> Self {
+        Recovery { active: s.active, pending_at: s.pending.as_ref().map(|p| p.1), pending: s.pending.map(|p| p.0) }
+    }
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct NewPhrase {
+    pub words: String,
+    pub status: Recovery,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
 pub struct ReportReceipt {
     pub id: String,
     pub verified: bool,
@@ -603,9 +623,20 @@ impl TreeSession {
     }
 
     /// A new recovery phrase (shown once, never stored); `korean` picks the
-    /// Korean word list.
-    pub fn new_recovery_phrase(&self, words: u32, korean: bool) -> R<String> {
+    /// Korean word list. With the `current` phrase the old one stops working
+    /// at once; otherwise only after 7 days (`status.pending`).
+    pub fn new_recovery_phrase(&self, words: u32, korean: bool, current: Option<String>) -> R<NewPhrase> {
         let list = if korean { Words::Korean } else { Words::English };
-        Ok(self.s().new_recovery_phrase(words as usize, list)?.words().to_string())
+        let (p, st) = self.s().new_recovery_phrase(words as usize, list, current.as_deref())?;
+        Ok(NewPhrase { words: p.words().to_string(), status: st.into() })
+    }
+
+    pub fn release_recovery(&self, current: Option<String>) -> R<Recovery> {
+        Ok(self.s().release_recovery(current.as_deref())?.into())
+    }
+
+    /// Warn the user if `pending` is set and they did not ask for it.
+    pub fn recovery_status(&self) -> R<Recovery> {
+        Ok(self.s().recovery_status()?.into())
     }
 }

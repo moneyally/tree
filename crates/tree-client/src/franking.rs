@@ -131,4 +131,47 @@ mod tests {
         assert_eq!(Record::decode(&r.encode()), Some(r));
         assert_eq!(Record::decode(b"junk"), None);
     }
+
+    /// A modified client that skips franking: honest receivers drop it.
+    #[test]
+    fn unfranked_messages_are_dropped() {
+        use crate::payload::Payload;
+        use crate::Event;
+        let dir = std::env::temp_dir().join(format!("tree-unfranked-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = tree_server::Config {
+            database_url: format!("sqlite://{}/s.db", dir.display()),
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            pow_bits: 8,
+            attachment_dir: dir.join("att"),
+            ..tree_server::Config::default()
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let server = rt.block_on(tree_server::start(cfg)).unwrap();
+        let url = format!("http://{}", server.addr);
+        let p = |n: &str| dir.join(format!("{n}.db")).display().to_string();
+        let mut alice = Session::create(&p("a"), "pw", "alice", &url, 8).unwrap();
+        let mut bob = Session::create(&p("b"), "pw", "bob", &url, 8).unwrap();
+        bob.add_contact(alice.account_id()).unwrap();
+        let g = alice.create_group().unwrap();
+        alice.invite(&g, bob.account_id()).unwrap();
+        bob.sync(0).unwrap();
+        let to = alice.other_devices(&g).unwrap();
+        let raw = Payload::Text { id: "00".repeat(16), text: "not franked".into(), fmt: false, mentions: vec![], all: false };
+        alice.send_encoded(&g, &to, &raw.encode()).unwrap();
+        let ev = bob.sync(0).unwrap();
+        assert!(ev.iter().any(|e| matches!(e, Event::Dropped { reason } if reason == "unfranked message")), "{ev:?}");
+        assert!(!ev.iter().any(|e| matches!(e, Event::Text { .. })));
+        // A franked payload whose inside is not a chat message is dropped too.
+        let odd = Payload::Franked { p: Payload::Leave.encode().iter().map(|b| *b as char).collect(), k: String::new(), tag: String::new(), m: 0 };
+        alice.send_encoded(&g, &to, &odd.encode()).unwrap();
+        let ev = bob.sync(0).unwrap();
+        assert!(ev.iter().any(|e| matches!(e, Event::Dropped { reason } if reason == "malformed franked payload")), "{ev:?}");
+        // Normal messages still arrive.
+        alice.send_text(&g, "franked").unwrap();
+        assert!(bob.sync(0).unwrap().iter().any(|e| matches!(e, Event::Text { text, .. } if text == "franked")));
+        drop(rt);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

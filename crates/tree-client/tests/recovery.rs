@@ -30,7 +30,8 @@ fn a_lost_phone_is_replaced_with_the_phrase() {
     }
     assert!(!std::path::Path::new(&p).exists(), "no profile is left behind");
 
-    let phrase = alice.new_recovery_phrase(24, Words::Korean).unwrap();
+    let (phrase, st) = alice.new_recovery_phrase(24, Words::Korean, None).unwrap();
+    assert!(st.active && st.pending.is_none());
     assert!(alice.has_recovery().unwrap());
     let words = phrase.words().to_string();
     // A typo (one word swapped for another list word) is refused locally or by the server.
@@ -38,12 +39,20 @@ fn a_lost_phone_is_replaced_with_the_phrase() {
     typo[3] = if typo[3] == "가격" { "가구" } else { "가격" };
     assert!(Session::recover(&env.profile("typo"), "pw", "x", &env.url, &typo.join(" "), false, 8).is_err());
 
-    // The phone is lost: a new device recovers the account and removes the old one.
+    // A thief with alice's unlocked phone tries to swap the phrase: it only
+    // becomes pending, and alice is warned.
+    let (_, st) = alice.new_recovery_phrase(12, Words::English, None).unwrap();
+    assert_eq!(st.pending.as_ref().map(|p| p.0.as_str()), Some("replace"));
+    assert!(alice.recovery_status().unwrap().pending.is_some());
+
+    // The phone is lost: a new device recovers the account with the real
+    // phrase, removes the old one and cancels the pending swap.
     let mut alice2 = Session::recover(&env.profile("alice2"), "new pw", "alice", &env.url, &words, true, 8).unwrap();
     assert_eq!(alice2.account_id(), alice.account_id());
     assert_ne!(alice2.device_id(), alice.device_id());
     // The old device is gone from the server.
     assert!(matches!(alice.sync(0), Err(Error::Server { status: 401, .. })));
+    assert!(alice2.recovery_status().unwrap().pending.is_none());
     // The username stays with the account.
     assert_eq!(bob.find("@alice_tree").unwrap().as_deref(), Some(alice.account_id()));
 
@@ -55,14 +64,18 @@ fn a_lost_phone_is_replaced_with_the_phrase() {
     let ev = bob.sync(0).unwrap();
     assert!(ev.iter().any(|e| matches!(e, Event::Text { id, .. } if *id == msg)), "{ev:?}");
 
-    // A new phrase replaces the old; release ends recovery.
-    let again = alice2.new_recovery_phrase(12, Words::English).unwrap();
+    // With the current phrase a new one replaces it at once; release likewise.
+    let (again, st) = alice2.new_recovery_phrase(12, Words::English, Some(&words)).unwrap();
+    assert!(st.pending.is_none());
     assert!(Session::recover(&env.profile("old"), "pw", "x", &env.url, &words, false, 8).is_err(), "old phrase no longer works");
     let alice3 = Session::recover(&env.profile("alice3"), "pw", "alice", &env.url, again.words(), false, 8).unwrap();
     assert_eq!(alice3.account_id(), alice2.account_id());
     assert!(alice2.apply_feature("user.recovery_phrase", None).is_err(), "only with the words shown");
+    // Without the phrase a release only becomes pending.
     alice2.release_feature("user.recovery_phrase").unwrap();
     assert!(!alice2.has_recovery().unwrap());
-    alice2.release_recovery().unwrap(); // idempotent
+    assert_eq!(alice2.recovery_status().unwrap().pending.map(|p| p.0).as_deref(), Some("release"));
+    let st = alice2.release_recovery(Some(again.words())).unwrap();
+    assert!(!st.active && st.pending.is_none());
     assert!(Session::recover(&env.profile("late"), "pw", "x", &env.url, again.words(), false, 8).is_err());
 }

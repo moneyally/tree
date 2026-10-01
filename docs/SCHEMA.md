@@ -227,7 +227,8 @@ CREATE TABLE reports (
     reason TEXT NOT NULL,
     messages TEXT NOT NULL,          -- JSON [{payload, verified}]: plaintext the reporter chose to send
     verified INTEGER NOT NULL, created_day INTEGER NOT NULL,
-    resolved INTEGER NOT NULL DEFAULT 0, resolution TEXT
+    resolved INTEGER NOT NULL DEFAULT 0, resolution TEXT,
+    resolved_day INTEGER               -- deleted 30 days later
 );
 CREATE TABLE suspensions (account_id TEXT PRIMARY KEY, since_day INTEGER NOT NULL, reason TEXT);
 ```
@@ -267,7 +268,10 @@ CREATE TABLE invite_requests (
 ```sql
 CREATE TABLE account_recovery (
     account_id   TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
-    recovery_pub BLOB NOT NULL UNIQUE,   -- Ed25519 public key from the phrase
-    set_day      INTEGER NOT NULL
+    recovery_pub   BLOB UNIQUE,          -- Ed25519 public key from the phrase; NULL = none
+    set_day        INTEGER NOT NULL,
+    pending_action TEXT,                 -- 'replace' | 'release': unsigned change waiting 7 days
+    pending_pub    BLOB,
+    pending_since  INTEGER
 );
 ```

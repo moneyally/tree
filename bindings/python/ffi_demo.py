@@ -65,7 +65,7 @@ assert ev(alice, "invite_link_used")
 assert ev(carol, "joined")
 print("carol joined by link; members:", len(alice.members(g)))
 
-phrase = alice.new_recovery_phrase(24, True)
+phrase = alice.new_recovery_phrase(24, True, None).words
 assert len(phrase.split()) == 24
 alice2 = t.TreeSession.recover(f"{d}/alice2.db", "pw2", "alice", URL, phrase, True, BITS)
 assert alice2.account_id() == alice.account_id()

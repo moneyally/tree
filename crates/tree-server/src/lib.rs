@@ -76,7 +76,7 @@ pub struct Inner {
     pub waiters: Waiters,
     pub franking: tokio::sync::OnceCell<[u8; 32]>,
     /// Devices to wake through their push endpoint (see [`push`]).
-    pub push: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    pub push: Option<tokio::sync::mpsc::Sender<String>>,
 }
 
 impl Deref for AppState {
@@ -91,7 +91,7 @@ impl AppState {
         Self::with_push(db, cfg, None)
     }
 
-    pub fn with_push(db: SqlitePool, cfg: Config, push: Option<tokio::sync::mpsc::UnboundedSender<String>>) -> Self {
+    pub fn with_push(db: SqlitePool, cfg: Config, push: Option<tokio::sync::mpsc::Sender<String>>) -> Self {
         Self(Arc::new(Inner {
             device_limiter: RateLimiter::new(cfg.rate_per_sec, cfg.rate_burst),
             signup_limiter: RateLimiter::new(cfg.signup_per_hour / 3600.0, cfg.signup_burst),
@@ -116,7 +116,7 @@ impl AppState {
     pub fn wake(&self, device_id: &str) {
         self.waiters.notify(device_id);
         if let Some(p) = &self.push {
-            let _ = p.send(device_id.to_string());
+            let _ = p.try_send(device_id.to_string());
         }
     }
 
@@ -232,6 +232,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/invites/join", post(invites::join))
         .route("/v1/invites/requests", get(invites::requests))
         .route("/v1/invites/requests/ack", post(invites::ack))
+        .route("/v1/recovery", get(recovery::get))
         .route("/v1/recovery/apply", post(recovery::apply))
         .route("/v1/recovery/release", post(recovery::release))
         .route("/v1/recovery/recover", post(recovery::recover))
@@ -309,7 +310,8 @@ pub async fn purge_expired(state: &AppState, now: i64) -> Result<u64, sqlx::Erro
     .await?;
     let files = attachments::purge(state, cutoff).await?;
     let invites = invites::purge(&state.db, now).await?;
-    Ok(expired + orphans + files + invites)
+    let reports = reports::purge(&state.db, now.div_euclid(86400)).await?;
+    Ok(expired + orphans + files + invites + reports)
 }
 
 /// A running server.
@@ -327,7 +329,7 @@ pub async fn start(cfg: Config) -> Result<Server, BoxError> {
     let db = open_db(&cfg.database_url).await?;
     let listener = TcpListener::bind(cfg.bind_addr).await?;
     let addr = listener.local_addr()?;
-    let (push_tx, push_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (push_tx, push_rx) = tokio::sync::mpsc::channel(push::QUEUE);
     let push_on = !cfg.push_allowed_hosts.is_empty();
     let state = AppState::with_push(db, cfg, push_on.then_some(push_tx));
 

@@ -171,6 +171,7 @@ impl Api {
         key: &SigningKey,
         recovery_pub: &[u8; 32],
         signature: &[u8; 64],
+        ts: i64,
         revoke_others: bool,
         pow_bits: u32,
     ) -> Result<Creds, Error> {
@@ -178,7 +179,7 @@ impl Api {
         let nonce = solve_pow(&public, pow_bits);
         let body = json!({
             "recovery_pub": b64(recovery_pub), "auth_pub": b64(&public), "pow_nonce": nonce,
-            "signature": b64(signature), "revoke_others": revoke_others,
+            "signature": b64(signature), "ts": ts, "revoke_others": revoke_others,
         });
         let v = self.request(key, "", Method::POST, "/v1/recovery/recover", Some(&body))?.ok()?;
         Ok(Creds { account_id: field(&v, "account_id")?, device_id: field(&v, "device_id")?, key: key.clone() })
@@ -227,13 +228,20 @@ impl Api {
         Ok(())
     }
 
-    /// Registers (`Some`) or drops (`None`) the account's recovery key.
-    pub fn set_recovery(&self, c: &Creds, recovery_pub: Option<&[u8; 32]>) -> Result<(), Error> {
-        match recovery_pub {
-            Some(p) => self.call(c, Method::POST, "/v1/recovery/apply", Some(&json!({ "recovery_pub": b64(p) })))?.ok()?,
-            None => self.call(c, Method::POST, "/v1/recovery/release", None)?.ok()?,
-        };
-        Ok(())
+    /// Registers a recovery key (`proof`: by the new key; `current`: by the
+    /// current key, or the change waits 7 days). Returns the state.
+    pub fn recovery_apply(&self, c: &Creds, recovery_pub: &[u8; 32], proof: &[u8; 64], current: Option<&[u8; 64]>) -> Result<Value, Error> {
+        let body = json!({ "recovery_pub": b64(recovery_pub), "proof": b64(proof), "current_signature": current.map(|s| b64(s)) });
+        self.call(c, Method::POST, "/v1/recovery/apply", Some(&body))?.ok()
+    }
+
+    pub fn recovery_release(&self, c: &Creds, current: Option<&[u8; 64]>) -> Result<Value, Error> {
+        let body = json!({ "current_signature": current.map(|s| b64(s)) });
+        self.call(c, Method::POST, "/v1/recovery/release", Some(&body))?.ok()
+    }
+
+    pub fn recovery_status(&self, c: &Creds) -> Result<Value, Error> {
+        self.call(c, Method::GET, "/v1/recovery", None)?.ok()
     }
 
     pub fn upload_key_packages(&self, c: &Creds, kps: &[Vec<u8>]) -> Result<u64, Error> {

@@ -12,12 +12,14 @@ CREATE TABLE reports (
     reported_account TEXT NOT NULL,
     reporter_account TEXT NOT NULL,
     reason           TEXT NOT NULL,
-    messages         TEXT NOT NULL,      -- JSON array of {text, verified}
+    messages         TEXT NOT NULL,      -- JSON array of {payload, verified}
     verified         INTEGER NOT NULL,   -- every message's franking tag checked out
     created_day      INTEGER NOT NULL,
     resolved         INTEGER NOT NULL DEFAULT 0,
-    resolution       TEXT
+    resolution       TEXT,
+    resolved_day     INTEGER             -- deleted RESOLVED_KEEP_DAYS later
 );
+CREATE INDEX reports_reporter ON reports(reporter_account, created_day);
 
 -- Suspended accounts may not send, commit, claim or upload.
 CREATE TABLE suspensions (

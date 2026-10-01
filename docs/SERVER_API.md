@@ -280,7 +280,8 @@ if no account holds it or it is hidden. Costs 10 rate-limit tokens.
 ### `POST /v1/push` — set this device's endpoint
 
 `{ "endpoint": "https://<allowed gateway host>/..." }` → `200 { "state": "applied" }`.
-`400` if push is off, the host is not in `PUSH_ALLOWED_HOSTS`, the URL is not
+`400` if push is off, the host (with port: an entry `host` allows the default
+port only, `host:port` that port) is not in `PUSH_ALLOWED_HOSTS`, the URL is not
 https, carries credentials or is longer than 1024 characters.
 
 ### `DELETE /v1/push` — no wake-ups
@@ -325,12 +326,26 @@ device's requests.
 
 ### `POST /v1/recovery/apply` — set my account's recovery key
 
-`{ "recovery_pub": "<Ed25519 public key>" }` → `200 { "state": "applied" }`;
-replaces an earlier key. `409 ALREADY_EXISTS` if another account holds it.
+```json
+{ "recovery_pub": "<Ed25519 public key>",
+  "proof": "<new key over \"tree-recovery-set-v1\" || u32 len || account || recovery_pub>",
+  "current_signature": "<optional: current key over \"tree-recovery-change-v1\" || u32 len || account || recovery_pub>" }
+```
+
+`200 { "state": "applied", "pending": null }` when set (first key, or a
+replacement signed by the current key), or
+`{ "state": "applied", "pending": { "action": "replace", "effective_at": ... } }`
+when the replacement waits 7 days. `400` bad proof, `403 RECOVERY_REFUSED`
+wrong current signature, `409 ALREADY_EXISTS` key held elsewhere.
 
 ### `POST /v1/recovery/release` — no recovery for my account
 
-`200 { "state": "released" }`, also when none was set.
+`{ "current_signature": "<optional: current key over the change message with 32 zero bytes>" }`
+→ `200` with `state: released` (signed, or no key) or a pending `release`.
+
+### `GET /v1/recovery` — state and pending change
+
+`200 { "state": "applied" | "released", "pending": null | { "action", "effective_at" } }`.
 
 ### `POST /v1/recovery/recover` — a new device joins my account
 
@@ -338,11 +353,12 @@ Like signup: no `X-Tree-Device`, signed with the new key, per-IP limit.
 
 ```json
 { "recovery_pub": "...", "auth_pub": "<new device key>", "pow_nonce": 123,
-  "signature": "<64 bytes: recovery key over \"tree-recover-v1\" || auth_pub || revoke_others>",
-  "revoke_others": false }
+  "signature": "<64 bytes: recovery key over \"tree-recover-v1\" || auth_pub || revoke_others || i64 ts>",
+  "ts": 1790834880, "revoke_others": false }
 ```
 
-`201 { "account_id", "device_id", "revoked": 0 }`. Errors: `POW_INVALID`,
+`201 { "account_id", "device_id", "revoked": 0 }`; cancels a pending change.
+Errors: `TIMESTAMP_SKEW` (`ts` outside the window), `POW_INVALID`,
 `RECOVERY_REFUSED`, `ALREADY_EXISTS` (key already registered; nothing is
 revoked), `LIMIT_EXCEEDED` (device limit; use `revoke_others`).
 
@@ -361,7 +377,9 @@ The tag binds `com` to the caller's account and the minute. Nothing is stored.
                  "minute": 1790834880, "group_id": "<base64>" }] }
 ```
 
-1 to 20 messages, payload ≤ 64 KiB each, reason ≤ 500 characters. `201` →
+1 to 20 messages, payload ≤ 16 KiB each, reason ≤ 500 characters, at most
+20 reports per account per day (`LIMIT_EXCEEDED`), `404` for an unknown
+account. Resolved reports are deleted 30 days after resolution. `201` →
 `{ "id": "...", "verified": true }`; `verified` is true only if every message's
 tag checks out against `reported_account`. Costs 10 rate-limit tokens.
 

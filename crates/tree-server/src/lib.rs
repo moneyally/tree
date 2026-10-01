@@ -6,6 +6,7 @@
 //! * [`accounts`] — signup with proof-of-work, extra devices
 //! * [`keypackages`] — one-time MLS key packages
 //! * [`messages`] — per-device mailboxes with long-poll
+//! * [`commits`] — commit ordering: first commit per group and epoch wins
 //! * [`features`] — operator flags with apply/release
 //!
 //! Privacy: no IP addresses, message bodies or key packages are logged. Logs
@@ -14,6 +15,7 @@
 
 pub mod accounts;
 pub mod auth;
+pub mod commits;
 pub mod config;
 pub mod error;
 pub mod features;
@@ -21,6 +23,7 @@ pub mod keypackages;
 pub mod limits;
 pub mod messages;
 pub mod util;
+pub mod wire;
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -183,6 +186,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/keypackages/count", get(keypackages::count))
         .route("/v1/messages", post(messages::send).get(messages::fetch))
         .route("/v1/messages/ack", post(messages::ack))
+        .route("/v1/commits", post(commits::submit))
         .route("/v1/features", get(features::list))
         .route("/v1/features/{key}/apply", post(features::apply))
         .route("/v1/features/{key}/release", post(features::release))
@@ -229,7 +233,8 @@ async fn log_requests(req: Request, next: Next) -> Response {
     resp
 }
 
-/// Deletes undelivered messages older than the TTL and any orphaned bodies.
+/// Deletes undelivered messages older than the TTL and any orphaned bodies,
+/// and the ordering record of groups none of whose devices exist any more.
 /// Returns the number of bodies removed.
 pub async fn purge_expired(state: &AppState, now: i64) -> Result<u64, sqlx::Error> {
     let cutoff = now - state.cfg.message_ttl_secs as i64;
@@ -244,6 +249,11 @@ pub async fn purge_expired(state: &AppState, now: i64) -> Result<u64, sqlx::Erro
     .execute(&state.db)
     .await?
     .rows_affected();
+    sqlx::query(
+        "DELETE FROM groups WHERE NOT EXISTS (SELECT 1 FROM group_devices g WHERE g.group_id = groups.group_id)",
+    )
+    .execute(&state.db)
+    .await?;
     Ok(expired + orphans)
 }
 

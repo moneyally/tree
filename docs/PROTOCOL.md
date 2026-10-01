@@ -578,7 +578,8 @@ the server accepted it.**
 On `main`: the client side below is implemented in the core
 (`PendingCommit`, `Group::confirm_commit`, `Group::discard_commit`,
 `Group::pending_commit`); the steps that talk to the server belong to the
-app. The server side (section 7.4) is **(in progress, not implemented)**.
+app. The server side (section 7.4) is implemented in `tree-server`
+(`POST /v1/commits`).
 
 ### 7.1 Client: two-phase commit
 
@@ -633,7 +634,7 @@ it recognises it by hash (section 6.6 step 2) and reports `OwnEcho`.
   one received over another transport);
 - process a commit for an epoch other than its current one.
 
-### 7.4 Server: ordering rules (in progress, not implemented)
+### 7.4 Server: ordering rules
 
 Endpoint `POST /v1/commits` (signed like every request, section 8):
 
@@ -649,8 +650,9 @@ Endpoint `POST /v1/commits` (signed like every request, section 8):
 }
 ```
 
-Limits are those of `POST /v1/messages` (body and welcome 256 KiB each,
-1000 recipients, 1000 added).
+Limits: commit and welcome 4 MiB each, recipients plus added at most 2048
+devices (a 1,000-member group with two devices each; sizes from
+[BENCHMARKS.md](BENCHMARKS.md)). The epoch must fit a signed 64-bit integer.
 
 The server:
 
@@ -659,7 +661,8 @@ The server:
    `opaque group_id<V>` (RFC 9420 §2.1.2 variable-length integer prefix),
    `uint64 epoch`, `uint8 content_type`. It requires `group_id` and `epoch`
    to equal the JSON fields and `content_type = 3` (commit), else
-   `BAD_REQUEST`. It does not verify the tag (it has no key).
+   `BAD_REQUEST`. It does not verify the tag (it has no key). The length
+   prefix of `group_id` must use the minimum encoding.
 2. Within one database transaction, looks up the group record
    `(group_id) -> (last_epoch, eligible devices, winner hashes of the last 64
    accepted epochs)` and applies the first matching rule:
@@ -676,7 +679,8 @@ The server:
    winner hash, `eligible = ({sender} ∪ recipients ∪ added) \ removed`;
    inserts the body into every recipient's mailbox and the welcome into every
    added device's mailbox (mailbox semantics of section 8.3). Response
-   `200 {"accepted": true, "id": "..."}`. If the welcome starts with a byte
+   `200 {"accepted": true, "id": "...", "epoch": ..., ...}`; an idempotent
+   retry returns the same `id`. Only registered devices enter `eligible`. If the welcome starts with a byte
    other than `0x00` or does not carry `wire_format = 0x0003`, the request is
    refused with `BAD_REQUEST` before anything is stored.
 

@@ -136,6 +136,20 @@ caught, 13 missed, 53 unviable. Of the 13:
 Pass 2 (after the fixes) on `group.rs`: only the two equivalent
 `check_commit` mutants above remain.
 
+### HANDOFF 3.2 (server commit ordering)
+
+`cargo mutants -p tree-server --in-diff` on the lines 3.2 changed
+(`commits.rs`, `messages.rs`, `wire.rs`, `config.rs`, `error.rs`): 142
+mutants, 50 caught, 6 missed, 86 unviable. Of the 6:
+
+- fixed by new tests: the limit on `removed` devices (`> max_recipients`, two
+  mutants), `Config::validate` (every limit), the error message for each kind
+  of body `/v1/messages` refuses (a commit and a proposal were told apart only
+  by the message), and the rate cost of a small commit (`/ 100` -> `* 100`);
+- equivalent for every reachable input of the tests: rate cost
+  `(recipients + added) / 100` -> `(recipients * added) / 100` differs only
+  above 100 devices, where both cost more than one token.
+
 ## Findings from this pass
 
 See `SECURITY_FINDINGS.md`. At PR #3: F-005 and F-006 fixed with regression

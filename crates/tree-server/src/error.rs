@@ -13,12 +13,16 @@ pub struct ApiError {
     pub code: &'static str,
     pub message: Cow<'static, str>,
     pub retry_after: Option<u64>,
+    /// Extra fields merged into the JSON body (e.g. `winner_sha256`).
+    pub details: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 #[derive(Serialize)]
 struct Body<'a> {
     code: &'a str,
     message: &'a str,
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    details: Option<&'a serde_json::Map<String, serde_json::Value>>,
 }
 
 impl ApiError {
@@ -32,7 +36,22 @@ impl ApiError {
             code,
             message: message.into(),
             retry_after: None,
+            details: None,
         }
+    }
+
+    /// Adds a field to the JSON body.
+    pub fn with(mut self, key: &str, value: serde_json::Value) -> Self {
+        self.details.get_or_insert_with(Default::default).insert(key.to_owned(), value);
+        self
+    }
+
+    pub fn forbidden(code: &'static str, message: impl Into<Cow<'static, str>>) -> Self {
+        Self::new(StatusCode::FORBIDDEN, code, message)
+    }
+
+    pub fn conflict(code: &'static str, message: impl Into<Cow<'static, str>>) -> Self {
+        Self::new(StatusCode::CONFLICT, code, message)
     }
 
     pub fn bad_request(message: impl Into<Cow<'static, str>>) -> Self {
@@ -82,6 +101,7 @@ impl IntoResponse for ApiError {
             Json(Body {
                 code: self.code,
                 message: &self.message,
+                details: self.details.as_ref(),
             }),
         )
             .into_response();

@@ -14,6 +14,7 @@ opaque bytes; the server never sees plaintext or MLS keys.
 ## Errors
 
 Every error is `{"code": "...", "message": "..."}`. `message` is for humans; match on `code`.
+Some errors add fields (named with the endpoint).
 
 | Code | HTTP | Meaning |
 | --- | --- | --- |
@@ -22,12 +23,15 @@ Every error is `{"code": "...", "message": "..."}`. `message` is for humans; mat
 | `UNAUTHORIZED` | 401 | missing/bad signature, unknown device, replayed request, bad operator token |
 | `TIMESTAMP_SKEW` | 401 | `X-Tree-Timestamp` more than 300 s away from server time |
 | `LOCKED_BY_SERVER` | 403 | the feature is released by the operator (e.g. signups) |
+| `NOT_ELIGIBLE` | 403 | commit from a device the server does not know as a member of the group |
 | `NOT_FOUND` | 404 | no such endpoint, account or device |
 | `UNKNOWN_FEATURE` | 404 | unknown feature key |
 | `METHOD_NOT_ALLOWED` | 405 | wrong HTTP method |
 | `ALREADY_EXISTS` | 409 | this authentication key is already registered |
 | `LIMIT_EXCEEDED` | 409 | a stored quota is full (devices per account, key packages per device) |
-| `TOO_LARGE` | 413 | body, message, key package, or a list (recipients, key packages, ack ids) too large |
+| `COMMIT_CONFLICT` | 409 | another commit already won this epoch; field `winner_sha256` |
+| `EPOCH_MISMATCH` | 409 | commit for an epoch beyond the next one; field `last_epoch` |
+| `TOO_LARGE` | 413 | body, message, commit, welcome, key package, or a list (recipients, key packages, ack ids) too large |
 | `RATE_LIMITED` | 429 | slow down; see `Retry-After` (seconds) |
 | `INTERNAL` | 500 | server error |
 
@@ -143,8 +147,13 @@ rate-limit tokens. `NOT_FOUND` for an unknown account.
 ```
 
 One mailbox entry per recipient device (duplicates collapse); the body is
-stored once. At most 1000 recipients and 256 KiB body. The sender is **not**
+stored once. At most 2048 recipients and 256 KiB body. The sender is **not**
 stored.
+
+The body must be a Tree envelope holding an MLS application message
+(PROTOCOL.md 4.1; the server reads only the cleartext header). Refused with
+`BAD_REQUEST`: commits (use `/v1/commits`), proposals (not allowed in v1),
+welcomes (they travel only with their commit), anything else.
 
 `200` →
 
@@ -154,10 +163,7 @@ stored.
 
 `full_devices`: mailboxes holding 10 000 pending messages already.
 
-Planned (not implemented): commits and welcomes will go through a separate
-`POST /v1/commits` endpoint that accepts only the first commit per (group,
-epoch), and this endpoint will refuse commits, proposals and welcomes. See
-[PROTOCOL.md](PROTOCOL.md), section 7.4.
+
 
 ### `GET /v1/messages?wait=N` — fetch my pending messages
 
@@ -180,6 +186,56 @@ epoch), and this endpoint will refuse commits, proposals and welcomes. See
 At most 1000 ids. Only messages in the caller's own mailbox are deleted; other
 ids are ignored. `200` → `{ "deleted": 2 }`. A body is erased when its last
 recipient acknowledges it. Unacknowledged messages are purged after 30 days.
+
+## Commits
+
+### `POST /v1/commits` — submit a commit (first per group and epoch wins)
+
+```json
+{
+  "group_id": "<base64 MLS group id>",
+  "epoch": 17,
+  "recipients": ["<device_id>", ...],
+  "body": "<base64 envelope with an MLS commit>",
+  "added": ["<device_id>", ...],
+  "welcome": "<base64 MLS welcome, present iff added is non-empty>",
+  "removed": ["<device_id>", ...]
+}
+```
+
+`recipients`: all other devices of the group in this epoch, including devices
+being removed. `added`, `welcome`, `removed` may be left out. Limits:
+`recipients` + `added` at most 2048 devices, commit and welcome 4 MiB each
+(`MAX_COMMIT_BYTES`, `MAX_WELCOME_BYTES`).
+
+The server checks that `body` is an envelope whose MLS header is a commit for
+`group_id` and `epoch`, and that `welcome` starts like an MLS welcome, then in
+one transaction (PROTOCOL.md 7.4):
+
+1. no record for the group: accept;
+2. `epoch` at or below the last accepted one: if `SHA-256(body)` equals the
+   winner of that epoch, `200` again with the same `id` and `delivered: 0`
+   (a retry after a lost answer); otherwise `409 COMMIT_CONFLICT` with
+   `winner_sha256` (lowercase hex, or `null` if the epoch is older than the
+   last 64 accepted);
+3. the caller is not a device of the group: `403 NOT_ELIGIBLE`;
+4. `epoch` is the next one: accept; further ahead: `409 EPOCH_MISMATCH` with
+   `last_epoch`.
+
+On accept the group's device set becomes `({caller} ∪ recipients ∪ added) \
+removed` (registered devices only), the commit goes into every recipient's
+mailbox and the welcome into every added device's mailbox, before the
+transaction ends.
+
+`200` →
+
+```json
+{ "accepted": true, "id": "...", "epoch": 17, "delivered": 3,
+  "unknown_devices": [], "full_devices": [] }
+```
+
+`full_devices` missed the commit (mailbox full) and must be removed from the
+group and added again.
 
 ## Operator feature flags
 
@@ -211,6 +267,7 @@ Errors: `UNAUTHORIZED`, `UNKNOWN_FEATURE`.
 | account id, device ids, device authentication public keys | yes |
 | account/device creation date | day only |
 | key packages | until claimed |
+| per group: last accepted epoch, the device ids that may commit next, SHA-256 and id of the last 64 accepted commits | while one of its devices exists |
 | message ciphertext + recipient device + arrival minute | until acknowledged, at most 30 days |
 | message sender | **no** |
 | IP addresses | **no** (signup rate limit keeps them in memory only) |
@@ -230,7 +287,8 @@ Logs contain method, route template, status and latency only.
 | `CLOCK_SKEW_SECS` / `LONG_POLL_MAX_SECS` | `300` / `25` |
 | `MAX_DEVICES_PER_ACCOUNT` | `10` |
 | `MAX_KEY_PACKAGES_PER_DEVICE` / `_PER_UPLOAD` / `MAX_KEY_PACKAGE_BYTES` | `200` / `100` / `16384` |
-| `MAX_MESSAGE_BYTES` / `MAX_RECIPIENTS` / `MAX_MAILBOX_MESSAGES` / `FETCH_LIMIT` | `262144` / `1000` / `10000` / `100` |
+| `MAX_MESSAGE_BYTES` / `MAX_RECIPIENTS` / `MAX_MAILBOX_MESSAGES` / `FETCH_LIMIT` | `262144` / `2048` / `10000` / `100` |
+| `MAX_COMMIT_BYTES` / `MAX_WELCOME_BYTES` | `4194304` / `4194304` |
 | `RATE_PER_SEC` / `RATE_BURST` (per device) | `20` / `200` |
 | `SIGNUP_PER_HOUR` / `SIGNUP_BURST` (per address, IPv6 per /64) | `20` / `10` |
 | `TRUST_FORWARDED_FOR` | `false` (set `true` only behind a proxy that overwrites `X-Forwarded-For`) |

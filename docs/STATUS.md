@@ -39,7 +39,7 @@ in section 5.
 | SLH-DSA root identity, ML-DSA device keys | decided otherwise (stage 4+) | section 4.2; Ed25519 in v1 |
 | 256-bit symmetric keys | done | AES-256-GCM in the suite, SQLCipher AES-256 |
 | Outer envelope (reject non-member input before MLS) | done | F-001 |
-| Commit ordering, no forks | partial | client side done (F-003); server side is HANDOFF 3.2 |
+| Commit ordering, no forks | done | client (F-003) and server (`POST /v1/commits`, HANDOFF 3.2); no app uses it yet |
 | Messages in flight during a commit | done | 2 past epochs (F-002) |
 | Members identified by key, not name | done | member ids (F-008) |
 | Proposals from others not trusted | done | F-007 |
@@ -67,8 +67,8 @@ in section 5.
 | Anonymous credentials for signup | decided otherwise (stage 4) | |
 | One-time key package store | done | |
 | Mailboxes, 30-day purge, delete on acknowledge | done | |
-| Commit ordering endpoint | missing | HANDOFF 3.2 |
-| Size limits for large hybrid groups | missing | HANDOFF 3.2 (BENCHMARKS.md rec. 6) |
+| Commit ordering endpoint | done | HANDOFF 3.2; eligibility set, idempotent retry, welcome only with a winning commit |
+| Size limits for large hybrid groups | done | commits / welcomes 4 MiB, 2048 devices (BENCHMARKS.md rec. 6) |
 | Minimal logs (no IP, no sender, day / minute granularity) | done | SERVER_API.md "What the server stores" |
 | Operator feature flags + audit trail | done | own implementation; section 4.4 |
 | `@username` (hash only, rate-limited search) | missing | |
@@ -156,7 +156,7 @@ Each needs the owner's confirmation; the reasons are in PROTOCOL.md.
 ## 6. Order of work to finish stage 1
 
 1. HANDOFF 3.1 core fixes — done.
-2. HANDOFF 3.2 server commit ordering + size limits.
+2. HANDOFF 3.2 server commit ordering + size limits — done.
 3. HANDOFF 3.3 command-line client: two devices chat through a local server.
 4. Identity and safety basics in core + server: recovery phrase, safety
    numbers and key-change warning, usernames (hash) with QR, message

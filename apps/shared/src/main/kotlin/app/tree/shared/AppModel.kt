@@ -140,6 +140,22 @@ class AppModel(
         loop?.cancel()
     }
 
+    /**
+     * App lock (`user.app_lock`): closes the session, which drops the open
+     * database and its key from memory; the passphrase is needed again.
+     * Returns true if it locked.
+     */
+    suspend fun lockIfEnabled(): Boolean {
+        val s = session ?: return false
+        val on = call { it.features().any { f -> f.key == "user.app_lock" && f.applied } } ?: false
+        if (!on) return false
+        stop()
+        session = null
+        withContext(io) { s.close() }
+        _state.value = UiState()
+        return true
+    }
+
     suspend fun syncNow() {
         val events = call { it.sync(0u) } ?: return
         for (e in events) onEvent(e)

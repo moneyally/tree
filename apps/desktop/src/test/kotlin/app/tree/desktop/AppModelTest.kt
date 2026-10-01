@@ -109,6 +109,13 @@ class AppModelTest {
         assertNotNull(bob.state.value.error)
         bob.clearMessages()
 
+        // App lock: off by default; on, it closes the session.
+        assertTrue(!alice.lockIfEnabled())
+        alice.setFeature("user.app_lock", true)
+        assertTrue(alice.lockIfEnabled())
+        assertTrue(!alice.state.value.signedIn && alice.session == null)
+        assertTrue(alice.openProfile("$dir/alice.db", "alice pass"))
+
         // Reopening with a wrong passphrase is refused with a clear message.
         val again = AppModel(this, Dispatchers.IO)
         assertTrue(!again.openProfile("$dir/bob.db", "wrong"))

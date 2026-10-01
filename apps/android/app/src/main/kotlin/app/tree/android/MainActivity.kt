@@ -5,6 +5,7 @@ import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.lifecycle.lifecycleScope
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -17,6 +18,7 @@ import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private var pendingLink: String? = null
+    private var model: AppModel? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -25,7 +27,7 @@ class MainActivity : ComponentActivity() {
         val profile = filesDir.resolve("profile.db").path
         setContent {
             val scope = rememberCoroutineScope()
-            val model = remember { AppModel(scope) }
+            val model = remember { AppModel(scope).also { this@MainActivity.model = it } }
             val state by model.state.collectAsState()
             // Screenshots and the app-switcher preview are blocked while a chat
             // asks for it (chat.screenshot_block) or the user wants it
@@ -43,6 +45,12 @@ class MainActivity : ComponentActivity() {
             }
             TreeApp(model, profile)
         }
+    }
+
+    // App lock: leaving the app closes the profile when user.app_lock is on.
+    override fun onStop() {
+        super.onStop()
+        model?.let { m -> lifecycleScope.launch { m.lockIfEnabled() } }
     }
 
     override fun onNewIntent(intent: Intent) {

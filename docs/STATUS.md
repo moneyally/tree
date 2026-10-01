@@ -95,7 +95,7 @@ in section 5.
 | Settings screens generated from the registry, apply/release buttons | done (desktop, Android) | user settings from `features()`, group chat settings from `chat_features()`; locked switches show the reason |
 | Korean and English UI | done (desktop, Android) | `apps/shared/.../Strings.kt`; every key in both languages (tested) |
 | Terms, privacy policy screens | missing | 변호사 확인 필요 for the texts |
-| App-level protections (app lock, screenshot block, notification content, incognito keyboard, app-switcher blur, PC screen security) | partial | Android: screenshot block and app-switcher blur (`FLAG_SECURE`), profile excluded from backups. Not yet: app lock, notification content (no notifications yet), incognito keyboard, desktop screen security |
+| App-level protections (app lock, screenshot block, notification content, incognito keyboard, app-switcher blur, PC screen security) | partial | Android: screenshot block and app-switcher blur (`FLAG_SECURE`), profile excluded from backups. Both apps: app lock (`user.app_lock`: leaving the app on Android, 5 minutes unfocused on desktop, closes the profile and its key). Not yet: notification content (no notifications yet), incognito keyboard, desktop screen security |
 | Store submission checklist (report, block, content filter, contact) | partial | [STORE_CHECKLIST.md](STORE_CHECKLIST.md); in-app account deletion done; legal texts and forms: 변호사 확인 필요 |
 
 ### 2.4 Verification

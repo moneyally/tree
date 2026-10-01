@@ -4,7 +4,8 @@
 > 다음은 ② 서버 커밋 순서 + 크기 제한 ③ 명령줄 앱으로 서버 경유 대화 ④ 전체 재검증 ⑤ 헤츠너 배포 순서야.
 > 보고는 한국어 반말, 결론 먼저. 직접 돌려본 것만 "됐다".
 
-Read `CLAUDE.md` first (hard rules), then this file, then `docs/PROTOCOL.md`.
+Read `CLAUDE.md` first (hard rules), then this file, then `docs/STATUS.md` (design vs. code, work order),
+then `docs/PROTOCOL.md`. Data layouts: `docs/SCHEMA.md`.
 
 ## 1. GitHub access (no keys from the owner, ever)
 

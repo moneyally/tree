@@ -203,7 +203,6 @@ mod tests {
             |c| c.max_recipients = 0,
             |c| c.max_commit_bytes = 0,
             |c| c.max_welcome_bytes = 0,
-            |c| c.max_attachment_bytes = 0,
             |c| c.max_key_packages_per_upload = 0,
             |c| c.rate_per_sec = 0.0,
             |c| c.rate_burst = 0.5,

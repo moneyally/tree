@@ -802,6 +802,23 @@ a per-address signup rate limit (kept in memory only).
   C11). A dropped or reordered commit shows up as a stalled or failing epoch,
   not as wrong content.
 
+### 8.4 Usernames
+
+An account may register one @username. The client normalises it (trim, drop
+a leading `@`, ASCII lower case; 3 to 32 characters of `a-z`, `0-9`, `_`,
+starting with a letter) and sends only
+
+```
+username_hash = SHA-256("tree/username/v1" || normalised name)
+```
+
+The server stores the hash with the account id and answers lookups by hash.
+Usernames are short and guessable, so the hash keeps them out of plain view
+but does not hide them from a server that tries a dictionary: lookups cost 10
+rate-limit tokens each, and an account can hide its name from lookups
+(`user.discoverable` released) while keeping it reserved. Non-ASCII names
+are not supported in v1.
+
 ---
 
 ## 9. Security claims
@@ -1156,6 +1173,7 @@ the server cannot learn it from what it sees or stores.
 | --- | --- | --- | --- |
 | Message content, media keys, group name and settings | protected | ciphertext only | — |
 | Display names | protected | nothing: not in key packages or credentials (F-009), only inside the group | — |
+| @usernames | **partially protected** | a hash per account; guessable names can be found by trying (section 8.4) | — |
 | Sender identity | **not protected** from the server | the authenticated device id of every send request (not stored) and the connection address | stage 4: sealed sender with anonymous delivery tokens |
 | Sender identity towards other members | not hidden (by design) | — | — |
 | Recipient device | **not protected** | mailbox id = device id, stored with each entry | stage 4: rotating mailbox ids |

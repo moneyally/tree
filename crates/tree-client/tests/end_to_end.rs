@@ -66,9 +66,16 @@ fn three_devices_chat_through_the_server() {
     let mut bob = env.device("bob");
     let mut carol = env.device("carol");
 
+    // bob takes a @username; alice finds him by it (only the hash reaches the server).
+    assert_eq!(bob.set_username("@Bob_Tree", true).unwrap(), "bob_tree");
+    assert_eq!(alice.find("bob_tree").unwrap().as_deref(), Some(bob.account_id()));
+    assert_eq!(alice.find("nobody_here").unwrap(), None);
+    assert_eq!(bob.username().unwrap().as_deref(), Some("bob_tree"));
+
     // alice starts a group and invites bob's account.
     let g = alice.create_group().unwrap();
-    assert_eq!(alice.invite(&g, bob.account_id()).unwrap(), (CommitOutcome::Accepted { epoch: 1 }, vec![]));
+    let bob_account = alice.find("@bob_tree").unwrap().unwrap();
+    assert_eq!(alice.invite(&g, &bob_account).unwrap(), (CommitOutcome::Accepted { epoch: 1 }, vec![]));
     let ev = bob.sync(0).unwrap();
     assert!(ev.contains(&Event::Joined { group: g.clone() }), "{ev:?}");
     assert!(ev.contains(&Event::RosterUpdated { group: g.clone() }), "{ev:?}");
@@ -148,7 +155,7 @@ fn three_devices_chat_through_the_server() {
             raw.extend(b);
         }
     }
-    for needle in ["7f3a", "b0b", "안녕", "alice", "carol", "재시작"] {
+    for needle in ["7f3a", "b0b", "안녕", "alice", "carol", "재시작", "bob_tree"] {
         assert!(!raw.windows(needle.len()).any(|w| w == needle.as_bytes()), "server stored {needle:?}");
     }
 }

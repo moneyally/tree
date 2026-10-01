@@ -184,6 +184,11 @@ impl Api {
         Ok(out)
     }
 
+    /// `POST /v1/usernames/{action}` (apply, release, lookup).
+    pub fn username(&self, c: &Creds, action: &str, body: Option<&Value>) -> Result<Value, Error> {
+        self.call(c, Method::POST, &format!("/v1/usernames/{action}"), body)?.ok()
+    }
+
     pub fn send(&self, c: &Creds, recipients: &[String], body: &[u8]) -> Result<Value, Error> {
         let req = json!({ "recipients": recipients, "body": b64(body) });
         self.call(c, Method::POST, "/v1/messages", Some(&req))?.ok()

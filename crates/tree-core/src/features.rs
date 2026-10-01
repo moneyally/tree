@@ -393,6 +393,10 @@ pub fn standard_features() -> Vec<Feature> {
         feat("user.incognito_keyboard", User, Applied, 1),
         feat("user.app_switcher_blur", User, Applied, 1),
         feat("user.pc_screen_security", User, Applied, 1),
+        feat("user.username", User, Released, 1),
+        feat("user.note_to_self", User, Applied, 1),
+        feat("user.folders", User, Applied, 1),
+        feat("user.default_folders", User, Applied, 1),
         // server flags
         feat("server.signups", Server, Applied, 1),
         feat("server.bot_platform", Server, Applied, 2),

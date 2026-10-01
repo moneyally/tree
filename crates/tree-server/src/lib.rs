@@ -7,6 +7,7 @@
 //! * [`keypackages`] — one-time MLS key packages
 //! * [`messages`] — per-device mailboxes with long-poll
 //! * [`commits`] — commit ordering: first commit per group and epoch wins
+//! * [`usernames`] — @usernames, stored as hashes only
 //! * [`features`] — operator flags with apply/release
 //!
 //! Privacy: no IP addresses, message bodies or key packages are logged. Logs
@@ -22,6 +23,7 @@ pub mod features;
 pub mod keypackages;
 pub mod limits;
 pub mod messages;
+pub mod usernames;
 pub mod util;
 pub mod wire;
 
@@ -187,6 +189,9 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/messages", post(messages::send).get(messages::fetch))
         .route("/v1/messages/ack", post(messages::ack))
         .route("/v1/commits", post(commits::submit))
+        .route("/v1/usernames/apply", post(usernames::apply))
+        .route("/v1/usernames/release", post(usernames::release))
+        .route("/v1/usernames/lookup", post(usernames::lookup))
         .route("/v1/features", get(features::list))
         .route("/v1/features/{key}/apply", post(features::apply))
         .route("/v1/features/{key}/release", post(features::release))

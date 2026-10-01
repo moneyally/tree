@@ -48,7 +48,7 @@ in section 5.
 | Forward secrecy / post-compromise security by key refresh | partial | refresh exists; no scheduler that triggers it (PROTOCOL.md 6.9) |
 | Encrypted device storage (SQLCipher, hardware-wrapped key) | partial | SQLCipher + Argon2id done; hardware key (Secure Enclave / Keystore) needs the apps (`KeySource` is the hook) |
 | Feature registry: apply/release for every feature, permanent locks, layers | done | `features.rs`; server, chat, user, bot layers; `LOCKED_BY_CHAT` |
-| All 34 stage-1 feature keys in the registry | partial | 30 of 34; missing `user.username`, `user.note_to_self`, `user.folders`, `user.default_folders` |
+| All 34 stage-1 feature keys in the registry | done | all 34 (behaviour behind most of them: see next row) |
 | Behaviour behind the keys (disappearing timer, edit window, view once, ...) | missing | the registry stores the setting; nothing acts on it yet. Chat settings must live in the MLS group context (design: the server never knows them) |
 | Recovery phrase (12-24 words) | missing | threat model in RECOVERY_THREAT_MODEL.md |
 | Safety number / QR comparison, key change warning | done | PROTOCOL.md 5.4 (Q4 decided); pinning on first use, warning on any new device key; CLI `safety`, `verify` |
@@ -72,7 +72,7 @@ in section 5.
 | Size limits for large hybrid groups | done | commits / welcomes 4 MiB, 2048 devices (BENCHMARKS.md rec. 6) |
 | Minimal logs (no IP, no sender, day / minute granularity) | done | SERVER_API.md "What the server stores" |
 | Operator feature flags + audit trail | done | own implementation; section 4.4 |
-| `@username` (hash only, rate-limited search) | missing | |
+| `@username` (hash only, rate-limited search) | done | PROTOCOL.md 8.4; `/v1/usernames/*`; CLI `username`, `find`, `invite <group> @name`. Username links / QR: missing |
 | Message request inbox for strangers, blocking | missing | needs server support (who may write to whom) and client UI |
 | Report service (reporter's device submits) | missing | |
 | Spam limits for new accounts | partial | per-device rate limits and signup limits exist; no new-account sending limit |

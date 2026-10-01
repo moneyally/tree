@@ -15,7 +15,10 @@ commands:
   whoami                                 account id, device id, member id
   groups                                 list groups
   create-group                           start a group, print its id
-  invite <group> <account-id>            add every device of an account
+  invite <group> <account-id|@name>      add every device of an account
+  username <name> [hidden]               set my @username (only its hash goes to the server)
+  username-release                       drop my @username
+  find <@name>                           account id behind a @username
   members <group>                        members, devices, names
   send <group> <text>                    send a message
   sync [wait-seconds]                    receive and print
@@ -92,6 +95,9 @@ fn run(args: Vec<String>) -> Result<(), String> {
     match rest.as_slice() {
         ["whoami"] => {
             println!("name    {}", s.name());
+            if let Some(u) = s.username().map_err(e)? {
+                println!("user    @{u}");
+            }
             println!("account {}", s.account_id());
             println!("device  {}", s.device_id());
             println!("member  {}", s.member_id());
@@ -102,13 +108,28 @@ fn run(args: Vec<String>) -> Result<(), String> {
             }
         }
         ["create-group"] => println!("{}", hex(&s.create_group().map_err(e)?)),
-        ["invite", g, account] => {
-            let (o, warnings) = s.invite(&hex_arg(g)?, account).map_err(e)?;
+        ["invite", g, who] => {
+            let account = if who.starts_with('@') {
+                s.find(who).map_err(e)?.ok_or_else(|| format!("no one is called {who}"))?
+            } else {
+                who.to_string()
+            };
+            let (o, warnings) = s.invite(&hex_arg(g)?, &account).map_err(e)?;
             for w in &warnings {
                 print_event(w);
             }
             println!("{}", outcome(o));
         }
+        ["username", name] => println!("you are @{}", s.set_username(name, true).map_err(e)?),
+        ["username", name, "hidden"] => println!("you are @{} (not findable by search)", s.set_username(name, false).map_err(e)?),
+        ["username-release"] => {
+            s.release_username().map_err(e)?;
+            println!("username released");
+        }
+        ["find", name] => match s.find(name).map_err(e)? {
+            Some(a) => println!("{a}"),
+            None => println!("no one is called {name} (or they hid their name)"),
+        },
         ["contacts"] => {
             for c in s.contacts().map_err(e)? {
                 println!("{}  {} device(s)  {}", c.account, c.members.len(), if c.verified { "verified" } else { "not verified" });

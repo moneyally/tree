@@ -176,3 +176,15 @@ CREATE TABLE group_winners (                     -- last 64 accepted commits
 This makes group membership (as device ids) visible in the database; the
 server already sees it through recipient lists (PROTOCOL.md 11). A group's
 rows are deleted by the purge task once none of its devices exists.
+
+### 2.2 Usernames (migration `0003_usernames.sql`)
+
+```sql
+CREATE TABLE usernames (
+    hash         BLOB PRIMARY KEY,           -- SHA-256("tree/username/v1" || name)
+    account_id   TEXT NOT NULL UNIQUE REFERENCES accounts(id) ON DELETE CASCADE,
+    discoverable INTEGER NOT NULL DEFAULT 1,
+    created_day  INTEGER NOT NULL
+);
+```
+

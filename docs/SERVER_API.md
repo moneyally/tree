@@ -30,6 +30,7 @@ Some errors add fields (named with the endpoint).
 | `ALREADY_EXISTS` | 409 | this authentication key is already registered |
 | `LIMIT_EXCEEDED` | 409 | a stored quota is full (devices per account, key packages per device) |
 | `COMMIT_CONFLICT` | 409 | another commit already won this epoch; field `winner_sha256` |
+| `USERNAME_TAKEN` | 409 | another account holds this username |
 | `EPOCH_MISMATCH` | 409 | commit for an epoch beyond the next one; field `last_epoch` |
 | `TOO_LARGE` | 413 | body, message, commit, welcome, key package, or a list (recipients, key packages, ack ids) too large |
 | `RATE_LIMITED` | 429 | slow down; see `Retry-After` (seconds) |
@@ -237,6 +238,27 @@ transaction ends.
 `full_devices` missed the commit (mailbox full) and must be removed from the
 group and added again.
 
+## Usernames
+
+The client sends `hash` = standard base64 of `SHA-256("tree/username/v1" ||
+normalised name)` (PROTOCOL.md 8.4); the server never sees the name.
+
+### `POST /v1/usernames/apply` — register or change my name
+
+`{ "hash": "<32 bytes>", "discoverable": true }` (`discoverable` optional,
+default `true`). One name per account; applying again replaces it.
+`200` → `{ "state": "applied", "discoverable": true }`. `409 USERNAME_TAKEN` if
+another account holds it (also when that account hid it).
+
+### `POST /v1/usernames/release` — drop my name
+
+`200` → `{ "state": "released" }`, also when there was none.
+
+### `POST /v1/usernames/lookup` — find an account
+
+`{ "hash": "<32 bytes>" }` → `200 { "account_id": "..." }`, or `404 NOT_FOUND`
+if no account holds it or it is hidden. Costs 10 rate-limit tokens.
+
 ## Operator feature flags
 
 Every flag has apply and release. Both are idempotent and return the current state.
@@ -267,6 +289,7 @@ Errors: `UNAUTHORIZED`, `UNKNOWN_FEATURE`.
 | account id, device ids, device authentication public keys | yes |
 | account/device creation date | day only |
 | key packages | until claimed |
+| username hash per account (if registered), discoverable flag, day registered | until released or the account is deleted |
 | per group: last accepted epoch, the device ids that may commit next, SHA-256 and id of the last 64 accepted commits | while one of its devices exists |
 | message ciphertext + recipient device + arrival minute | until acknowledged, at most 30 days |
 | message sender | **no** |

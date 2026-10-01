@@ -8,6 +8,7 @@
 
 pub mod api;
 pub mod payload;
+pub mod username;
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -339,6 +340,36 @@ impl Session {
         self.groups.insert(gid.clone(), g);
         self.init_group_maps(&gid)?;
         Ok(gid)
+    }
+
+    /// Registers (or changes) this account's @username. The server stores
+    /// only its hash. `discoverable = false` hides it from lookups
+    /// (`user.discoverable` released).
+    pub fn set_username(&self, name: &str, discoverable: bool) -> Result<String, Error> {
+        let n = username::normalise(name).map_err(|e| Error::Usage(e.into()))?;
+        let h = username::hash(&n).map_err(|e| Error::Usage(e.into()))?;
+        self.api.username(&self.creds, "apply", Some(&json!({ "hash": api::b64(&h), "discoverable": discoverable })))?;
+        self.client.set_app_data("profile/username", Some(n.as_bytes()))?;
+        Ok(n)
+    }
+
+    pub fn release_username(&self) -> Result<(), Error> {
+        self.api.username(&self.creds, "release", None)?;
+        Ok(self.client.set_app_data("profile/username", None)?)
+    }
+
+    pub fn username(&self) -> Result<Option<String>, Error> {
+        Ok(self.client.app_data("profile/username")?.and_then(|v| String::from_utf8(v).ok()))
+    }
+
+    /// Account id behind a discoverable @username, if any.
+    pub fn find(&self, name: &str) -> Result<Option<String>, Error> {
+        let h = username::hash(name).map_err(|e| Error::Usage(e.into()))?;
+        match self.api.username(&self.creds, "lookup", Some(&json!({ "hash": api::b64(&h) }))) {
+            Ok(v) => Ok(v["account_id"].as_str().map(str::to_string)),
+            Err(Error::Server { status: 404, .. }) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 
     pub fn contact(&self, account: &str) -> Result<Option<Contact>, Error> {

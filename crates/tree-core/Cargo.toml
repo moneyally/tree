@@ -39,6 +39,11 @@ subtle = "2.6"
 aes-gcm = "0.10"
 aead = { version = "0.5", features = ["stream", "alloc"] }
 getrandom = "0.2"
+# Recovery phrase: BIP-39 word lists and checksum (English and Korean),
+# HKDF (RFC 5869) and Ed25519 for the account recovery key.
+bip39 = { version = "3", default-features = false, features = ["std", "korean", "zeroize"] }
+hkdf = "0.12"
+ed25519-dalek = { version = "2", features = ["zeroize"] }
 
 [dev-dependencies]
 proptest = "1"

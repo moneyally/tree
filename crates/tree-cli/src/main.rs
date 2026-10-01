@@ -6,13 +6,18 @@
 
 use std::process::ExitCode;
 
-use tree_client::{CommitOutcome, Event, Session};
+use tree_client::{CommitOutcome, Event, Session, Words};
 
 const USAGE: &str = "usage: tree --profile <file> <command>
 
 commands:
   init <name> <server-url> [pow-bits]   create a profile and an account
   whoami                                 account id, device id, member id
+  recover <name> <server-url> [revoke] [pow-bits]
+                                         new device for my account from the recovery phrase
+                                         (TREE_RECOVERY_PHRASE or stdin); revoke = remove all other devices
+  recovery-phrase [12|24] [ko]           make a new recovery phrase (replaces the old one)
+  recovery-release                       no recovery for this account
   groups                                 list groups
   create-group                           start a group, print its id
   invite <group> <account-id|@name>      add every device of an account
@@ -103,6 +108,25 @@ fn run(args: Vec<String>) -> Result<(), String> {
         return Ok(());
     }
 
+    if let ["recover", name, server, more @ ..] = rest.as_slice() {
+        let revoke = more.contains(&"revoke");
+        let bits = more.iter().find_map(|b| b.parse().ok()).unwrap_or(20);
+        let phrase = match std::env::var("TREE_RECOVERY_PHRASE") {
+            Ok(p) => p,
+            Err(_) => {
+                eprintln!("recovery phrase:");
+                let mut line = String::new();
+                std::io::stdin().read_line(&mut line).map_err(|e| e.to_string())?;
+                line
+            }
+        };
+        let s = Session::recover(&profile, &passphrase()?, name, server, &phrase, revoke, bits).map_err(e)?;
+        println!("account {} recovered on a new device", s.account_id());
+        println!("device  {}", s.device_id());
+        println!("contacts must add this device again; they will see a key change");
+        return Ok(());
+    }
+
     let (mut s, resubmitted) = Session::open(&profile, &passphrase()?).map_err(e)?;
     for o in resubmitted {
         println!("pending commit resubmitted: {}", outcome(o));
@@ -121,6 +145,18 @@ fn run(args: Vec<String>) -> Result<(), String> {
             for g in s.group_ids().map_err(e)? {
                 println!("{}  epoch {}", hex(&g), s.epoch(&g).map_err(e)?);
             }
+        }
+        ["recovery-phrase", more @ ..] => {
+            let words = more.iter().find_map(|w| w.parse().ok()).unwrap_or(24);
+            let list = if more.contains(&"ko") { Words::Korean } else { Words::English };
+            let p = s.new_recovery_phrase(words, list).map_err(e)?;
+            println!("{}", p.words());
+            eprintln!("write these words down and keep them offline; they are shown only now.");
+            eprintln!("whoever has them can take over this account. a new phrase replaces this one.");
+        }
+        ["recovery-release"] => {
+            s.release_recovery().map_err(e)?;
+            println!("recovery released: this account can no longer be recovered");
         }
         ["create-group"] => println!("{}", hex(&s.create_group().map_err(e)?)),
         ["invite", g, who] => {

@@ -1,0 +1,68 @@
+//! Account recovery with the recovery phrase (PROTOCOL.md 8.6), through a
+//! real server.
+
+mod common;
+
+use common::Env;
+use tree_client::{Error, Event, Session, Words};
+
+#[test]
+fn a_lost_phone_is_replaced_with_the_phrase() {
+    let env = Env::new("recovery");
+    let mut alice = env.device("alice");
+    let mut bob = env.device("bob");
+    bob.add_contact(alice.account_id()).unwrap();
+    alice.add_contact(bob.account_id()).unwrap();
+    alice.set_username("alice_tree", true).unwrap();
+    let g = alice.create_group().unwrap();
+    alice.invite(&g, bob.account_id()).unwrap();
+    bob.sync(0).unwrap();
+    alice.send_text(&g, "hi").unwrap();
+    bob.sync(0).unwrap();
+
+    // No phrase yet: nothing can recover the account.
+    assert!(!alice.has_recovery().unwrap());
+    let unregistered = tree_client::Phrase::generate(12, Words::English).unwrap();
+    let p = env.profile("thief");
+    match Session::recover(&p, "pw", "x", &env.url, unregistered.words(), false, 8) {
+        Err(Error::Server { code, .. }) => assert_eq!(code, "RECOVERY_REFUSED"),
+        other => panic!("{:?}", other.map(|s| s.account_id().to_string())),
+    }
+    assert!(!std::path::Path::new(&p).exists(), "no profile is left behind");
+
+    let phrase = alice.new_recovery_phrase(24, Words::Korean).unwrap();
+    assert!(alice.has_recovery().unwrap());
+    let words = phrase.words().to_string();
+    // A typo (one word swapped for another list word) is refused locally or by the server.
+    let mut typo: Vec<&str> = words.split(' ').collect();
+    typo[3] = if typo[3] == "가격" { "가구" } else { "가격" };
+    assert!(Session::recover(&env.profile("typo"), "pw", "x", &env.url, &typo.join(" "), false, 8).is_err());
+
+    // The phone is lost: a new device recovers the account and removes the old one.
+    let mut alice2 = Session::recover(&env.profile("alice2"), "new pw", "alice", &env.url, &words, true, 8).unwrap();
+    assert_eq!(alice2.account_id(), alice.account_id());
+    assert_ne!(alice2.device_id(), alice.device_id());
+    // The old device is gone from the server.
+    assert!(matches!(alice.sync(0), Err(Error::Server { status: 401, .. })));
+    // The username stays with the account.
+    assert_eq!(bob.find("@alice_tree").unwrap().as_deref(), Some(alice.account_id()));
+
+    // Groups are not restored: bob adds the new device and sees a key change.
+    bob.invite(&g, alice2.account_id()).unwrap();
+    let ev = alice2.sync(0).unwrap();
+    assert!(ev.iter().any(|e| matches!(e, Event::Joined { .. })), "{ev:?}");
+    let msg = alice2.send_text(&g, "back with a new phone").unwrap();
+    let ev = bob.sync(0).unwrap();
+    assert!(ev.iter().any(|e| matches!(e, Event::Text { id, .. } if *id == msg)), "{ev:?}");
+
+    // A new phrase replaces the old; release ends recovery.
+    let again = alice2.new_recovery_phrase(12, Words::English).unwrap();
+    assert!(Session::recover(&env.profile("old"), "pw", "x", &env.url, &words, false, 8).is_err(), "old phrase no longer works");
+    let alice3 = Session::recover(&env.profile("alice3"), "pw", "alice", &env.url, again.words(), false, 8).unwrap();
+    assert_eq!(alice3.account_id(), alice2.account_id());
+    assert!(alice2.apply_feature("user.recovery_phrase", None).is_err(), "only with the words shown");
+    alice2.release_feature("user.recovery_phrase").unwrap();
+    assert!(!alice2.has_recovery().unwrap());
+    alice2.release_recovery().unwrap(); // idempotent
+    assert!(Session::recover(&env.profile("late"), "pw", "x", &env.url, again.words(), false, 8).is_err());
+}

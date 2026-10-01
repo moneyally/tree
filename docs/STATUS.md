@@ -48,10 +48,10 @@ in section 5.
 | Forward secrecy / post-compromise security by key refresh | partial | refresh exists; no scheduler that triggers it (PROTOCOL.md 6.9) |
 | Encrypted device storage (SQLCipher, hardware-wrapped key) | partial | SQLCipher + Argon2id done; hardware key (Secure Enclave / Keystore) needs the apps (`KeySource` is the hook) |
 | Feature registry: apply/release for every feature, permanent locks, layers | done | `features.rs`; server, chat, user, bot layers; `LOCKED_BY_CHAT` |
-| All 34 stage-1 feature keys in the registry | done | all 34 (behaviour behind most of them: see next row) |
+| All 34 stage-1 feature keys in the registry | done | all 34, plus `user.recovery_phrase` (behaviour behind most of them: see next row) |
 | Behaviour behind the keys (disappearing timer, edit window, view once, ...) | partial | enforced on every device: chat.media, chat.edit (window), chat.delete_for_all (window), chat.reactions, chat.view_once, chat.disappearing, user.search_index, user.message_requests, user.stranger_block, user.group_add, user.key_change_warning (APP_PROTOCOL.md 3). Not yet: chat.voice, chat.formatting, chat.mention_all, chat.screenshot_block, chat.invite_link, read receipts, typing, link previews, folders, note to self, app lock and other device-level settings (they need the apps) |
 | Message history and on-device search | done | `tree_messages` in the encrypted database; `history`, `search` |
-| Recovery phrase (12-24 words) | missing | threat model in RECOVERY_THREAT_MODEL.md |
+| Recovery phrase (12-24 words) | done | PROTOCOL.md 8.6: BIP-39 (English, Korean), HKDF → Ed25519 recovery key; `/v1/recovery/*`; new device with optional revoke of the others; `user.recovery_phrase`; CLI `recovery-phrase`, `recover`. Not yet: notify other devices and a waiting period |
 | Safety number / QR comparison, key change warning | done | PROTOCOL.md 5.4 (Q4 decided); pinning on first use, warning on any new device key; CLI `safety`, `verify` |
 | Device link with confirmation code on both devices | missing | permanent lock in the registry, no code (multi-device is stage 3) |
 | Per-file encryption for attachments | done | PROTOCOL.md 6.12: AES-256-GCM STREAM per file, key in the message, ciphertext and plaintext hashes as key commitment; `chat.media` enforced; CLI `send-file`, `download` |

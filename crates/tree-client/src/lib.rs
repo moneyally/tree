@@ -31,6 +31,7 @@ use zeroize::Zeroizing;
 
 pub use api::{Api, Creds};
 pub use payload::{FileInfo, Payload};
+pub use tree_core::recovery::{Phrase, Words};
 pub use tree_core::MemberId;
 
 
@@ -205,12 +206,46 @@ impl Session {
     /// New device identity in a new encrypted profile, registered as a new
     /// account on `server`.
     pub fn create(path: &str, passphrase: &str, name: &str, server: &str, pow_bits: u32) -> Result<Self, Error> {
+        Self::create_with(path, passphrase, name, server, |api, key| api.signup(key, pow_bits))
+    }
+
+    /// A new profile on a new device that joins an existing account with the
+    /// recovery phrase (PROTOCOL.md 8.6). Groups and history are not
+    /// restored: contacts add this device again and see a key change. With
+    /// `revoke_others`, every other device of the account is removed.
+    pub fn recover(
+        path: &str,
+        passphrase: &str,
+        name: &str,
+        server: &str,
+        phrase: &str,
+        revoke_others: bool,
+        pow_bits: u32,
+    ) -> Result<Self, Error> {
+        let phrase = Phrase::parse(phrase)?;
+        let rk = phrase.recovery_key();
+        Self::create_with(path, passphrase, name, server, |api, key| {
+            let sig = rk.sign_recovery(&key.verifying_key().to_bytes(), revoke_others);
+            api.recover(key, &rk.public_key(), &sig, revoke_others, pow_bits)
+        })
+    }
+
+    fn create_with(
+        path: &str,
+        passphrase: &str,
+        name: &str,
+        server: &str,
+        register: impl FnOnce(&Api, &SigningKey) -> Result<Creds, Error>,
+    ) -> Result<Self, Error> {
+        if std::path::Path::new(path).exists() {
+            return Err(Error::Usage(format!("{path} already exists")));
+        }
         let api = Api::new(server)?;
-        let client = Client::create(path, passphrase, name)?;
         let mut seed = Zeroizing::new([0u8; 32]);
         getrandom::getrandom(&mut seed[..]).map_err(|e| Error::Protocol(e.to_string()))?;
         let key = SigningKey::from_bytes(&seed);
-        let creds = api.signup(&key, pow_bits)?;
+        let creds = register(&api, &key)?;
+        let client = Client::create(path, passphrase, name)?;
         client.set_app_data(K_SERVER, Some(server.as_bytes()))?;
         client.set_app_data(K_ACCOUNT, Some(creds.account_id.as_bytes()))?;
         client.set_app_data(K_DEVICE, Some(creds.device_id.as_bytes()))?;
@@ -380,6 +415,26 @@ impl Session {
         self.api.username(&self.creds, "apply", Some(&json!({ "hash": api::b64(&h), "discoverable": discoverable })))?;
         self.client.set_app_data("profile/username", Some(n.as_bytes()))?;
         Ok(n)
+    }
+
+    /// Makes a new recovery phrase for this account and registers its
+    /// recovery key with the server (replacing any earlier phrase). The
+    /// phrase is returned once to be shown to the user and is not stored.
+    pub fn new_recovery_phrase(&self, words: usize, list: Words) -> Result<Phrase, Error> {
+        let p = Phrase::generate(words, list)?;
+        self.api.set_recovery(&self.creds, Some(&p.recovery_key().public_key()))?;
+        self.change(settings::RECOVERY, true, None)?;
+        Ok(p)
+    }
+
+    /// Drops the recovery key: the account can then not be recovered.
+    pub fn release_recovery(&self) -> Result<(), Error> {
+        self.release_feature(settings::RECOVERY).map(|_| ())
+    }
+
+    /// Whether this device registered a recovery phrase.
+    pub fn has_recovery(&self) -> Result<bool, Error> {
+        Ok(self.feature(settings::RECOVERY)?.state == tree_core::features::State::Applied)
     }
 
     pub fn release_username(&self) -> Result<(), Error> {

@@ -233,3 +233,13 @@ CREATE TABLE suspensions (account_id TEXT PRIMARY KEY, since_day INTEGER NOT NUL
 ```
 
 `server_secrets` is a secret: back it up with the database, never log it.
+
+### 2.5 Recovery (migration `0006_recovery.sql`, PROTOCOL.md 8.6)
+
+```sql
+CREATE TABLE account_recovery (
+    account_id   TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+    recovery_pub BLOB NOT NULL UNIQUE,   -- Ed25519 public key from the phrase
+    set_day      INTEGER NOT NULL
+);
+```

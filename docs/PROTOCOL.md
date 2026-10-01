@@ -927,6 +927,46 @@ franking constructions; nothing new is built here. Symbolic model:
 server key secret), with a negative control showing why the tag must bind the
 account.
 
+### 8.6 Recovery phrase and account recovery
+
+The recovery phrase restores the **account** (the ability to register a
+device for it), never MLS state (RECOVERY_THREAT_MODEL.md 1). Code:
+`crates/tree-core/src/recovery.rs`, `crates/tree-server/src/recovery.rs`.
+
+- **Phrase.** BIP-39: 128 to 256 bits from the system random generator as 12
+  to 24 words with checksum, standard English or Korean word list (`bip39`
+  crate). 24 words is the default. Generated on the device, shown once,
+  never stored by Tree, never sent anywhere.
+- **Recovery key.** `seed = HKDF-SHA-256(salt "tree/recovery/v1", ikm = BIP-39
+  entropy, info "account-recovery-key", 32)`, Ed25519 key pair from `seed`
+  (RFC 8032). Test vector for the all-zero 128-bit entropy ("abandon … about"):
+  public key `c5dda56a7105f6429ee484c58047cff5f59701f7ebb53a95d9f899597a02efed`.
+- **Registration.** A device of the account sends the public key
+  (`POST /v1/recovery/apply`, signed request); a new phrase replaces it,
+  `release` deletes it (`user.recovery_phrase`). One key belongs to at most
+  one account.
+- **Recovery.** A new device generates its request key, solves the signup
+  proof of work and sends, signed with its new key (as signup),
+  `recovery_pub`, its `auth_pub`, and
+  `Sig_recovery("tree-recover-v1" || auth_pub || revoke_others)`. The server
+  checks the proof of work, the request signature, the recovery signature
+  (`verify_strict`) and finds the account by `recovery_pub`; then adds the
+  device. With `revoke_others` it first deletes every other device of the
+  account with its mailbox and key packages (lost or stolen phone). Wrong
+  key and unknown key get the same answer, `403 RECOVERY_REFUSED`. Per-IP
+  limit as for signup.
+- **After recovery.** The device is a new MLS member: groups, history and
+  contacts' trust are not restored. Contacts add the device again and see a
+  key change (`user.key_change_warning`, always on). The @username and any
+  suspension stay with the account.
+
+What the phrase protects: whoever has it can take over the account (and,
+with `revoke_others`, cut off the owner's devices). It cannot read past
+messages. Not yet: notifying the other devices of a recovery and a waiting
+period in which they can cancel it (RECOVERY_THREAT_MODEL.md 2.3 item 6 asks
+this for PINs; for the phrase it is planned with the apps), encrypted
+backups keyed from the phrase (stage 3).
+
 ---
 
 ## 9. Security claims

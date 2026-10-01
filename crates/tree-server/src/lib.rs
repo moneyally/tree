@@ -7,6 +7,7 @@
 //! * [`keypackages`] — one-time MLS key packages
 //! * [`messages`] — per-device mailboxes with long-poll
 //! * [`commits`] — commit ordering: first commit per group and epoch wins
+//! * [`recovery`] — a new device joins its account with the recovery phrase
 //! * [`usernames`] — @usernames, stored as hashes only
 //! * [`attachments`] — encrypted attachments (ciphertext blobs)
 //! * [`reports`] — reports with message franking, account suspension
@@ -26,6 +27,7 @@ pub mod features;
 pub mod keypackages;
 pub mod limits;
 pub mod messages;
+pub mod recovery;
 pub mod reports;
 pub mod usernames;
 pub mod util;
@@ -205,6 +207,9 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/usernames/apply", post(usernames::apply))
         .route("/v1/usernames/release", post(usernames::release))
         .route("/v1/usernames/lookup", post(usernames::lookup))
+        .route("/v1/recovery/apply", post(recovery::apply))
+        .route("/v1/recovery/release", post(recovery::release))
+        .route("/v1/recovery/recover", post(recovery::recover))
         .route("/v1/franking", post(reports::frank))
         .route("/v1/reports", post(reports::report).get(reports::list))
         .route("/v1/reports/{id}/resolve", post(reports::resolve))

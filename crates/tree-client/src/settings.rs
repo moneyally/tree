@@ -19,6 +19,9 @@ fn key(k: &str) -> String {
     format!("feature/{k}")
 }
 
+
+/// The recovery phrase setting (PROTOCOL.md 8.6).
+pub(crate) const RECOVERY: &str = "user.recovery_phrase";
 impl Session {
     /// The registry with this device's stored user settings applied.
     fn registry(&self) -> Result<Registry, Error> {
@@ -43,16 +46,25 @@ impl Session {
     }
 
     /// Applies a user setting (idempotent); returns the new status.
+    /// `user.recovery_phrase` is applied by [`Session::new_recovery_phrase`],
+    /// which shows the words.
     pub fn apply_feature(&self, k: &str, option: Option<String>) -> Result<Status, Error> {
+        if k == RECOVERY {
+            return Err(Error::Usage("make a recovery phrase with new_recovery_phrase".into()));
+        }
         self.change(k, true, option)
     }
 
     /// Releases a user setting (idempotent); returns the new status.
+    /// Releasing `user.recovery_phrase` drops the recovery key on the server.
     pub fn release_feature(&self, k: &str) -> Result<Status, Error> {
+        if k == RECOVERY {
+            self.api.set_recovery(&self.creds, None)?;
+        }
         self.change(k, false, None)
     }
 
-    fn change(&self, k: &str, applied: bool, option: Option<String>) -> Result<Status, Error> {
+    pub(crate) fn change(&self, k: &str, applied: bool, option: Option<String>) -> Result<Status, Error> {
         let mut r = self.registry()?;
         let s = if applied { r.apply(k, option, ME) } else { r.release(k, ME) }
             .map_err(|e| Error::Feature(e.code().into()))?;

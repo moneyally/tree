@@ -25,6 +25,7 @@ Some errors add fields (named with the endpoint).
 | `LOCKED_BY_SERVER` | 403 | the feature is released by the operator (e.g. signups) |
 | `NOT_ELIGIBLE` | 403 | commit from a device the server does not know as a member of the group |
 | `SUSPENDED` | 403 | the account is suspended by the operator (every signed request) |
+| `RECOVERY_REFUSED` | 403 | no account holds this recovery key, or the recovery signature is wrong |
 | `NOT_FOUND` | 404 | no such endpoint, account or device |
 | `UNKNOWN_FEATURE` | 404 | unknown feature key |
 | `METHOD_NOT_ALLOWED` | 405 | wrong HTTP method |
@@ -274,6 +275,31 @@ another account holds it (also when that account hid it).
 `{ "hash": "<32 bytes>" }` → `200 { "account_id": "..." }`, or `404 NOT_FOUND`
 if no account holds it or it is hidden. Costs 10 rate-limit tokens.
 
+## Recovery (PROTOCOL.md 8.6)
+
+### `POST /v1/recovery/apply` — set my account's recovery key
+
+`{ "recovery_pub": "<Ed25519 public key>" }` → `200 { "state": "applied" }`;
+replaces an earlier key. `409 ALREADY_EXISTS` if another account holds it.
+
+### `POST /v1/recovery/release` — no recovery for my account
+
+`200 { "state": "released" }`, also when none was set.
+
+### `POST /v1/recovery/recover` — a new device joins my account
+
+Like signup: no `X-Tree-Device`, signed with the new key, per-IP limit.
+
+```json
+{ "recovery_pub": "...", "auth_pub": "<new device key>", "pow_nonce": 123,
+  "signature": "<64 bytes: recovery key over \"tree-recover-v1\" || auth_pub || revoke_others>",
+  "revoke_others": false }
+```
+
+`201 { "account_id", "device_id", "revoked": 0 }`. Errors: `POW_INVALID`,
+`RECOVERY_REFUSED`, `ALREADY_EXISTS` (key already registered; nothing is
+revoked), `LIMIT_EXCEEDED` (device limit; use `revoke_others`).
+
 ## Reports (PROTOCOL.md 8.5)
 
 ### `POST /v1/franking` — tag for a message commitment
@@ -349,6 +375,7 @@ Errors: `UNAUTHORIZED`, `UNKNOWN_FEATURE`.
 | franking | the server key only; nothing per message |
 | reports | reported and reporting account, reason, the reported messages' plaintext as the reporter sent it, verified flags, day; until the operator deletes them |
 | suspensions | account id, day, optional reason; until released |
+| recovery | the Ed25519 public key derived from the phrase, day set; never the phrase |
 
 Logs contain method, route template, status and latency only.
 

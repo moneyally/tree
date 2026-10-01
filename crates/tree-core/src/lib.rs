@@ -19,6 +19,7 @@ pub mod group;
 pub mod group_settings;
 mod group_state;
 pub mod provider;
+pub mod recovery;
 pub mod safety;
 pub mod storage;
 pub mod wire;

@@ -63,9 +63,19 @@ bob sync
 alice send "$G" "밥은 이제 못 읽어"
 bob sync
 
+step "alice loses her phone: a new device recovers the account with the recovery phrase"
+PHRASE=$(alice recovery-phrase 24 2>/dev/null)
+echo "(24 words shown once to alice; not printed here)"
+TREE_RECOVERY_PHRASE="$PHRASE" TREE_PASSPHRASE="alice new pass" "$BIN/tree" --profile "$DIR/alice-new.db" recover alice "$URL" revoke 12
+if alice whoami >/dev/null 2>&1 && alice sync >/dev/null 2>&1; then
+  echo "!!! the old device still works"; exit 1
+else
+  echo "the old device is cut off"
+fi
+
 step "what the server database holds (searching for the plaintext; only the reported message is there)"
-if grep -a -q -e "서버를 거쳐서" -e "alice" -e "bob_tree" "$DIR"/server.db* 2>/dev/null; then
+if grep -a -q -F -e "서버를 거쳐서" -e "alice" -e "bob_tree" -e "$PHRASE" "$DIR"/server.db* 2>/dev/null; then
   echo "!!! plaintext or name found on the server"; exit 1
 else
-  echo "no plaintext, no names in the server database"
+  echo "no plaintext, no names, no recovery phrase in the server database"
 fi

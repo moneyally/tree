@@ -314,6 +314,7 @@ const NOT_CHAT_LOCKABLE: &[&str] = &[
     "user.app_switcher_blur",
     "user.pc_screen_security",
     "user.discoverable",
+    "user.recovery_phrase",
     "user.message_requests",
     "user.stranger_block",
     "user.stranger_labels",

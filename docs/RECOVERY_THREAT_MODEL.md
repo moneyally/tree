@@ -1,8 +1,9 @@
 # Recovery threat model
 
-Status: draft, 2026-10-01. **No recovery mechanism is implemented yet.** The
-only secret a user handles today is the local passphrase that unlocks the
-device database. This document fixes the threat model and the requirements
+Status: 2026-10-01. **The recovery phrase is implemented** (section 2.2,
+PROTOCOL.md 8.6); PIN, passkey and social recovery are not. The secrets a
+user handles are the local passphrase that unlocks the device database and
+the recovery phrase. This document fixes the threat model and the requirements
 before any recovery code is written, because recovery is where an attacker
 can bypass everything else: whoever completes a recovery is, for the server
 and possibly for contacts, the user.
@@ -16,7 +17,7 @@ Related: [PROTOCOL.md](PROTOCOL.md) (messaging protocol, claims C1-C11),
 | --- | --- | --- |
 | Group secrets of past epochs (old MLS keys) | **never** | that would undo forward secrecy (C4); a recovered account gets a new device identity and must be added to groups again |
 | Membership in groups | no, by re-adding | the new device is a new MLS leaf with a new signature key; contacts see a key change (`user.key_change_warning`, always on) |
-| Server account (ability to register devices for the account) | planned | needs a recovery secret the server can check without learning it |
+| Server account (ability to register devices for the account) | yes, with the phrase | the server keeps only an Ed25519 public key derived from the phrase and checks a signature (PROTOCOL.md 8.6) |
 | Message history | only from an encrypted backup (stage 3) | the backup key comes from the recovery secret, so **the recovery secret protects the whole backed-up history**: whoever learns it can read every backup |
 | Long-term identity key (future SLH-DSA root, PROTOCOL.md 3.2) | planned | the most sensitive asset: it would let the holder certify new devices that contacts accept without warning |
 
@@ -53,7 +54,7 @@ high-entropy passphrase (for example 6 or more random words) resists offline
 guessing. **A PIN must never be the passphrase** unless the key is wrapped by
 a hardware keystore that enforces attempt limits (`KeySource` hook, planned).
 
-### 2.2 Recovery phrase (planned, stage 1 sign-up)
+### 2.2 Recovery phrase (implemented)
 
 - Generated on the device by the system random generator, never chosen by
   the user. At least 128 bits of entropy (12 words from a 2048-word list);
@@ -61,8 +62,9 @@ a hardware keystore that enforces attempt limits (`KeySource` hook, planned).
 - Never sent to the server. Shown once, confirmed by the user, then held only
   in the user's records.
 - Keys are derived from it with HKDF (RFC 5869) and fixed labels; a slow KDF
-  adds nothing at this entropy. Exact labels and encoding: to be specified
-  with the backup format.
+  adds nothing at this entropy. The account recovery key: salt
+  `"tree/recovery/v1"`, info `"account-recovery-key"` (PROTOCOL.md 8.6). The
+  backup key will use another info label.
 - Losing it means losing recovery (stated on the sign-up screen).
 
 ### 2.3 PIN with server-side guess limiting (planned, stage 4)
@@ -114,7 +116,7 @@ Needs its own section before implementation.
 | Attack | Applies to | Required defense | Status |
 | --- | --- | --- | --- |
 | Offline guessing from stolen device files | local passphrase | high-entropy passphrase or hardware-wrapped key with attempt limits; Argon2id cost 64 MiB / 3 passes minimum, bounded header | Argon2id: done; strength check: **not done**; hardware wrapping: **planned** |
-| Offline guessing of the phrase | recovery phrase | >= 128 bits from the system random generator | not implemented |
+| Offline guessing of the phrase | recovery phrase | >= 128 bits from the system random generator | done (128 to 256 bits; 256 by default) |
 | Offline guessing after one realm is compromised | PIN | threshold across independent realms; one realm alone learns nothing testable | not implemented |
 | Realm collusion (threshold reached) | PIN | threshold >= 2 of >= 3 independent operators; waiting period and notification to existing devices; contacts see key change | not implemented |
 | Counter reset / rollback by an operator | PIN | attested isolated execution, counters in rollback-protected storage | not implemented |

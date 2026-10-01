@@ -156,6 +156,7 @@ const SECURITY_KEYS: &[&str] = &[
     "user.app_switcher_blur",
     "user.pc_screen_security",
     "user.discoverable",
+    "user.recovery_phrase",
 ];
 
 /// Reporting, spam and stranger protection.
@@ -394,6 +395,9 @@ pub fn standard_features() -> Vec<Feature> {
         feat("user.app_switcher_blur", User, Applied, 1),
         feat("user.pc_screen_security", User, Applied, 1),
         feat("user.username", User, Released, 1),
+        // Applied once the user made a recovery phrase (the app does that at
+        // sign-up); released = the server forgets the recovery key.
+        feat("user.recovery_phrase", User, Released, 1),
         feat("user.note_to_self", User, Applied, 1),
         feat("user.folders", User, Applied, 1),
         feat("user.default_folders", User, Applied, 1),

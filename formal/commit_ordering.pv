@@ -1,0 +1,104 @@
+(* Tree Protocol v1 -- model (b): commit ordering by the server.
+
+   Property: two honest members never merge different commits for the same
+   (group, epoch). Honest members merge a commit only after the server has
+   accepted it as the first commit for that epoch; a member whose own pending
+   commit lost discards it and merges the winner instead
+   (docs/PROTOCOL.md, section "Commit ordering").
+
+   Abstractions (read formal/README.md before relying on the result):
+   - One group. An epoch is identified by its group state, a public bitstring.
+     next(s, c) is the state after merging commit c in state s. Commits are
+     abstract terms; their cryptographic content (MLS) is not modelled.
+   - The attacker is Dolev-Yao: it reads, drops, reorders and injects on the
+     network, and it can submit arbitrary commits to the server (this covers a
+     malicious group member). It cannot impersonate the server.
+   - The authenticated client<->server channel (TLS with server
+     authentication) is abstracted as a signature by the server key skS on
+     "(state, accepted commit)". The server is HONEST in this model.
+   - The server is unrolled for three consecutive epochs (s0 -> s1 -> s2 -> s3).
+     Each epoch is one non-replicated server process whose commit input is
+     marked [precise]: it receives exactly one commit, the first one. This is
+     the "first commit per (group, epoch) wins" rule. Unbounded epochs are not
+     modelled because ProVerif's Horn-clause abstraction cannot express "this
+     slot is consumed once" for a replicated server process.
+   - Members are unbounded in number (replication). All start in state s0.
+*)
+
+free c: channel.
+
+type sskey.
+type spkey.
+fun spk(sskey): spkey.
+fun sign(bitstring, sskey): bitstring.
+reduc forall m: bitstring, k: sskey; checksign(sign(m, k), spk(k)) = m.
+
+fun next(bitstring, bitstring): bitstring.
+fun mkcommit(bitstring, bitstring, bitstring): bitstring.
+
+free s0: bitstring.
+free skS: sskey [private].
+free chain1, chain2: channel [private].
+
+event Accepted(bitstring, bitstring).
+event Merged(bitstring, bitstring, bitstring).
+
+(* Agreement: same epoch state => same merged commit. *)
+query a: bitstring, b: bitstring, s: bitstring, c1: bitstring, c2: bitstring;
+  event(Merged(a, s, c1)) && event(Merged(b, s, c2)) ==> c1 = c2.
+
+(* Every merged commit was accepted by the server for that state. *)
+query a: bitstring, s: bitstring, x: bitstring;
+  event(Merged(a, s, x)) ==> event(Accepted(s, x)).
+
+(* Non-vacuity: a member reaches the third epoch (expected: false =
+   reachable), so the agreement queries are not true for lack of runs. *)
+event Reach3(bitstring).
+query a: bitstring; event(Reach3(a)).
+
+(* Server: first commit per epoch wins. *)
+let Server0 =
+  in(c, x0: bitstring) [precise];
+  event Accepted(s0, x0);
+  out(c, sign((s0, x0), skS));
+  out(chain1, next(s0, x0)).
+
+let Server1 =
+  in(chain1, s1: bitstring) [precise];
+  in(c, x1: bitstring) [precise];
+  event Accepted(s1, x1);
+  out(c, sign((s1, x1), skS));
+  out(chain2, next(s1, x1)).
+
+let Server2 =
+  in(chain2, s2: bitstring) [precise];
+  in(c, x2: bitstring) [precise];
+  event Accepted(s2, x2);
+  out(c, sign((s2, x2), skS)).
+
+(* One epoch step of an honest member in state s:
+   create a pending commit, submit it, wait for the server's decision for s,
+   merge the winner (own pending commit if it won, otherwise the other one). *)
+let Member(id: bitstring) =
+  new r0: bitstring;
+  out(c, mkcommit(id, s0, r0));
+  in(c, d0: bitstring);
+  let (=s0, w0: bitstring) = checksign(d0, spk(skS)) in
+  event Merged(id, s0, w0);
+  let s1 = next(s0, w0) in
+  new r1: bitstring;
+  out(c, mkcommit(id, s1, r1));
+  in(c, d1: bitstring);
+  let (=s1, w1: bitstring) = checksign(d1, spk(skS)) in
+  event Merged(id, s1, w1);
+  let s2 = next(s1, w1) in
+  new r2: bitstring;
+  out(c, mkcommit(id, s2, r2));
+  in(c, d2: bitstring);
+  let (=s2, w2: bitstring) = checksign(d2, spk(skS)) in
+  event Merged(id, s2, w2);
+  event Reach3(id).
+
+process
+  out(c, spk(skS));
+  ( Server0 | Server1 | Server2 | !(new id: bitstring; out(c, id); Member(id)) )

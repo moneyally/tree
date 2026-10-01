@@ -1,0 +1,118 @@
+(* Tree Protocol v1 -- model (c): a removed member does not learn messages
+   of later epochs.
+
+   Scenario: group {A, B, R} in epoch 0 with epoch secret e0. R is the
+   attacker: it knows e0 and all of its own keys, and it is also a full
+   Dolev-Yao network attacker (it sees every commit, including the removal
+   commit, and can inject anything). A commits Remove(R). B merges that
+   commit and moves to epoch 1. Later B commits a key refresh (epoch 2).
+   A and B send secret application messages in epochs 1 and 2.
+
+   Property: R learns none of the epoch-1 or epoch-2 secrets.
+   Sanity check: R does learn the epoch-0 message (it was a member then);
+   if this query were not "true" the model would be vacuous.
+
+   Abstractions:
+   - MLS key schedule: epoch secret e' = kdf(e, commit_secret), one-way.
+     Message keys mk(e, generation) are one-way functions of the epoch
+     secret. This abstracts RFC 9420 sections 8 and 9 (init_secret ->
+     joiner_secret -> epoch_secret -> encryption_secret -> secret tree).
+   - TreeKEM: a commit carries the fresh commit secret encrypted to every
+     REMAINING member's current public key (aenc = HPKE abstraction, ideal
+     public-key encryption). This abstracts the effect of blanking the
+     removed member's direct path and encrypting path secrets to the copath
+     resolution (RFC 9420, 7.6 and 12.4.2); the tree structure itself is
+     not modelled.
+   - Commits are signed by the committer (MLS FramedContent signature).
+     The model checks the committer's signature key; it does not model the
+     confirmation tag, the membership tag or PrivateMessage framing.
+   - Ordering (model (b)) is assumed: A's removal commit is the one merged
+     for epoch 0.
+   - A and B are honest and never compromised. The property says nothing
+     about collusion between R and a current member, and nothing about
+     messages that honest members send in epoch 0 (R can read those, also
+     when they arrive after the removal: see the negative control
+     removal_secrecy_send_in_past_epoch.pv).
+*)
+
+free c: channel.
+
+type key.
+type skey.
+type pkey.
+type sskey.
+type spkey.
+
+fun pk(skey): pkey.
+fun aenc(pkey, key): bitstring.
+reduc forall sk: skey, m: key; adec(sk, aenc(pk(sk), m)) = m.
+
+fun spk(sskey): spkey.
+fun sign(bitstring, sskey): bitstring.
+reduc forall m: bitstring, k: sskey; checksign(sign(m, k), spk(k)) = m.
+reduc forall m: bitstring, k: sskey; getmsg(sign(m, k)) = m.
+
+fun kdf(key, key): key.
+fun mk(key, bitstring): key.
+fun senc(key, bitstring): bitstring.
+reduc forall k: key, m: bitstring; sdec(k, senc(k, m)) = m.
+fun eid(key): bitstring.
+
+const removeR, update: bitstring.
+
+free pre: bitstring [private].
+free secretA1, secretB1, secretA2, secretB2: bitstring [private].
+
+query attacker(pre).
+query attacker(secretA1).
+query attacker(secretB1).
+query attacker(secretA2).
+query attacker(secretB2).
+
+(* Non-vacuity: every secret above is actually sent (expected: false,
+   i.e. the event is reachable). *)
+event ReachA2.
+event ReachB2.
+query event(ReachA2).
+query event(ReachB2).
+
+let A(e0: key, skA: skey, sskA: sskey, pkB: pkey, spkB: spkey) =
+  (* epoch 0 -> 1: remove R; the commit secret goes to B only *)
+  new cs1: key;
+  let e1 = kdf(e0, cs1) in
+  out(c, sign((eid(e0), removeR, aenc(pkB, cs1)), sskA));
+  (!new g: bitstring; out(c, (g, senc(mk(e1, g), secretA1))))
+  |
+  (* epoch 1 -> 2: process B's key refresh *)
+  ( in(c, x: bitstring);
+    let (=eid(e1), =update, enc2: bitstring) = checksign(x, spkB) in
+    let cs2 = adec(skA, enc2) in
+    let e2 = kdf(e1, cs2) in
+    event ReachA2;
+    !new g: bitstring; out(c, (g, senc(mk(e2, g), secretA2))) ).
+
+let B(e0: key, skB: skey, sskB: sskey, pkA: pkey, spkA: spkey) =
+  (* epoch 0: a message R may read *)
+  (!new g: bitstring; out(c, (g, senc(mk(e0, g), pre))))
+  |
+  ( in(c, x: bitstring);
+    let (=eid(e0), =removeR, enc1: bitstring) = checksign(x, spkA) in
+    let cs1 = adec(skB, enc1) in
+    let e1 = kdf(e0, cs1) in
+    (!new g: bitstring; out(c, (g, senc(mk(e1, g), secretB1))))
+    |
+    ( (* key refresh: epoch 1 -> 2, commit secret to A only *)
+      new cs2: key;
+      let e2 = kdf(e1, cs2) in
+      out(c, sign((eid(e1), update, aenc(pkA, cs2)), sskB));
+      event ReachB2;
+      !new g: bitstring; out(c, (g, senc(mk(e2, g), secretB2))) ) ).
+
+process
+  new e0: key;
+  new skA: skey; new skB: skey; new skR: skey;
+  new sskA: sskey; new sskB: sskey; new sskR: sskey;
+  out(c, (pk(skA), pk(skB), pk(skR), spk(sskA), spk(sskB), spk(sskR)));
+  (* R's complete state at the time of removal *)
+  out(c, (e0, skR, sskR));
+  ( A(e0, skA, sskA, pk(skB), spk(sskB)) | B(e0, skB, sskB, pk(skA), spk(sskA)) )

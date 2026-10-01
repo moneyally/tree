@@ -22,7 +22,7 @@ Issues found by testing Tree's own design. Each one has a regression test.
 
 ## F-002: messages in flight during a commit are lost (open)
 
-- **Found:** 2026-10-01, verification pass, `tests/delivery.rs`
+- **Found:** 2026-10-01, attack-scenario test pass, `tests/delivery.rs`
 - **What:** the envelope key and MLS keys come from the receiver's *current*
   epoch. A message sent in epoch N that arrives after the receiver merged a
   commit to N+1 fails the seal check and cannot be read.

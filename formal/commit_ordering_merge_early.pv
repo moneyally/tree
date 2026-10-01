@@ -1,0 +1,39 @@
+(* Tree Protocol v1 -- NEGATIVE CONTROL for model (b).
+
+   Same setting as commit_ordering.pv, but members behave like the stage-0
+   code on main (finding F-003): a member merges its own commit immediately,
+   without waiting for the server, and merges any other commit that reaches it.
+
+   Expected result: the agreement query is FALSE (ProVerif finds the fork:
+   two members each merge their own commit for the same epoch). This shows
+   that the positive result in commit_ordering.pv depends on the ordering
+   rule and is not an artefact of the model.
+*)
+
+free c: channel.
+
+fun next(bitstring, bitstring): bitstring.
+fun mkcommit(bitstring, bitstring, bitstring): bitstring.
+
+free s0: bitstring.
+
+event Merged(bitstring, bitstring, bitstring).
+
+query a: bitstring, b: bitstring, s: bitstring, c1: bitstring, c2: bitstring;
+  event(Merged(a, s, c1)) && event(Merged(b, s, c2)) ==> c1 = c2.
+
+let Member(id: bitstring) =
+  (
+    (* commit and merge at once *)
+    new r0: bitstring;
+    let p0 = mkcommit(id, s0, r0) in
+    out(c, p0);
+    event Merged(id, s0, p0)
+  ) | (
+    (* or merge whatever commit arrives first *)
+    in(c, w0: bitstring);
+    event Merged(id, s0, w0)
+  ).
+
+process
+  !(new id: bitstring; out(c, id); Member(id))

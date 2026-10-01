@@ -154,6 +154,11 @@ stored.
 
 `full_devices`: mailboxes holding 10 000 pending messages already.
 
+Planned (not implemented): commits and welcomes will go through a separate
+`POST /v1/commits` endpoint that accepts only the first commit per (group,
+epoch), and this endpoint will refuse commits, proposals and welcomes. See
+[PROTOCOL.md](PROTOCOL.md), section 7.4.
+
 ### `GET /v1/messages?wait=N` — fetch my pending messages
 
 `wait` (seconds, optional, capped at 25): if the mailbox is empty, wait up to

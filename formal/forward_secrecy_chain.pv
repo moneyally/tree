@@ -1,0 +1,50 @@
+(* Tree Protocol v1 -- model (e): forward secrecy inside one epoch.
+
+   One sender's application ratchet in one epoch (RFC 9420, 9.1):
+     ck_0 = tree-derived secret for the sender's leaf
+     key_i, nonce_i = derived from ck_i            (here: mk(ck_i))
+     ck_{i+1}       = derived from ck_i            (here: nxt(ck_i))
+   After message i is decrypted, ck_i and key_i are deleted (RFC 9420, 9.2);
+   only the ratchet head and keys retained for out-of-order delivery stay.
+
+   Scenario: messages m0, m1, m2 are sent. The receiver has decrypted m0
+   and m1 and deleted their keys; m2 has not arrived yet. The attacker then
+   obtains the receiver's state for this chain: the ratchet head ck_2.
+
+   Expected:
+     attacker(m0) false, attacker(m1) false  (already decrypted -> protected)
+     attacker(m2) true                        (not yet decrypted -> exposed)
+   This is exactly the forward-secrecy statement in docs/PROTOCOL.md: state
+   compromise exposes the messages the device has not yet decrypted, not the
+   ones it has.
+
+   Abstractions: one sender chain, keys as one-way functions, ideal AEAD.
+   The secret tree above the leaf, the past-epoch window and retained
+   out-of-order keys are not modelled here (they only add more "not yet
+   decrypted" keys to the exposed set). Deletion is assumed to be effective
+   (no recovery of deleted keys from storage media).
+*)
+
+free c: channel.
+
+type key.
+fun nxt(key): key.
+fun mk(key): key.
+fun senc(key, bitstring): bitstring.
+reduc forall k: key, m: bitstring; sdec(k, senc(k, m)) = m.
+
+free m0, m1, m2: bitstring [private].
+
+query attacker(m0).
+query attacker(m1).
+query attacker(m2).
+
+process
+  new ck0: key;
+  let ck1 = nxt(ck0) in
+  let ck2 = nxt(ck1) in
+  out(c, senc(mk(ck0), m0));
+  out(c, senc(mk(ck1), m1));
+  out(c, senc(mk(ck2), m2));
+  (* compromise after m0 and m1 were decrypted and their keys deleted *)
+  out(c, ck2)

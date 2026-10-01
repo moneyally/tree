@@ -25,8 +25,13 @@ Try it:
 
 ```sh
 cargo run -p tree-core --example demo   # three people chatting end to end
-cargo test -p tree-core                 # security checks
+cargo test -p tree-core                 # attack-scenario tests on the reference implementation
+formal/run.sh                           # formal models (needs ProVerif)
 ```
+
+Tests find bugs; they do not prove security. What Tree claims, under which
+assumptions, and which parts are machine-checked is in
+[docs/PROTOCOL.md](docs/PROTOCOL.md).
 
 ## Layout
 
@@ -34,7 +39,8 @@ cargo test -p tree-core                 # security checks
 crates/tree-core   end-to-end encryption, groups, feature registry
 crates/tree-server server: mailboxes and one-time key packages (ciphertext only)
 deploy/            Docker image and compose file for running the server
-docs/              threat model, server API, security findings
+docs/              protocol specification, threat models, server API, security findings
+formal/            ProVerif models of the parts Tree adds on top of MLS
 ```
 
 The server API is described in [docs/SERVER_API.md](docs/SERVER_API.md).

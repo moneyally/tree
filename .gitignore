@@ -3,3 +3,5 @@ target/
 *.pem
 .env
 .claude/worktrees/
+mutants.out/
+mutants.out.old/

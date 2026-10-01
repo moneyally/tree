@@ -43,4 +43,4 @@ TypeScript. Server host: Hetzner (owner already has a server).
 3. CLI client talking through the server.
 4. Android shell + UniFFI bindings.
 
-See `docs/THREAT_MODEL.md` and `docs/SECURITY_FINDINGS.md`.
+See `docs/THREAT_MODEL.md`, `docs/SECURITY_FINDINGS.md` and `docs/TESTING.md`.

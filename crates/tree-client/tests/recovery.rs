@@ -101,7 +101,7 @@ fn deleting_the_account_leaves_nothing_behind() {
     // alice deletes hers; the username is free again.
     let apath = env.profile("alice");
     alice.delete_account(&apath).unwrap();
-    let mut carol = env.device("carol");
+    let carol = env.device("carol");
     carol.set_username("gone_soon", true).unwrap();
     assert!(carol.find("@gone_soon").unwrap().is_some());
 }

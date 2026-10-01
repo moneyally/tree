@@ -1,0 +1,64 @@
+# Deploys main to the owner's server over SSH. Manual only (Actions tab →
+# deploy → Run workflow). Does nothing unless the secrets in
+# deploy/README.md are set. The server's host key is pinned
+# (DEPLOY_KNOWN_HOSTS); the key is used only for this job.
+name: deploy
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check secrets
+        id: check
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          if [ -z "$HOST" ] || [ -z "$KEY" ] || [ -z "$KNOWN" ]; then
+            echo "deploy secrets are not set; nothing to do (see deploy/README.md)"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Update and restart on the server
+        if: steps.check.outputs.ready == 'true'
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          USER_NAME: ${{ secrets.DEPLOY_USER }}
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -eu
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/deploy_key
+          printf '%s\n' "$KNOWN" > ~/.ssh/known_hosts
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes -o BatchMode=yes \
+            "${USER_NAME:-deploy}@$HOST" \
+            'set -e; cd tree && git fetch --quiet origin main && git checkout --quiet main && git merge --ff-only --quiet origin/main && cd deploy && docker compose up -d --build'
+          rm -f ~/.ssh/deploy_key
+
+      - name: Health check
+        if: steps.check.outputs.ready == 'true'
+        env:
+          DOMAIN: ${{ secrets.TREE_DOMAIN }}
+        run: |
+          [ -n "$DOMAIN" ] || { echo "TREE_DOMAIN not set; skipping"; exit 0; }
+          for i in $(seq 1 30); do
+            if curl -fsS "https://$DOMAIN/healthz"; then exit 0; fi
+            sleep 5
+          done
+          echo "server did not become healthy"; exit 1

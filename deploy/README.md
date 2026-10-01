@@ -34,6 +34,27 @@ curl https://도메인/healthz          # {"status":"ok"}
 docker compose ps                    # tree-server가 healthy
 ```
 
+## 신고 확인·계정 정지
+
+신고된 메시지는 신고한 사람이 직접 보낸 것만 서버에 남는다(PROTOCOL.md 8.5).
+`verified: true`면 그 계정이 정말 보낸 메시지다.
+
+```sh
+curl -H "X-Tree-Admin: $TOKEN" https://도메인/v1/reports                                  # 열린 신고
+curl -X POST -H "X-Tree-Admin: $TOKEN" https://도메인/v1/reports/신고ID/resolve           # 처리 완료
+curl -X POST -H "X-Tree-Admin: $TOKEN" https://도메인/v1/accounts/계정ID/suspend/apply    # 계정 정지
+curl -X POST -H "X-Tree-Admin: $TOKEN" https://도메인/v1/accounts/계정ID/suspend/release  # 정지 해제
+```
+
+신고 처리 기준·보관 기간·수사기관 요청 대응은 **변호사 확인 필요**.
+
+## 푸시 알림
+
+푸시 게이트웨이(UnifiedPush 방식 서버)를 쓰려면 `.env`에
+`PUSH_ALLOWED_HOSTS=게이트웨이도메인`을 넣는다. 서버는 그 호스트에만,
+내용 없이 `wake`만 보낸다. 휴대폰 제조사 푸시(안드로이드·iOS)는 앱 출시 때
+게이트웨이와 함께 설정한다.
+
 ## 운영 기능 적용/해제
 
 ```sh
@@ -47,6 +68,22 @@ curl -X POST -H "X-Tree-Admin: $TOKEN" https://도메인/v1/features/server.sign
 ```sh
 cd tree && git pull && cd deploy && docker compose up -d --build
 ```
+
+### 자동 배포 (선택)
+
+`.github/workflows/deploy.yml`은 GitHub에서 **수동으로 눌렀을 때만** 서버에
+접속해 위 업데이트를 하고 `/healthz`를 확인한다. 쓰려면 저장소 설정 →
+Secrets and variables → Actions에 다음을 넣는다(대화창에 붙여 넣지 말 것):
+
+| 이름 | 값 |
+| --- | --- |
+| `DEPLOY_HOST` | 서버 주소 |
+| `DEPLOY_USER` | 배포용 계정 (root 말고 docker 그룹 계정 권장) |
+| `DEPLOY_SSH_KEY` | 배포 전용으로 새로 만든 SSH 개인 키 |
+| `DEPLOY_KNOWN_HOSTS` | `ssh-keyscan 서버주소` 결과 (서버를 확인하는 값) |
+| `TREE_DOMAIN` | 도메인 (확인용) |
+
+비밀값이 없으면 워크플로는 아무것도 하지 않고 끝난다.
 
 ## 백업
 

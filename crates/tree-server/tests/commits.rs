@@ -308,3 +308,25 @@ async fn small_commits_cost_one_token() {
     assert_eq!(st, StatusCode::OK, "{v}");
     ts.stop().await;
 }
+
+/// Big commits cost one extra token per 100 devices reached, added ones
+/// included.
+#[tokio::test]
+async fn big_commits_cost_per_hundred_devices() {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    let ts = boot(|c| {
+        c.rate_per_sec = 0.001;
+        c.rate_burst = 2.5;
+    })
+    .await;
+    let api = &ts.api;
+    let (a, b) = (api.signup().await, api.signup().await);
+    let added: Vec<String> = (0..199u128).map(|i| URL_SAFE_NO_PAD.encode((i + 1).to_be_bytes())).collect();
+    let mut r = req(0, b"x", &[&b]);
+    r["added"] = json!(added);
+    r["welcome"] = json!(b64(&welcome(b"w")));
+    // 1 + 199 = 200 devices: 1 + 2 tokens, more than the 2.5 in the bucket.
+    let (st, v) = submit(api, &a, r).await;
+    assert_eq!((st, code(&v)), (StatusCode::TOO_MANY_REQUESTS, "RATE_LIMITED"), "{v}");
+    ts.stop().await;
+}

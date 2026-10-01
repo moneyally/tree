@@ -33,6 +33,7 @@ async fn links_limits_requests() {
     for (life, uses) in [(59, 1), (30 * 86400 + 1, 1), (3600, 0), (3600, 10_001)] {
         assert_eq!(create(api, &owner, &t, life, uses).await.0, StatusCode::BAD_REQUEST, "{life} {uses}");
     }
+    assert_eq!(create(api, &owner, &[6u8; 16], 30 * 86400, 10_000).await.0, StatusCode::CREATED, "the limits themselves");
     assert_eq!(create(api, &owner, &t, 3600, 2).await.0, StatusCode::CREATED);
     let (st, v) = create(api, &a, &t, 3600, 2).await;
     assert_eq!((st, code(&v)), (StatusCode::CONFLICT, "ALREADY_EXISTS"));
@@ -87,8 +88,9 @@ async fn links_limits_requests() {
     let now = tree_server::util::now_secs();
     tree_server::invites::purge(&ts.server.state.db, now).await.unwrap();
     let n: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM invites").fetch_one(&ts.server.state.db).await.unwrap();
-    assert_eq!(n.0, 2, "kept for a week after expiry");
-    assert_eq!(tree_server::invites::purge(&ts.server.state.db, now + 8 * 86400).await.unwrap(), 2);
+    assert_eq!(n.0, 3, "kept for a week after expiry");
+    assert_eq!(tree_server::invites::purge(&ts.server.state.db, now + 6 * 86400).await.unwrap(), 0);
+    assert_eq!(tree_server::invites::purge(&ts.server.state.db, now + 8 * 86400).await.unwrap(), 2, "the 30-day link stays");
     ts.stop().await;
 }
 

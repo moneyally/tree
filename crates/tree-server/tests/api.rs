@@ -934,3 +934,34 @@ async fn account_deletion() {
     assert_eq!(api.call(&b, Method::POST, "/v1/usernames/apply", Some(json!({ "hash": b64(&[5u8; 32]) }))).await.0, StatusCode::OK);
     ts.stop().await;
 }
+
+/// The purge reports how much it removed (expired messages, files, old
+/// invite links, old resolved reports), for the operator's log.
+#[tokio::test]
+async fn purge_counts_what_it_removes() {
+    let ts = boot(|_| {}).await;
+    let api = &ts.api;
+    let (a, b) = (api.signup().await, api.signup().await);
+    let db = &ts.server.state.db;
+    api.send_msg(&a, &[&b.device_id], b"old").await;
+    api.send_msg(&a, &[&b.device_id], b"older").await;
+    let mut up = Signed::new(Method::POST, "/v1/attachments", Some(&a.device_id), None);
+    up.body = vec![1, 2, 3];
+    assert_eq!(api.send(&up, &a.key).await.0, StatusCode::CREATED);
+    for t in [[1u8; 16], [2u8; 16], [3u8; 16]] {
+        let body = json!({ "token_hash": b64(&tree_server::invites::token_hash(&t)), "lifetime": 60, "max_uses": 1 });
+        assert_eq!(api.call(&a, Method::POST, "/v1/invites", Some(body)).await.0, StatusCode::CREATED);
+    }
+    for _ in 0..4 {
+        sqlx::query("INSERT INTO reports (id, reported_account, reporter_account, reason, messages, verified, created_day, resolved, resolved_day) VALUES (?, 'x', 'y', 'r', '[]', 0, 0, 1, 0)")
+            .bind(tree_server::util::new_id())
+            .execute(db)
+            .await
+            .unwrap();
+    }
+    let later = now() + 40 * 86_400;
+    // 2 messages + 1 file + 3 invite links + 4 reports.
+    assert_eq!(tree_server::purge_expired(&ts.server.state, later).await.unwrap(), 2 + 1 + 3 + 4);
+    assert_eq!(tree_server::purge_expired(&ts.server.state, later).await.unwrap(), 0);
+    ts.stop().await;
+}

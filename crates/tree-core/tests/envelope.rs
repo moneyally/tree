@@ -250,6 +250,8 @@ fn peek_classifies_real_messages() {
     // a welcome.
     assert_eq!(peek(&[]), None);
     assert_eq!(peek(&[2, 0, 1]), None);
+    assert_eq!(peek(&[1, 0, 1]), None, "a short envelope is refused, not sliced");
+    assert_eq!(peek(&[1]), None);
     assert_eq!(peek(&msg[..33]), None);
     let mut short = msg[..33].to_vec();
     short.push(0);

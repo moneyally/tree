@@ -248,7 +248,10 @@ private fun ChatView(model: AppModel, state: UiState, chat: Chat) {
                     val who = state.names[m.sender]?.ifEmpty { Strings.t("me") } ?: m.sender.take(6)
                     val read = if (m.id in state.readMine) "  ✓ " + Strings.t("read") else ""
                     Text("$who: $body$read", Modifier.weight(1f).padding(4.dp))
-                    if (m.kind == "file" && state.files.containsKey(m.id)) {
+                    // In a request, files stay closed until the user accepts (design: requests).
+                    if (m.kind == "file" && chat.status == "request") {
+                        Text(Strings.t("after_accept"), style = MaterialTheme.typography.bodySmall)
+                    } else if (m.kind == "file" && state.files.containsKey(m.id)) {
                         TextButton(onClick = {
                             val d = java.awt.FileDialog(null as java.awt.Frame?, Strings.t("save"), java.awt.FileDialog.SAVE)
                             d.file = m.text ?: "file"

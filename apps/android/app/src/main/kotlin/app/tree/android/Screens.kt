@@ -197,7 +197,9 @@ private fun ChatScreen(model: AppModel, state: UiState, chat: Chat) {
                     if (m.id in state.readMine) "  ✓ " + Strings.t("read") else ""
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("$who2: $body", Modifier.weight(1f).padding(4.dp))
-                    if (m.kind == "file" && state.files.containsKey(m.id)) {
+                    if (m.kind == "file" && chat.status == "request") {
+                        Text(Strings.t("after_accept"), style = MaterialTheme.typography.bodySmall)
+                    } else if (m.kind == "file" && state.files.containsKey(m.id)) {
                         TextButton(onClick = { saving = m.id; save.launch(m.text ?: "file") }) { Text(Strings.t("save")) }
                     }
                     TextButton(onClick = { scope.launch { model.report(chat.id, listOf(m.id), "user report") } }) { Text(Strings.t("report")) }

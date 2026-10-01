@@ -3,6 +3,11 @@
 //! the outer envelope seal, tampering the content area made the genuine
 //! message permanently undecryptable.
 
+mod common;
+
+#[allow(unused_imports)]
+use common::Now;
+
 use tree_core::{Client, Incoming};
 
 #[test]
@@ -11,7 +16,7 @@ fn tampered_copy_does_not_burn_genuine_message() {
         let alice = Client::new("alice").unwrap();
         let bob = Client::new("bob").unwrap();
         let mut a = alice.create_group().unwrap();
-        let w = a.add(&alice, &bob.key_package().unwrap()).unwrap().welcome;
+        let w = a.add_now(&alice, &bob.key_package().unwrap()).unwrap().welcome;
         let mut b = bob.join(&w).unwrap();
 
         let m = a.send(&alice, b"genuine").unwrap();

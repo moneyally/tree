@@ -32,6 +32,9 @@ argon2 = { version = "0.6.0", default-features = false, features = ["alloc", "ze
 zeroize = "1.9.0"
 serde = "1"
 serde_json = "1"
+sha2 = "0.10"
+# Constant-time comparison of envelope tags and hashes.
+subtle = "2.6"
 
 [dev-dependencies]
 proptest = "1"

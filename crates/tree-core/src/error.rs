@@ -17,8 +17,12 @@ pub enum TreeError {
     Group(String),
     #[error("message rejected: {0}")]
     Rejected(String),
-    #[error("no member named {0:?} in this group")]
+    #[error("no member {0} in this group")]
     UnknownMember(String),
+    #[error("a commit of this device is waiting for the server; confirm or discard it first")]
+    CommitPending,
+    #[error("no pending commit")]
+    NoPendingCommit,
     #[error("this device is no longer a member of the group")]
     NotAMember,
     #[error("no stored group with this id")]

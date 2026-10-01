@@ -2,6 +2,9 @@
 
 mod common;
 
+#[allow(unused_imports)]
+use common::Now;
+
 use common::{chat_with_insider, two_person_chat, Insider, TAG_LEN};
 use tree_core::{Client, Incoming, TreeError};
 
@@ -161,8 +164,8 @@ fn sealing_key_differs_between_groups() {
     let mut m2 = Insider::new("mallory");
     let mut g1 = alice.create_group().unwrap();
     let mut g2 = alice.create_group().unwrap();
-    m.join(&g1.add(&alice, &m.key_package()).unwrap().welcome);
-    m2.join(&g2.add(&alice, &m2.key_package()).unwrap().welcome);
+    m.join(&g1.add_now(&alice, &m.key_package()).unwrap().welcome);
+    m2.join(&g2.add_now(&alice, &m2.key_package()).unwrap().welcome);
     assert_ne!(g1.id(), g2.id());
     let k1 = m.envelope_key();
     let k2 = m2.envelope_key();
@@ -184,7 +187,7 @@ fn sealing_key_differs_between_groups() {
 fn sealing_key_changes_every_epoch() {
     let (alice, bob, mut a, mut b, mut m) = chat_with_insider("mallory");
     let k0 = m.envelope_key();
-    let c = a.refresh_keys(&alice).unwrap();
+    let c = a.refresh_now(&alice).unwrap();
     b.receive(&bob, &c).unwrap();
     m.receive_commit(&c);
     let k1 = m.envelope_key();

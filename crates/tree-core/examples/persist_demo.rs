@@ -15,8 +15,8 @@ type Stored = Client<StoredProvider>;
 
 fn show(who: &str, ev: &Incoming) {
     match ev {
-        Incoming::Message { from, body } => {
-            println!("  {who:<8} <- {from}: {}", String::from_utf8_lossy(body))
+        Incoming::Message { name, body, .. } => {
+            println!("  {who:<8} <- {name}: {}", String::from_utf8_lossy(body))
         }
         other => println!("  {who:<8} <- {other:?}"),
     }
@@ -52,8 +52,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bob = Client::create(&pb, "bob: staple purple tiger", "bob")?;
 
     let mut a = alice.create_group()?;
-    let add = a.add(&alice, &bob.key_package()?)?;
-    let mut b = bob.join(&add.welcome)?;
+    let add = a.add(&alice, &[bob.key_package()?])?;
+    a.confirm_commit(&alice)?; // (the server accepted it)
+    let mut b = bob.join(add.welcome.as_ref().unwrap())?;
     let m = a.send(&alice, "재시작 전 첫 메시지".as_bytes())?;
     show("bob", &b.receive(&bob, &m)?);
     let m = b.send(&bob, "응, 받았어".as_bytes())?;
@@ -88,15 +89,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let kp = charlie.key_package()?;
     drop(charlie);
     let charlie = Client::open(&pc, "charlie: river stone lamp")?;
-    let add = a.add(&alice, &kp)?;
+    let add = a.add(&alice, &[kp])?;
+    a.confirm_commit(&alice)?;
     show("bob", &b.receive(&bob, &add.commit)?);
-    let mut c = charlie.join(&add.welcome)?;
+    let mut c = charlie.join(add.welcome.as_ref().unwrap())?;
     let m = c.send(&charlie, "나도 왔어".as_bytes())?;
     show("alice", &a.receive(&alice, &m)?);
     show("bob", &b.receive(&bob, &m)?);
-    let rm = a.remove(&alice, "bob")?;
-    show("charlie", &c.receive(&charlie, &rm)?);
-    show("bob", &b.receive(&bob, &rm)?);
+    let bob_id = bob.member_id();
+    let rm = a.remove(&alice, &[bob_id])?;
+    println!("  alice's removal of bob is pending (epoch {}); alice's app closes before the server answers", a.epoch());
+    drop((a, alice));
+    let (alice, mut ga) = open(&pa, "alice: correct horse battery")?;
+    let mut a = ga.remove(0);
+    let again = a.pending_commit().expect("pending commit survives the restart");
+    println!("  pending commit still there after restart: same bytes = {}", again.commit == rm.commit);
+    // The server accepted it meanwhile; its echo merges it.
+    show("alice", &a.receive(&alice, &again.commit)?);
+    show("charlie", &c.receive(&charlie, &rm.commit)?);
+    show("bob", &b.receive(&bob, &rm.commit)?);
 
     println!("\n6) everyone restarts again");
     drop((a, b, c, alice, bob, charlie));
@@ -104,7 +115,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (bob, gb) = open(&pb, "bob: staple purple tiger")?;
     let (charlie, mut gc) = open(&pc, "charlie: river stone lamp")?;
     let (mut a, mut c) = (ga.remove(0), gc.remove(0));
-    println!("  members: {:?}; bob still a member: {}", a.members(), gb[0].is_member());
+    let names: Vec<String> = a.members().into_iter().map(|m| m.name).collect();
+    println!("  members: {names:?}; bob still a member: {}", gb[0].is_member());
     let m = a.send(&alice, "밥 없는 비밀 이야기".as_bytes())?;
     show("charlie", &c.receive(&charlie, &m)?);
     let mut b = gb.into_iter().next().unwrap();

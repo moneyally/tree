@@ -9,6 +9,9 @@
 
 mod common;
 
+#[allow(unused_imports)]
+use common::Now;
+
 use std::cell::RefCell;
 
 use common::{chat_with_insider, two_person_chat, TAG_LEN};
@@ -142,7 +145,7 @@ fn receive_mutated_message_never_accepted() {
 fn receive_mutated_commit_never_accepted() {
     let (alice, bob, mut a, b) = two_person_chat();
     let carol = Client::new("carol").unwrap();
-    let commit = a.add(&alice, &carol.key_package().unwrap()).unwrap().commit;
+    let commit = a.add_now(&alice, &carol.key_package().unwrap()).unwrap().commit;
     let b = RefCell::new(b);
     runner(256)
         .run(&mutation(), |m| {
@@ -220,7 +223,7 @@ fn join_mutated_welcome_never_accepted() {
     let alice = Client::new("alice").unwrap();
     let bob = Client::new("bob").unwrap();
     let mut a = alice.create_group().unwrap();
-    let welcome = a.add(&alice, &bob.key_package().unwrap()).unwrap().welcome;
+    let welcome = a.add_now(&alice, &bob.key_package().unwrap()).unwrap().welcome;
     runner(256)
         .run(&vec(mutation(), 1..3), |ms| {
             let mut v = welcome.clone();
@@ -261,16 +264,16 @@ fn add_random_or_mutated_key_package_never_accepted() {
     runner(256)
         .run(&input, |bytes| {
             let Some(bytes) = bytes else { return Ok(()) };
-            let r = a.borrow_mut().add(&alice, &bytes);
+            let r = a.borrow_mut().add_now(&alice, &bytes);
             prop_assert!(r.is_err(), "bad key package accepted");
             let g = a.borrow();
             prop_assert_eq!(g.epoch(), 0);
-            prop_assert_eq!(g.members(), vec!["alice".to_string()]);
+            prop_assert_eq!(common::names(&g), vec!["alice".to_string()]);
             Ok(())
         })
         .unwrap();
-    a.borrow_mut().add(&alice, &kp).expect("genuine key package refused");
-    assert_eq!(a.borrow().members(), vec!["alice", "bob"]);
+    a.borrow_mut().add_now(&alice, &kp).expect("genuine key package refused");
+    assert_eq!(common::names(&a.borrow()), vec!["alice", "bob"]);
 }
 
 // ---------------------------------------------------------------- features

@@ -1,5 +1,9 @@
 //! Encrypted persistent storage: restarts, wrong keys, isolation.
 
+mod common;
+
+use common::{names, Now};
+
 use std::path::{Path, PathBuf};
 
 use tree_core::{storage::KeyHeader, Client, Group, Incoming, StoredProvider, TreeError};
@@ -44,8 +48,11 @@ fn restart(client: Stored, group: Group, path: &Path, pass: &str) -> (Stored, Gr
     (client, group)
 }
 
-fn says(ev: Incoming, from: &str, text: &str) {
-    assert_eq!(ev, Incoming::Message { from: from.into(), body: text.as_bytes().to_vec() });
+fn says(ev: Incoming, from: &Client<impl tree_core::TreeProvider>, text: &str) {
+    assert_eq!(
+        ev,
+        Incoming::Message { from: from.member_id(), name: from.name().into(), body: text.as_bytes().to_vec() }
+    );
 }
 
 #[test]
@@ -56,25 +63,25 @@ fn conversation_survives_restarts() {
     let bob = Client::create(&pb, "bob pass", "bob").unwrap();
 
     let mut a = alice.create_group().unwrap();
-    let w = a.add(&alice, &bob.key_package().unwrap()).unwrap().welcome;
+    let w = a.add_now(&alice, &bob.key_package().unwrap()).unwrap().welcome;
     let mut b = bob.join(&w).unwrap();
     let m = a.send(&alice, b"before restart").unwrap();
-    says(b.receive(&bob, &m).unwrap(), "alice", "before restart");
+    says(b.receive(&bob, &m).unwrap(), &alice, "before restart");
 
     // Both restart, then keep chatting both ways.
     let (alice, mut a) = restart(alice, a, &pa, "alice pass");
     let (bob, mut b) = restart(bob, b, &pb, "bob pass");
     assert_eq!(a.verification_code(), b.verification_code());
     let m = a.send(&alice, b"after restart 1").unwrap();
-    says(b.receive(&bob, &m).unwrap(), "alice", "after restart 1");
+    says(b.receive(&bob, &m).unwrap(), &alice, "after restart 1");
     let m = b.send(&bob, b"after restart 2").unwrap();
-    says(a.receive(&alice, &m).unwrap(), "bob", "after restart 2");
+    says(a.receive(&alice, &m).unwrap(), &bob, "after restart 2");
 
     // A message sent while the receiver restarts is still readable, and the
     // used message key stays deleted across a restart (no replay).
     let m = a.send(&alice, b"in flight").unwrap();
     let (bob, mut b) = restart(bob, b, &pb, "bob pass");
-    says(b.receive(&bob, &m).unwrap(), "alice", "in flight");
+    says(b.receive(&bob, &m).unwrap(), &alice, "in flight");
     let (bob, mut b) = restart(bob, b, &pb, "bob pass");
     assert!(b.receive(&bob, &m).is_err(), "replay accepted after restart");
 
@@ -85,7 +92,7 @@ fn conversation_survives_restarts() {
     drop(charlie);
     let charlie = Client::open(&pc, "charlie pass").unwrap();
     assert!(charlie.group_ids().unwrap().is_empty());
-    let add = a.add(&alice, &kp).unwrap();
+    let add = a.add_now(&alice, &kp).unwrap();
     assert!(matches!(b.receive(&bob, &add.commit).unwrap(), Incoming::GroupChanged { .. }));
     let c = charlie.join(&add.welcome).unwrap();
 
@@ -93,21 +100,21 @@ fn conversation_survives_restarts() {
     let (alice, mut a) = restart(alice, a, &pa, "alice pass");
     let (bob, mut b) = restart(bob, b, &pb, "bob pass");
     let (charlie, mut c2) = restart(charlie, c, &pc, "charlie pass");
-    assert_eq!(a.members(), vec!["alice", "bob", "charlie"]);
+    assert_eq!(names(&a), vec!["alice", "bob", "charlie"]);
     assert_eq!(c2.members(), a.members());
     let m = c2.send(&charlie, b"hi from charlie").unwrap();
-    says(a.receive(&alice, &m).unwrap(), "charlie", "hi from charlie");
-    says(b.receive(&bob, &m).unwrap(), "charlie", "hi from charlie");
+    says(a.receive(&alice, &m).unwrap(), &charlie, "hi from charlie");
+    says(b.receive(&bob, &m).unwrap(), &charlie, "hi from charlie");
 
     // Key refresh across a restart.
-    let r = b.refresh_keys(&bob).unwrap();
+    let r = b.refresh_now(&bob).unwrap();
     let (bob, mut b) = restart(bob, b, &pb, "bob pass");
     a.receive(&alice, &r).unwrap();
     c2.receive(&charlie, &r).unwrap();
     assert_eq!(a.verification_code(), b.verification_code());
 
     // Alice removes Bob; Bob restarts and stays removed.
-    let rm = a.remove(&alice, "bob").unwrap();
+    let rm = a.remove_now(&alice, &[bob.member_id()]).unwrap();
     assert!(matches!(c2.receive(&charlie, &rm).unwrap(), Incoming::GroupChanged { .. }));
     assert_eq!(b.receive(&bob, &rm).unwrap(), Incoming::RemovedFromGroup);
     let (alice, mut a) = restart(alice, a, &pa, "alice pass");
@@ -115,19 +122,19 @@ fn conversation_survives_restarts() {
     let (bob, mut b) = restart(bob, b, &pb, "bob pass");
     assert!(!b.is_member());
     let m = a.send(&alice, b"without bob").unwrap();
-    says(c.receive(&charlie, &m).unwrap(), "alice", "without bob");
+    says(c.receive(&charlie, &m).unwrap(), &alice, "without bob");
     assert!(b.receive(&bob, &m).is_err());
-    assert_eq!(a.members(), vec!["alice", "charlie"]);
+    assert_eq!(names(&a), vec!["alice", "charlie"]);
 
     // Add Bob back (fresh key package, after all those restarts).
-    let add = a.add(&alice, &bob.key_package().unwrap()).unwrap();
+    let add = a.add_now(&alice, &bob.key_package().unwrap()).unwrap();
     c.receive(&charlie, &add.commit).unwrap();
     let mut b2 = bob.join(&add.welcome).unwrap();
     assert_eq!(bob.group_ids().unwrap().len(), 1, "same group id is listed once");
     drop(b);
     let m = b2.send(&bob, b"back again").unwrap();
-    says(a.receive(&alice, &m).unwrap(), "bob", "back again");
-    says(c.receive(&charlie, &m).unwrap(), "bob", "back again");
+    says(a.receive(&alice, &m).unwrap(), &bob, "back again");
+    says(c.receive(&charlie, &m).unwrap(), &bob, "back again");
 }
 
 #[test]
@@ -140,7 +147,7 @@ fn several_groups_are_listed_and_loaded() {
     let mut peers = vec![];
     for _ in 0..3 {
         let mut g = alice.create_group().unwrap();
-        let w = g.add(&alice, &bob.key_package().unwrap()).unwrap().welcome;
+        let w = g.add_now(&alice, &bob.key_package().unwrap()).unwrap().welcome;
         peers.push(bob.join(&w).unwrap());
         ids.push(g.id());
     }
@@ -150,7 +157,10 @@ fn several_groups_are_listed_and_loaded() {
     for (id, peer) in ids.iter().zip(peers.iter_mut()) {
         let mut g = alice.load_group(id).unwrap();
         let m = g.send(&alice, id).unwrap();
-        assert_eq!(peer.receive(&bob, &m).unwrap(), Incoming::Message { from: "alice".into(), body: id.clone() });
+        assert_eq!(
+            peer.receive(&bob, &m).unwrap(),
+            Incoming::Message { from: alice.member_id(), name: "alice".into(), body: id.clone() }
+        );
     }
     assert!(matches!(alice.load_group(b"no such group"), Err(TreeError::NoSuchGroup)));
 }
@@ -224,10 +234,10 @@ fn two_databases_do_not_interfere() {
 
     let mut a = alice.create_group().unwrap();
     let mut a_only = alice.create_group().unwrap();
-    let w = a.add(&alice, &bob.key_package().unwrap()).unwrap().welcome;
+    let w = a.add_now(&alice, &bob.key_package().unwrap()).unwrap().welcome;
     let mut b = bob.join(&w).unwrap();
     let m = a.send(&alice, b"one").unwrap();
-    says(b.receive(&bob, &m).unwrap(), "alice", "one");
+    says(b.receive(&bob, &m).unwrap(), &alice, "one");
     let _ = a_only.send(&alice, b"just me").unwrap();
 
     assert_eq!(alice.group_ids().unwrap(), vec![a.id(), a_only.id()]);
@@ -257,7 +267,7 @@ fn two_databases_do_not_interfere() {
     let mut a = alice.load_group(&alice.group_ids().unwrap()[0]).unwrap();
     let mut b = bob.load_group(&bob.group_ids().unwrap()[0]).unwrap();
     let m = b.send(&bob, b"two").unwrap();
-    says(a.receive(&alice, &m).unwrap(), "bob", "two");
+    says(a.receive(&alice, &m).unwrap(), &bob, "two");
 }
 
 /// The persistent client can be moved to another thread (needed for the
@@ -276,11 +286,77 @@ fn persistent_and_in_memory_clients_mix() {
     let alice = Client::create(&p, "pw", "alice").unwrap();
     let bob = Client::new("bob").unwrap(); // in memory
     let mut b = bob.create_group().unwrap();
-    let w = b.add(&bob, &alice.key_package().unwrap()).unwrap().welcome;
+    let w = b.add_now(&bob, &alice.key_package().unwrap()).unwrap().welcome;
     let a = alice.join(&w).unwrap();
     let (alice, mut a) = restart(alice, a, &p, "pw");
     let m = b.send(&bob, b"to disk").unwrap();
-    says(a.receive(&alice, &m).unwrap(), "bob", "to disk");
+    says(a.receive(&alice, &m).unwrap(), &bob, "to disk");
     let m = a.send(&alice, b"from disk").unwrap();
-    says(b.receive(&bob, &m).unwrap(), "alice", "from disk");
+    says(b.receive(&bob, &m).unwrap(), &alice, "from disk");
+}
+
+/// F-003: a pending commit is stored with the group. After a restart the
+/// same bytes can be resubmitted and then confirmed (or discarded).
+#[test]
+fn pending_commit_survives_restart() {
+    let dir = TempDir::new("pending");
+    let pa = dir.db("alice");
+    let alice = Client::create(&pa, "pw", "alice").unwrap();
+    let bob = Client::new("bob").unwrap();
+    let mut a = alice.create_group().unwrap();
+    let w = a.add_now(&alice, &bob.key_package().unwrap()).unwrap().welcome;
+    let mut b = bob.join(&w).unwrap();
+
+    let p = a.refresh_keys(&alice).unwrap();
+    let (alice, mut a) = restart(alice, a, &pa, "pw");
+    assert_eq!(a.pending_commit(), Some(p.clone()), "same bytes after restart");
+    assert!(matches!(a.refresh_keys(&alice), Err(TreeError::CommitPending)));
+    a.discard_commit(&alice).unwrap();
+    let (alice, mut a) = restart(alice, a, &pa, "pw");
+    assert!(a.pending_commit().is_none(), "discard is stored");
+
+    let p = a.refresh_keys(&alice).unwrap();
+    let (alice, mut a) = restart(alice, a, &pa, "pw");
+    assert_eq!(a.confirm_commit(&alice).unwrap(), 2);
+    let (alice, mut a) = restart(alice, a, &pa, "pw");
+    assert!(a.pending_commit().is_none());
+    assert_eq!(a.epoch(), 2);
+    b.receive(&bob, &p.commit).unwrap();
+    assert_eq!(a.verification_code(), b.verification_code());
+    // The own-commit echo is recognised after a restart too.
+    assert_eq!(a.receive(&alice, &p.commit).unwrap(), Incoming::OwnEcho);
+}
+
+/// F-002: past-epoch envelope keys and members are stored, so a message of
+/// the previous epoch is still read after a restart.
+#[test]
+fn past_epoch_message_after_restart() {
+    let dir = TempDir::new("past");
+    let pa = dir.db("alice");
+    let alice = Client::create(&pa, "pw", "alice").unwrap();
+    let bob = Client::new("bob").unwrap();
+    let mut a = alice.create_group().unwrap();
+    let w = a.add_now(&alice, &bob.key_package().unwrap()).unwrap().welcome;
+    let mut b = bob.join(&w).unwrap();
+    let in_flight = b.send(&bob, b"sent in epoch 1").unwrap();
+    a.refresh_now(&alice).unwrap();
+    let (alice, mut a) = restart(alice, a, &pa, "pw");
+    says(a.receive(&alice, &in_flight).unwrap(), &bob, "sent in epoch 1");
+}
+
+/// A joined device's "refresh your key soon" flag survives a restart.
+#[test]
+fn should_refresh_survives_restart() {
+    let dir = TempDir::new("refresh");
+    let pb = dir.db("bob");
+    let alice = Client::new("alice").unwrap();
+    let bob = Client::create(&pb, "pw", "bob").unwrap();
+    let mut a = alice.create_group().unwrap();
+    let w = a.add_now(&alice, &bob.key_package().unwrap()).unwrap().welcome;
+    let b = bob.join(&w).unwrap();
+    let (bob, mut b) = restart(bob, b, &pb, "pw");
+    assert!(b.should_refresh_keys());
+    b.refresh_now(&bob).unwrap();
+    let (_bob, b) = restart(bob, b, &pb, "pw");
+    assert!(!b.should_refresh_keys());
 }

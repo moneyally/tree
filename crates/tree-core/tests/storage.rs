@@ -382,3 +382,87 @@ fn app_data_round_trip() {
     assert_eq!(alice.app_data_keys("").unwrap().len(), 2);
     assert!(alice.app_data_keys("zzz").unwrap().is_empty());
 }
+
+fn msg(g: &[u8], id: &str, at: i64, text: &str) -> tree_core::storage::messages::StoredMessage {
+    tree_core::storage::messages::StoredMessage {
+        group_id: g.to_vec(),
+        id: id.into(),
+        sender: "ab".repeat(32),
+        received_at: at,
+        kind: "text".into(),
+        text: Some(text.into()),
+        data: None,
+        edited_at: None,
+        deleted: false,
+        expires_at: None,
+        reactions: Default::default(),
+    }
+}
+
+/// Message history: store, duplicates, edit, delete, reactions, paging,
+/// search, expiry; encrypted on disk and kept across restarts.
+#[test]
+fn message_history() {
+    let dir = TempDir::new("history");
+    let p = dir.db("alice");
+    let c = Client::create(&p, "pw", "alice").unwrap();
+    let g = b"group-1";
+    for i in 0..5 {
+        assert!(c.store_message(&msg(g, &format!("m{i}"), 100 + i, &format!("hello {i} 9f1d"))).unwrap());
+    }
+    assert!(!c.store_message(&msg(g, "m0", 999, "replay")).unwrap(), "duplicate ignored");
+    assert_eq!(c.message(g, "m0").unwrap().unwrap().text.as_deref(), Some("hello 0 9f1d"));
+    c.store_message(&msg(b"group-2", "x", 50, "other group 50%_off")).unwrap();
+
+    // paging: newest 2, then the 2 before
+    let last2 = c.messages(g, 2, None).unwrap();
+    assert_eq!(last2.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec!["m3", "m4"]);
+    let prev = c.messages(g, 2, Some(103)).unwrap();
+    assert_eq!(prev.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec!["m1", "m2"]);
+
+    c.edit_message(g, "m1", "edited", 200).unwrap();
+    let m1 = c.message(g, "m1").unwrap().unwrap();
+    assert_eq!((m1.text.as_deref(), m1.edited_at), (Some("edited"), Some(200)));
+
+    c.react(g, "m2", "aa", "👍", false).unwrap();
+    c.react(g, "m2", "bb", "👍", false).unwrap();
+    c.react(g, "m2", "aa", "👍", false).unwrap();
+    assert_eq!(c.message(g, "m2").unwrap().unwrap().reactions["👍"], vec!["bb", "aa"]);
+    c.react(g, "m2", "bb", "👍", true).unwrap();
+    c.react(g, "m2", "aa", "👍", true).unwrap();
+    assert!(c.message(g, "m2").unwrap().unwrap().reactions.is_empty());
+    c.react(g, "nope", "aa", "x", false).unwrap();
+
+    c.delete_message(g, "m3").unwrap();
+    let m3 = c.message(g, "m3").unwrap().unwrap();
+    assert!(m3.deleted && m3.text.is_none());
+    c.edit_message(g, "m3", "back from the dead", 300).unwrap();
+    assert!(c.message(g, "m3").unwrap().unwrap().text.is_none(), "a deleted message stays deleted");
+    c.react(g, "m3", "aa", "x", false).unwrap();
+    assert!(c.message(g, "m3").unwrap().unwrap().reactions.is_empty());
+
+    // search: substring, not deleted, % and _ are literal
+    let hits = c.search_messages("9F1D", 10).unwrap();
+    assert_eq!(hits.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec!["m4", "m2", "m0"]);
+    assert_eq!(c.search_messages("50%_", 10).unwrap().len(), 1);
+    assert!(c.search_messages("0%o", 10).unwrap().is_empty());
+
+    // expiry
+    let mut e = msg(g, "temp", 400, "disappearing");
+    e.expires_at = Some(500);
+    c.store_message(&e).unwrap();
+    c.set_message_data(g, "temp", Some(b"data")).unwrap();
+    assert_eq!(c.message(g, "temp").unwrap().unwrap().data.as_deref(), Some(&b"data"[..]));
+    assert_eq!(c.purge_expired_messages(499).unwrap(), 0);
+    assert_eq!(c.purge_expired_messages(500).unwrap(), 1);
+    assert!(c.message(g, "temp").unwrap().is_none());
+
+    // restart, then nothing readable on disk
+    drop(c);
+    let c = Client::open(&p, "pw").unwrap();
+    assert_eq!(c.messages(g, 10, None).unwrap().len(), 5);
+    assert_eq!(c.forget_messages(b"group-2").unwrap(), 1);
+    drop(c);
+    let raw = std::fs::read(&p).unwrap();
+    assert!(!raw.windows(4).any(|w| w == b"9f1d"));
+}

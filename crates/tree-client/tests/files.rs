@@ -16,7 +16,7 @@ fn files_end_to_end() {
     bob.sync(0).unwrap();
 
     let photo: Vec<u8> = (0..200_000u32).map(|i| (i % 253) as u8).chain(b"PLAINTEXT-MARKER-91c2".iter().copied()).collect();
-    let sent = alice.send_file(&g, &photo, "산.jpg", "image/jpeg").unwrap();
+    let sent = alice.send_file(&g, &photo, "산.jpg", "image/jpeg", false).unwrap();
     let ev = bob.sync(0).unwrap();
     let file = ev
         .iter()
@@ -54,6 +54,6 @@ fn files_end_to_end() {
     // The admin releases chat.media: nobody can send attachments.
     alice.set_chat_feature(&g, "chat.media", false, None).unwrap();
     bob.sync(0).unwrap();
-    assert!(matches!(bob.send_file(&g, b"x", "x", "text/plain"), Err(tree_client::Error::Feature(c)) if c == "LOCKED_BY_CHAT"));
-    assert!(alice.send_file(&g, b"x", "x", "text/plain").is_err());
+    assert!(matches!(bob.send_file(&g, b"x", "x", "text/plain", false), Err(tree_client::Error::Feature(c)) if c == "LOCKED_BY_CHAT"));
+    assert!(alice.send_file(&g, b"x", "x", "text/plain", false).is_err());
 }

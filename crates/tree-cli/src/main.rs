@@ -20,7 +20,9 @@ commands:
   username-release                       drop my @username
   find <@name>                           account id behind a @username
   members <group>                        members, devices, names
-  send <group> <text>                    send a message
+  send <group> <text>                    send a message (prints its id)
+  edit <group> <id> <text> | delete <group> <id> | react <group> <id> <emoji>
+  history <group> | search <text>        messages kept on this device
   send-file <group> <path>               send an encrypted attachment
   download <file-id> <path>              fetch, check and save a received attachment
   sync [wait-seconds]                    receive and print
@@ -145,7 +147,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         ["send-file", g, path] => {
             let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
             let name = std::path::Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or("file");
-            let f = s.send_file(&hex_arg(g)?, &bytes, name, "application/octet-stream").map_err(e)?;
+            let f = s.send_file(&hex_arg(g)?, &bytes, name, "application/octet-stream", false).map_err(e)?;
             println!("sent {} ({} bytes) as attachment {}", f.name, f.size, f.id);
         }
         ["download", id, out] => {
@@ -247,9 +249,38 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 );
             }
         }
-        ["send", g, text @ ..] => {
-            let n = s.send_text(&hex_arg(g)?, &text.join(" ")).map_err(e)?;
-            println!("delivered to {n} device(s)");
+        ["send", g, text @ ..] => println!("sent message {}", s.send_text(&hex_arg(g)?, &text.join(" ")).map_err(e)?),
+        ["edit", g, id, text @ ..] => {
+            s.edit(&hex_arg(g)?, id, &text.join(" ")).map_err(e)?;
+            println!("edited");
+        }
+        ["delete", g, id] => {
+            s.delete_for_all(&hex_arg(g)?, id).map_err(e)?;
+            println!("deleted for everyone");
+        }
+        ["react", g, id, emoji] => {
+            s.react(&hex_arg(g)?, id, emoji, false).map_err(e)?;
+            println!("reacted");
+        }
+        ["history", g] => {
+            for m in s.history(&hex_arg(g)?, 50).map_err(e)? {
+                let body = if m.deleted { "(deleted)".to_string() } else { m.text.clone().unwrap_or_default() };
+                let reacts: Vec<String> = m.reactions.iter().map(|(e, who)| format!("{e}{}", who.len())).collect();
+                println!(
+                    "{}  {}  {}{}{} {}",
+                    m.id,
+                    &m.sender[..8],
+                    body,
+                    if m.edited_at.is_some() { " (edited)" } else { "" },
+                    if m.expires_at.is_some() { " (disappears)" } else { "" },
+                    reacts.join(" ")
+                );
+            }
+        }
+        ["search", text @ ..] => {
+            for m in s.search(&text.join(" ")).map_err(e)? {
+                println!("[{}] {}  {}", &hex(&m.group_id)[..8], m.id, m.text.unwrap_or_default());
+            }
         }
         ["sync", more @ ..] => {
             let wait = more.first().map(|w| w.parse().map_err(|_| "wait must be a number")).transpose()?.unwrap_or(0);
@@ -274,13 +305,21 @@ fn run(args: Vec<String>) -> Result<(), String> {
 
 fn print_event(ev: &Event) {
     match ev {
-        Event::Text { group, from, name, text, request } => println!(
-            "[{}]{} {} ({}): {}",
+        Event::Text { group, id, from, name, text, request } => println!(
+            "[{}]{} {} ({}): {}   #{id}",
             &hex(group)[..8],
             if *request { " [request]" } else { "" },
             name.as_deref().unwrap_or("?"),
             &from.to_hex()[..8],
             text
+        ),
+        Event::Edited { group, id, from, text } => println!("[{}] {} edited #{id}: {text}", &hex(group)[..8], &from.to_hex()[..8]),
+        Event::Deleted { group, id, from } => println!("[{}] {} deleted #{id}", &hex(group)[..8], &from.to_hex()[..8]),
+        Event::Reaction { group, id, from, emoji, remove } => println!(
+            "[{}] {} {} {emoji} on #{id}",
+            &hex(group)[..8],
+            &from.to_hex()[..8],
+            if *remove { "took back" } else { "reacted" }
         ),
         Event::File { group, from, name, file, request } => println!(
             "[{}]{} {} ({}) sent a file: {} ({} bytes): tree download {} <path>",

@@ -19,7 +19,8 @@ Schema version: `PRAGMA user_version`.
 | Version | Change |
 | --- | --- |
 | 1 | `tree_meta`, `tree_groups` + OpenMLS tables |
-| 2 | `tree_group_state` (HANDOFF 3.1), `tree_app` (HANDOFF 3.3). Version-1 files are upgraded on open; other versions are refused |
+| 2 | `tree_group_state` (HANDOFF 3.1) |
+| 3 | `tree_app` (app data), `tree_messages` (history). Versions 1 and 2 are upgraded on open (all later tables are created idempotently); newer versions are refused |
 
 ### 1.1 Key header `<db>.hdr` (not secret)
 
@@ -37,7 +38,25 @@ CREATE TABLE tree_groups (
 );
 CREATE TABLE tree_group_state (group_id BLOB PRIMARY KEY, state BLOB NOT NULL) WITHOUT ROWID;
 CREATE TABLE tree_app (key TEXT PRIMARY KEY, value BLOB NOT NULL) WITHOUT ROWID;
+CREATE TABLE tree_messages (
+    group_id    BLOB NOT NULL,
+    id          TEXT NOT NULL,       -- sender-chosen random id (hex)
+    sender      TEXT NOT NULL,       -- member id (hex)
+    received_at INTEGER NOT NULL,    -- this device's clock
+    kind        TEXT NOT NULL,       -- text | file
+    text        TEXT,                -- NULL once deleted for everyone
+    data        BLOB,                -- e.g. the file reference; NULL after a view-once download
+    edited_at   INTEGER,
+    deleted     INTEGER NOT NULL DEFAULT 0,
+    expires_at  INTEGER,             -- disappearing messages
+    reactions   TEXT NOT NULL DEFAULT '{}',  -- JSON emoji -> member ids
+    PRIMARY KEY (group_id, id)
+) WITHOUT ROWID;
 ```
+
+History is plaintext under the database encryption: forward secrecy does not
+cover it (PROTOCOL.md 6.3 item 6). Deleted and expired rows are overwritten
+(`secure_delete`).
 
 `tree_app`: app data under the same encryption (`Client::app_data`,
 `set_app_data`, `app_data_keys`). Keys used by `tree-client` are listed in
@@ -95,8 +114,8 @@ needs a codec for every stored type and a migration; not done.
 
 ### 1.4 Not stored yet
 
-Message history, contacts, pinned safety numbers and feature-registry state
-are not stored yet. When they are
+Contacts, pinned devices and the user's settings are app data (`tree_app`,
+keys in APP_PROTOCOL.md section 6). When they are
 added they belong in new `tree_*` tables of the same encrypted file, listed
 here.
 

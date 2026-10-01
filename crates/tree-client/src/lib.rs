@@ -7,12 +7,14 @@
 //! or in `tree-core`.
 
 pub mod api;
+pub mod messages;
 pub mod payload;
 pub mod requests;
 pub mod settings;
 pub mod username;
 
 pub use requests::GroupStatus;
+pub use tree_core::storage::messages::StoredMessage;
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -61,7 +63,13 @@ pub const MAX_HELD: usize = 256;
 pub enum Event {
     /// `name` is the sender's display name if known (shared inside the group).
     /// `request`: the group is still a message request (not yet accepted).
-    Text { group: Vec<u8>, from: MemberId, name: Option<String>, text: String, request: bool },
+    Text { group: Vec<u8>, id: String, from: MemberId, name: Option<String>, text: String, request: bool },
+    /// The sender edited its message `id`.
+    Edited { group: Vec<u8>, id: String, from: MemberId, text: String },
+    /// The sender deleted its message `id` for everyone.
+    Deleted { group: Vec<u8>, id: String, from: MemberId },
+    /// A member reacted to message `id` (or took the reaction back).
+    Reaction { group: Vec<u8>, id: String, from: MemberId, emoji: String, remove: bool },
     /// An attachment arrived; fetch it with [`Session::download`].
     File { group: Vec<u8>, from: MemberId, name: Option<String>, file: FileInfo, request: bool },
     /// A stranger started a chat (`direct`) or added this device to a
@@ -603,64 +611,6 @@ impl Session {
         self.change_group_settings(gid, &s)
     }
 
-    /// True if the group's admins allow attachments (`chat.media`, applied by default).
-    fn media_allowed(&mut self, gid: &[u8]) -> Result<bool, Error> {
-        Ok(self.group_settings(gid)?.features.get("chat.media").is_none_or(|s| s.applied))
-    }
-
-    /// Encrypts `bytes` with a fresh key, uploads the ciphertext and sends the
-    /// key inside the group (PROTOCOL.md 6.12). Refused if the group's admins
-    /// released `chat.media`.
-    pub fn send_file(&mut self, gid: &[u8], bytes: &[u8], name: &str, mime: &str) -> Result<FileInfo, Error> {
-        if !self.media_allowed(gid)? {
-            return Err(Error::Feature("LOCKED_BY_CHAT".into()));
-        }
-        let (ct, fk) = tree_core::attachment::encrypt(bytes)?;
-        let id = self.api.upload(&self.creds, &ct)?;
-        let info = FileInfo {
-            id,
-            key: api::b64(&fk.key[..]),
-            nonce: api::b64(&fk.nonce_prefix),
-            size: fk.size,
-            ct_sha256: hex::encode(fk.ciphertext_sha256),
-            pt_sha256: hex::encode(fk.plaintext_sha256),
-            name: name.to_string(),
-            mime: mime.to_string(),
-        };
-        self.send_payload(gid, &Payload::File(info.clone()))?;
-        Ok(info)
-    }
-
-    /// Downloads and opens an attachment; fails if anything does not match
-    /// the message (tampering, wrong key, different content).
-    pub fn download(&self, f: &FileInfo) -> Result<Vec<u8>, Error> {
-        let bad = || Error::Protocol("malformed file reference".into());
-        let key: [u8; 32] = api::unb64(&f.key)?.try_into().map_err(|_| bad())?;
-        let nonce: [u8; 7] = api::unb64(&f.nonce)?.try_into().map_err(|_| bad())?;
-        let ct_h: [u8; 32] = hex::decode(&f.ct_sha256).map_err(|_| bad())?.try_into().map_err(|_| bad())?;
-        let pt_h: [u8; 32] = hex::decode(&f.pt_sha256).map_err(|_| bad())?.try_into().map_err(|_| bad())?;
-        let fk = tree_core::attachment::FileKey {
-            key: Zeroizing::new(key),
-            nonce_prefix: nonce,
-            size: f.size,
-            ciphertext_sha256: ct_h,
-            plaintext_sha256: pt_h,
-        };
-        let ct = self.api.download(&self.creds, &f.id)?;
-        Ok(tree_core::attachment::decrypt(&ct, &fk)?)
-    }
-
-    /// A file reference received earlier, by attachment id.
-    pub fn received_file(&self, id: &str) -> Result<Option<FileInfo>, Error> {
-        Ok(match self.client.app_data(&format!("file/{id}"))? {
-            Some(v) => Some(serde_json::from_slice(&v).map_err(|_| Error::Protocol("damaged file reference".into()))?),
-            None => None,
-        })
-    }
-
-    pub fn send_text(&mut self, gid: &[u8], text: &str) -> Result<usize, Error> {
-        self.send_payload(gid, &Payload::Text { text: text.to_string() })
-    }
 
     /// Asks the others to remove this device (PROTOCOL.md 6.5).
     pub fn leave(&mut self, gid: &[u8]) -> Result<usize, Error> {
@@ -668,7 +618,7 @@ impl Session {
     }
 
     /// Returns how many devices the message was delivered to.
-    fn send_payload(&mut self, gid: &[u8], p: &Payload) -> Result<usize, Error> {
+    pub(crate) fn send_payload(&mut self, gid: &[u8], p: &Payload) -> Result<usize, Error> {
         let bytes = self.with(gid, |g, c| g.send(c, &p.encode()))?;
         let to = self.other_devices(gid)?;
         if to.is_empty() {
@@ -682,6 +632,7 @@ impl Session {
     /// something to arrive), acknowledges everything processed, and retries
     /// held messages after any epoch change.
     pub fn sync(&mut self, wait: u64) -> Result<Vec<Event>, Error> {
+        self.client.purge_expired_messages(messages::now())?;
         let msgs = self.api.fetch(&self.creds, wait)?;
         let mut events = Vec::new();
         let mut ids = Vec::new();
@@ -785,16 +736,14 @@ impl Session {
     fn on_payload(&mut self, gid: &[u8], from: MemberId, body: &[u8], events: &mut Vec<Event>) -> Result<(), Error> {
         let me = self.member_id().to_hex();
         match Payload::decode(body) {
-            Some(Payload::Text { text }) => {
+            Some(p @ (Payload::Text { .. } | Payload::Edit { .. } | Payload::Delete { .. } | Payload::React { .. } | Payload::File(_))) => {
                 if let Some(a) = self.map(&accounts_key(gid))?.get(&from.to_hex()) {
                     if self.is_blocked(a)? {
                         events.push(Event::Dropped { reason: "from a blocked account".into() });
                         return Ok(());
                     }
                 }
-                let name = self.names(gid)?.get(&from.to_hex()).cloned();
-                let request = matches!(self.group_status(gid)?, GroupStatus::Request { .. });
-                events.push(Event::Text { group: gid.to_vec(), from, name, text, request })
+                self.on_message(gid, from, p, events)?;
             }
             Some(Payload::Roster { devices, names, accounts }) => {
                 // Only entries for current members are taken; names only as
@@ -845,22 +794,6 @@ impl Session {
                 events.push(Event::Profile { group: gid.to_vec(), member: from, name });
             }
             Some(Payload::Leave) => events.push(Event::LeaveRequested { group: gid.to_vec(), member: from }),
-            Some(Payload::File(file)) => {
-                if !self.media_allowed(gid)? {
-                    events.push(Event::Dropped { reason: "attachments are released in this group (chat.media)".into() });
-                    return Ok(());
-                }
-                if let Some(a) = self.map(&accounts_key(gid))?.get(&from.to_hex()) {
-                    if self.is_blocked(a)? {
-                        events.push(Event::Dropped { reason: "from a blocked account".into() });
-                        return Ok(());
-                    }
-                }
-                self.client.set_app_data(&format!("file/{}", file.id), Some(&serde_json::to_vec(&file).expect("JSON")))?;
-                let name = self.names(gid)?.get(&from.to_hex()).cloned();
-                let request = matches!(self.group_status(gid)?, GroupStatus::Request { .. });
-                events.push(Event::File { group: gid.to_vec(), from, name, file, request })
-            }
             None => events.push(Event::Dropped { reason: format!("unsupported message from {}", &from.to_hex()[..8]) }),
         }
         Ok(())

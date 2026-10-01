@@ -15,11 +15,14 @@ One JSON object per application message, UTF-8, field `t` names the type:
 
 | `t` | Fields | Meaning | Who may send |
 | --- | --- | --- | --- |
-| `text` | `text` | a chat message | any member |
+| `text` | `id` (16 random bytes, hex), `text` | a chat message | any member |
+| `edit` | `id`, `text` | replaces the text of the sender's own message `id` | its sender, if `chat.edit` is applied, within the window |
+| `delete` | `id` | deletes the sender's own message `id` for everyone | its sender, if `chat.delete_for_all` is applied, within the window |
+| `react` | `id`, `emoji` (1 to 8 characters), `remove` (optional) | adds or takes back a reaction | any member, if `chat.reactions` is applied |
 | `profile` | `name` | the sender's own display name | any member, about itself |
 | `roster` | `devices`: member id (hex) -> device id; `names` (optional): member id -> name; `accounts` (optional): member id -> account id | who is reachable at which server device, the sender's view of names, and which account each device belongs to | the member that just added devices (others may too) |
 | `leave` | — | the sender asks to be removed (PROTOCOL.md 6.5) | any member |
-| `file` | `id`, `key` (base64), `nonce` (base64, 7 bytes), `size`, `ct_sha256`, `pt_sha256` (hex), `name`, `mime` | an encrypted attachment (PROTOCOL.md 6.12) | any member, if `chat.media` is applied |
+| `file` | `msg_id`, `view_once` (optional), `id`, `key` (base64), `nonce` (base64, 7 bytes), `size`, `ct_sha256`, `pt_sha256` (hex), `name`, `mime` | an encrypted attachment (PROTOCOL.md 6.12) | any member, if `chat.media` is applied (and `chat.view_once` for view-once) |
 
 ```json
 {"t":"text","text":"안녕"}
@@ -55,7 +58,30 @@ as text. Message padding (256 bytes) is applied by MLS below this layer.
 - **Recipients.** Every message goes to the devices in the roster except the
   sender's own device. Commits also go to devices being removed.
 
-## 3. Requests, blocking, who may add me
+## 3. Chat settings every device enforces
+
+Set by admins in the group settings (PROTOCOL.md 6.11), checked by the
+sending device before sending and by every receiving device on arrival
+(`crates/tree-client/src/messages.rs`):
+
+| Setting | Default | Effect |
+| --- | --- | --- |
+| `chat.media` | applied | files allowed |
+| `chat.edit` | applied, option = window in seconds (default 86400) | the sender may edit its own text |
+| `chat.delete_for_all` | applied, option = window (default 86400) | the sender may delete its own message for everyone; a placeholder stays so a late edit cannot revive it |
+| `chat.reactions` | applied | reactions allowed |
+| `chat.view_once` | applied | view-once files allowed; the reference is deleted after the first successful download (and the sender keeps none) |
+| `chat.disappearing` | released; option = seconds | every message expires that long after it arrives on each device and is deleted from its history |
+
+Windows and expiry are measured with the device's own clock from when it
+received (or sent) the original, never from a time the sender claims. A
+modified client can still keep copies of anything it received; these
+settings bind honest devices, not a member who wants to keep evidence.
+
+History is kept in the encrypted device database (`tree_messages`) and can be
+searched on the device while `user.search_index` is applied.
+
+## 4. Requests, blocking, who may add me
 
 A welcome is always processed (MLS needs it), but the group starts as a
 request until the adder's account is known from its `roster`. Then
@@ -78,7 +104,7 @@ User settings (`apply` / `release` of user-scope features) are kept in the
 device database and checked against the registry (permanent locks such as
 `user.key_change_warning` cannot be released).
 
-## 4. Client behaviour (`tree_client::Session`)
+## 5. Client behaviour (`tree_client::Session`)
 
 | Step | Behaviour |
 | --- | --- |
@@ -93,7 +119,7 @@ device database and checked against the registry (permanent locks such as
 Not yet: holding expiry (7 days), retry limits for commits, contacts and
 safety numbers, message history.
 
-## 5. What the client stores
+## 6. What the client stores
 
 In the same encrypted database as the core (`tree_app` table, SCHEMA.md):
 
@@ -111,4 +137,5 @@ In the same encrypted database as the core (`tree_app` table, SCHEMA.md):
 | `gstatus/<group hex>` | request (with adder account) or declined; absent = accepted |
 | `feature/<key>` | the user's setting: applied or released, option |
 | `profile/username` | the own @username |
-| `file/<attachment id>` | a received `file` reference (to download later) |
+| `file/<attachment id>` | a received `file` reference and its group (deleted after a view-once download) |
+| table `tree_messages` | message history (SCHEMA.md 1.2) |

@@ -10,8 +10,20 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum Payload {
-    /// A chat message.
-    Text { text: String },
+    /// A chat message. `id`: random, unique in the group (hex), used by
+    /// edits, deletions and reactions.
+    Text { id: String, text: String },
+    /// The sender replaces the text of its own message `id` (chat.edit).
+    Edit { id: String, text: String },
+    /// The sender deletes its own message `id` for everyone (chat.delete_for_all).
+    Delete { id: String },
+    /// The sender adds (or with `remove`, takes back) a reaction (chat.reactions).
+    React {
+        id: String,
+        emoji: String,
+        #[serde(default)]
+        remove: bool,
+    },
     /// Member id (hex) -> server device id, sent by whoever added devices,
     /// to everyone (PROTOCOL.md Q8: the app keeps this mapping). A wrong
     /// entry only misroutes messages; it cannot reveal anything. `names` are
@@ -39,6 +51,12 @@ pub enum Payload {
 /// end-to-end encrypted message.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileInfo {
+    /// Message id in the group (as for `text`).
+    #[serde(default)]
+    pub msg_id: String,
+    /// Opened once, then the reference is deleted (chat.view_once).
+    #[serde(default)]
+    pub view_once: bool,
     /// Server attachment id.
     pub id: String,
     /// File key (base64, 32 bytes) and STREAM nonce prefix (base64, 7 bytes).
@@ -68,8 +86,19 @@ mod tests {
 
     #[test]
     fn round_trip_and_format() {
-        let t = Payload::Text { text: "안녕".into() };
-        assert_eq!(String::from_utf8(t.encode()).unwrap(), r#"{"t":"text","text":"안녕"}"#);
+        let t = Payload::Text { id: "01".into(), text: "안녕".into() };
+        assert_eq!(String::from_utf8(t.encode()).unwrap(), r#"{"t":"text","id":"01","text":"안녕"}"#);
+        for p in [
+            Payload::Edit { id: "01".into(), text: "x".into() },
+            Payload::Delete { id: "01".into() },
+            Payload::React { id: "01".into(), emoji: "👍".into(), remove: true },
+        ] {
+            assert_eq!(Payload::decode(&p.encode()), Some(p));
+        }
+        assert_eq!(
+            Payload::decode(br#"{"t":"react","id":"01","emoji":"x"}"#),
+            Some(Payload::React { id: "01".into(), emoji: "x".into(), remove: false })
+        );
         assert_eq!(Payload::decode(&t.encode()), Some(t));
         let r = Payload::Roster {
             devices: [("ab".to_string(), "dev".to_string())].into(),

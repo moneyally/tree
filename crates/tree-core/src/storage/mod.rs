@@ -18,6 +18,7 @@
 
 mod forward;
 pub mod key;
+pub mod messages;
 #[cfg(test)]
 mod tests;
 
@@ -37,13 +38,31 @@ pub use key::{DbKey, KdfParams, KeyHeader, KeySource, Passphrase};
 use crate::{error::TreeError, provider::TreeProvider};
 
 /// Version of Tree's own tables (`PRAGMA user_version`).
-/// 1: `tree_meta`, `tree_groups`. 2: + `tree_group_state`, `tree_app`.
-const TREE_SCHEMA_VERSION: i64 = 2;
+/// 1: `tree_meta`, `tree_groups`. 2: + `tree_group_state`.
+/// 3: + `tree_app`, `tree_messages`.
+const TREE_SCHEMA_VERSION: i64 = 3;
 
-/// Tree tables added after version 1 (idempotent).
+/// Tree tables added after version 1 (all idempotent, so any older
+/// database is brought up to date by running them).
 const TREE_TABLES_V2: &str =
     "CREATE TABLE IF NOT EXISTS tree_group_state (group_id BLOB PRIMARY KEY, state BLOB NOT NULL) WITHOUT ROWID;
-     CREATE TABLE IF NOT EXISTS tree_app (key TEXT PRIMARY KEY, value BLOB NOT NULL) WITHOUT ROWID;";
+     CREATE TABLE IF NOT EXISTS tree_app (key TEXT PRIMARY KEY, value BLOB NOT NULL) WITHOUT ROWID;
+     CREATE TABLE IF NOT EXISTS tree_messages (
+         group_id    BLOB NOT NULL,
+         id          TEXT NOT NULL,
+         sender      TEXT NOT NULL,
+         received_at INTEGER NOT NULL,
+         kind        TEXT NOT NULL,
+         text        TEXT,
+         data        BLOB,
+         edited_at   INTEGER,
+         deleted     INTEGER NOT NULL DEFAULT 0,
+         expires_at  INTEGER,
+         reactions   TEXT NOT NULL DEFAULT '{}',
+         PRIMARY KEY (group_id, id)
+     ) WITHOUT ROWID;
+     CREATE INDEX IF NOT EXISTS tree_messages_time ON tree_messages(group_id, received_at);
+     CREATE INDEX IF NOT EXISTS tree_messages_expiry ON tree_messages(expires_at) WHERE expires_at IS NOT NULL;";
 
 /// Serialises OpenMLS objects as JSON before they are stored (and encrypted
 /// by SQLCipher). JSON is the format the OpenMLS storage crates are tested with.

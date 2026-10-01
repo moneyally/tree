@@ -11,6 +11,7 @@ pub mod franking;
 pub mod invites;
 pub mod messages;
 pub mod payload;
+pub mod refresh;
 pub mod requests;
 pub mod settings;
 pub mod username;
@@ -238,6 +239,7 @@ pub struct Session {
     api: Api,
     creds: Creds,
     groups: HashMap<Vec<u8>, Group>,
+    refresh_policy: refresh::RefreshPolicy,
 }
 
 impl Session {
@@ -289,7 +291,7 @@ impl Session {
         client.set_app_data(K_ACCOUNT, Some(creds.account_id.as_bytes()))?;
         client.set_app_data(K_DEVICE, Some(creds.device_id.as_bytes()))?;
         client.set_app_data(K_AUTH_KEY, Some(&seed[..]))?;
-        let mut s = Self { client, api, creds, groups: HashMap::new() };
+        let mut s = Self { client, api, creds, groups: HashMap::new(), refresh_policy: Default::default() };
         s.ensure_key_packages()?;
         Ok(s)
     }
@@ -306,7 +308,7 @@ impl Session {
         let seed: Zeroizing<Vec<u8>> = Zeroizing::new(client.app_data(K_AUTH_KEY)?.unwrap_or_default());
         let seed: [u8; 32] = seed.as_slice().try_into().map_err(|_| Error::Protocol("bad auth key".into()))?;
         let creds = Creds { account_id: text(K_ACCOUNT)?, device_id: text(K_DEVICE)?, key: SigningKey::from_bytes(&seed) };
-        let mut s = Self { client, api, creds, groups: HashMap::new() };
+        let mut s = Self { client, api, creds, groups: HashMap::new(), refresh_policy: Default::default() };
         let mut outcomes = Vec::new();
         for gid in s.client.group_ids()? {
             if s.group(&gid)?.pending_commit().is_some() {
@@ -455,6 +457,7 @@ impl Session {
         let gid = g.id();
         self.groups.insert(gid.clone(), g);
         self.init_group_maps(&gid)?;
+        self.note_refreshed(&gid)?;
         Ok(gid)
     }
 
@@ -628,14 +631,23 @@ impl Session {
         let removed_devices = members.iter().filter_map(|m| roster.get(&m.to_hex()).cloned()).collect();
         self.with(gid, |g, c| g.remove(c, members))?;
         self.save_pending(gid, &PendingExtra { added: vec![], removed_devices, link: None })?;
-        self.submit(gid)
+        let o = self.submit(gid)?;
+        if let CommitOutcome::Accepted { .. } = o {
+            // A remove carries an UpdatePath: this device's keys are new.
+            self.note_refreshed(gid)?;
+        }
+        Ok(o)
     }
 
     /// Refreshes this device's keys in the group (post-compromise security).
     pub fn refresh_keys(&mut self, gid: &[u8]) -> Result<CommitOutcome, Error> {
         self.with(gid, |g, c| g.refresh_keys(c))?;
         self.save_pending(gid, &PendingExtra::default())?;
-        self.submit(gid)
+        let o = self.submit(gid)?;
+        if let CommitOutcome::Accepted { .. } = o {
+            self.note_refreshed(gid)?;
+        }
+        Ok(o)
     }
 
     fn save_pending(&self, gid: &[u8], e: &PendingExtra) -> Result<(), Error> {
@@ -710,7 +722,11 @@ impl Session {
     pub fn change_group_settings(&mut self, gid: &[u8], new: &tree_core::group_settings::GroupSettings) -> Result<CommitOutcome, Error> {
         self.with(gid, |g, c| g.change_settings(c, new))?;
         self.save_pending(gid, &PendingExtra::default())?;
-        self.submit(gid)
+        let o = self.submit(gid)?;
+        if let CommitOutcome::Accepted { .. } = o {
+            self.note_refreshed(gid)?;
+        }
+        Ok(o)
     }
 
     pub fn make_admin(&mut self, gid: &[u8], member: MemberId, admin: bool) -> Result<CommitOutcome, Error> {
@@ -772,6 +788,7 @@ impl Session {
     /// Encrypts an encoded payload for the group and sends it to `to`.
     fn send_encoded(&mut self, gid: &[u8], to: &[String], encoded: &[u8]) -> Result<usize, Error> {
         let bytes = self.with(gid, |g, c| g.send(c, encoded))?;
+        self.note_traffic(gid)?;
         let v: Value = self.api.send(&self.creds, to, &bytes)?;
         Ok(v["delivered"].as_u64().unwrap_or(0) as usize)
     }
@@ -797,6 +814,7 @@ impl Session {
             self.ensure_key_packages()?;
         }
         self.handle_invite_requests(&mut events)?;
+        self.refresh_due_groups(&mut events)?;
         // After joining, tell the others our name once we know where they are.
         for key in self.client.app_data_keys("announce/")? {
             let gid = hex::decode(&key["announce/".len()..]).map_err(|_| Error::Protocol("bad key".into()))?;
@@ -819,6 +837,7 @@ impl Session {
                         let gid = g.id();
                         self.groups.insert(gid.clone(), g);
                         self.init_group_maps(&gid)?;
+                        self.note_joined(&gid)?;
                         self.client.set_app_data(&announce_key(&gid), Some(b"1"))?;
                         self.set_group_status(&gid, &GroupStatus::Request { from: None })?;
                         events.push(Event::Joined { group: gid });

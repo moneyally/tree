@@ -582,12 +582,16 @@ and credential.
 - A device SHOULD refresh its keys in a group at least once every 24 hours
   in which the group had traffic, and MUST refresh in every group after a
   suspected compromise, after restoring from backup or recovery, and after
-  re-installation **(in progress: no scheduler yet)**.
+  re-installation. Implemented in `crates/tree-client/src/refresh.rs`: a
+  device refreshes during `sync` once 24 hours passed since its last
+  refresh and the group had traffic since; `refresh_all` refreshes every
+  group at once; removes and settings changes count as refreshes.
 - A device that has just joined SHOULD refresh its keys soon: its leaf key
   came from a one-time key package that waited on the server. The core sets
   `Group::should_refresh_keys` on join and clears it with the device's first
-  merged commit that carries an UpdatePath. In a freshly built large group
-  these first refreshes should be staggered ([BENCHMARKS.md](BENCHMARKS.md)).
+  merged commit that carries an UpdatePath. The client refreshes after a
+  random delay of 1 to 10 minutes, so the first refreshes of a freshly
+  built large group are staggered ([BENCHMARKS.md](BENCHMARKS.md)).
 - A refresh does **not** replace the signature key. Recovering from a
   compromised signature key requires removing the device and adding a new
   device identity (claim C5).

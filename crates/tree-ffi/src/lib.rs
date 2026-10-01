@@ -462,6 +462,12 @@ impl TreeSession {
         Ok(self.s().refresh_keys(&unhex(&group, "group")?)?.into())
     }
 
+    /// After a suspected compromise: new keys in every group now. (Regular
+    /// refreshes happen by themselves during `sync`.)
+    pub fn refresh_all(&self) -> R<Vec<String>> {
+        Ok(self.s().refresh_all()?.into_iter().map(hex::encode).collect())
+    }
+
     pub fn leave(&self, group: String) -> R<()> {
         self.s().leave(&unhex(&group, "group")?)?;
         Ok(())

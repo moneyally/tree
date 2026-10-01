@@ -42,6 +42,7 @@ commands:
   sync [wait-seconds]                    receive and print
   remove <group> <member-id>             remove a member (device)
   refresh <group>                        refresh this device's keys
+  refresh-all                            refresh keys in every group (suspected compromise)
   leave <group>                          ask the others to remove this device
   code <group>                           verification code of the group state
   contacts                               known accounts and whether verified
@@ -392,6 +393,10 @@ fn run(args: Vec<String>) -> Result<(), String> {
             println!("{}", outcome(s.remove(&hex_arg(g)?, &[id]).map_err(e)?));
         }
         ["refresh", g] => println!("{}", outcome(s.refresh_keys(&hex_arg(g)?).map_err(e)?)),
+        ["refresh-all"] => {
+            let done = s.refresh_all().map_err(e)?;
+            println!("keys refreshed in {} group(s)", done.len());
+        }
         ["leave", g] => {
             s.leave(&hex_arg(g)?).map_err(e)?;
             println!("leave request sent");

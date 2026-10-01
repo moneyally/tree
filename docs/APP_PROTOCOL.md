@@ -168,6 +168,7 @@ In the same encrypted database as the core (`tree_app` table, SCHEMA.md):
 | `profile/username` | the own @username |
 | `file/<attachment id>` | a received `file` reference and its group (deleted after a view-once download) |
 | `screenshot/<group hex>` | this user's own screenshot block for the chat |
+| `refresh/<group hex>`, `traffic/<group hex>` | when this device last refreshed its keys in the group, and when the group last had traffic (PROTOCOL.md 6.9) |
 | `invite/<link hash hex>` | a link this device made: group, expiry, use limit (PROTOCOL.md 8.7) |
 | `linkjoin/<link hash hex>` | the user opened this link: owner account and time (one day, used once) |
 | `feature/user.recovery_phrase` | applied once a recovery phrase was made (the phrase itself is never stored) |

@@ -360,6 +360,7 @@ impl Session {
         events: &mut Vec<Event>,
     ) -> Result<(), Error> {
         let refuse = |events: &mut Vec<Event>, why: &str| events.push(Event::Dropped { reason: why.to_string() });
+        self.note_traffic(gid)?;
         let request = matches!(self.group_status(gid)?, GroupStatus::Request { .. });
         let name = self.names(gid)?.get(&from.to_hex()).cloned();
         match p {

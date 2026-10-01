@@ -45,7 +45,7 @@ in section 5.
 | Server never sees display names | done | names only inside groups (F-009) |
 | Proposals from others not trusted | done | F-007 |
 | Message size padding | done | 256-byte buckets |
-| Forward secrecy / post-compromise security by key refresh | partial | refresh exists; no scheduler that triggers it (PROTOCOL.md 6.9) |
+| Forward secrecy / post-compromise security by key refresh | done | PROTOCOL.md 6.9: every 24 h with traffic, 1-10 min after joining, all groups on demand (`refresh_all`, CLI `refresh-all`) |
 | Encrypted device storage (SQLCipher, hardware-wrapped key) | partial | SQLCipher + Argon2id done; hardware key (Secure Enclave / Keystore) needs the apps (`KeySource` is the hook) |
 | Feature registry: apply/release for every feature, permanent locks, layers | done | `features.rs`; server, chat, user, bot layers; `LOCKED_BY_CHAT` |
 | All 34 stage-1 feature keys in the registry | done | all 34, plus `user.recovery_phrase` (behaviour behind most of them: see next row) |
@@ -92,10 +92,10 @@ in section 5.
 | Android app (Kotlin + Compose Multiplatform) | partial | `apps/android`: the Rust client cross-compiled with the NDK (`scripts/android_lib.sh`, arm64-v8a, x86_64), the desktop app's model and texts shared (`apps/shared`), Compose screens (sign-up, chats, requests, chat with files and report, invite links incl. `tree://join` links, safety numbers, settings, recovery phrase); `FLAG_SECURE` for `chat.screenshot_block` / `user.app_switcher_blur`; profile excluded from backups. `gradle assembleDebug` builds the APK; **not yet run on a device or emulator** (no KVM here). Not yet: push (UnifiedPush distributor), notifications, release signing |
 | Desktop app (same code) | partial | `apps/desktop` (Compose for desktop on the JVM, Korean and English): sign-up / open, chats, request inbox (accept, decline, block), invite by @username or account, invite links, messages with report, files (send, check, save), safety numbers with "mark verified", group chat settings for admins, settings from the registry with apply/release and lock reasons, recovery phrase. Model tested against a real server and screens rendered off-screen (`scripts/desktop_test.sh`). Not yet: edit/delete/reactions UI, voice, packaging and signing |
 | iOS app (Swift + SwiftUI) | missing | needs macOS (GitHub Actions runner) and an Apple developer account |
-| Settings screens generated from the registry, apply/release buttons | missing | |
-| Korean and English UI | missing | |
+| Settings screens generated from the registry, apply/release buttons | done (desktop, Android) | user settings from `features()`, group chat settings from `chat_features()`; locked switches show the reason |
+| Korean and English UI | done (desktop, Android) | `apps/shared/.../Strings.kt`; every key in both languages (tested) |
 | Terms, privacy policy screens | missing | 변호사 확인 필요 for the texts |
-| App-level protections (app lock, screenshot block, notification content, incognito keyboard, app-switcher blur, PC screen security) | missing | registry keys exist; behaviour is per platform |
+| App-level protections (app lock, screenshot block, notification content, incognito keyboard, app-switcher blur, PC screen security) | partial | Android: screenshot block and app-switcher blur (`FLAG_SECURE`), profile excluded from backups. Not yet: app lock, notification content (no notifications yet), incognito keyboard, desktop screen security |
 | Store submission checklist (report, block, content filter, contact) | missing | |
 
 ### 2.4 Verification

@@ -95,5 +95,12 @@ async fn accounts_with_verified_reports_are_limited() {
     });
     let (st, v) = api.call(&spammer, Method::POST, "/v1/commits", Some(body)).await;
     assert_eq!((st, code(&v)), (StatusCode::FORBIDDEN, "LIMITED"), "{v}");
+    // Exactly the limit is allowed.
+    let body = json!({
+        "group_id": b64(&[7u8; 16]), "epoch": 0,
+        "recipients": ids[..20], "body": b64(&commit(&[7u8; 16], 0, b"c")),
+    });
+    let (st, v) = api.call(&spammer, Method::POST, "/v1/commits", Some(body)).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
     ts.stop().await;
 }

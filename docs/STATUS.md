@@ -51,7 +51,7 @@ in section 5.
 | All 34 stage-1 feature keys in the registry | partial | 30 of 34; missing `user.username`, `user.note_to_self`, `user.folders`, `user.default_folders` |
 | Behaviour behind the keys (disappearing timer, edit window, view once, ...) | missing | the registry stores the setting; nothing acts on it yet. Chat settings must live in the MLS group context (design: the server never knows them) |
 | Recovery phrase (12-24 words) | missing | threat model in RECOVERY_THREAT_MODEL.md |
-| Safety number / QR comparison, key change warning | missing | format open (Q4); warning is a permanent lock in the registry but has no code |
+| Safety number / QR comparison, key change warning | done | PROTOCOL.md 5.4 (Q4 decided); pinning on first use, warning on any new device key; CLI `safety`, `verify` |
 | Device link with confirmation code on both devices | missing | permanent lock in the registry, no code (multi-device is stage 3) |
 | Per-file encryption for attachments | missing | |
 | Message franking for reports | missing | |

@@ -21,6 +21,10 @@ pub enum Payload {
         devices: BTreeMap<String, String>,
         #[serde(default)]
         names: BTreeMap<String, String>,
+        /// Member id -> account id, as the adder learned it from the server's
+        /// key-package claim. Lets every member pin the devices of a contact.
+        #[serde(default)]
+        accounts: BTreeMap<String, String>,
     },
     /// The sender's own display name. Names never go to the server (F-009);
     /// they travel only inside the group, end-to-end encrypted.
@@ -48,7 +52,11 @@ mod tests {
         let t = Payload::Text { text: "안녕".into() };
         assert_eq!(String::from_utf8(t.encode()).unwrap(), r#"{"t":"text","text":"안녕"}"#);
         assert_eq!(Payload::decode(&t.encode()), Some(t));
-        let r = Payload::Roster { devices: [("ab".to_string(), "dev".to_string())].into(), names: Default::default() };
+        let r = Payload::Roster {
+            devices: [("ab".to_string(), "dev".to_string())].into(),
+            names: Default::default(),
+            accounts: [("ab".to_string(), "acc".to_string())].into(),
+        };
         assert_eq!(Payload::decode(&r.encode()), Some(r));
         assert!(Payload::decode(br#"{"t":"roster","devices":{}}"#).is_some(), "names optional");
         let p = Payload::Profile { name: "bob".into() };

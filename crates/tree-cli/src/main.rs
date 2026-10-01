@@ -22,7 +22,10 @@ commands:
   remove <group> <member-id>             remove a member (device)
   refresh <group>                        refresh this device's keys
   leave <group>                          ask the others to remove this device
-  code <group>                           verification code of the group state";
+  code <group>                           verification code of the group state
+  contacts                               known accounts and whether verified
+  safety <account-id>                    safety number to compare out of band
+  verify <account-id>                    mark verified after comparing";
 
 fn main() -> ExitCode {
     match run(std::env::args().skip(1).collect()) {
@@ -99,7 +102,26 @@ fn run(args: Vec<String>) -> Result<(), String> {
             }
         }
         ["create-group"] => println!("{}", hex(&s.create_group().map_err(e)?)),
-        ["invite", g, account] => println!("{}", outcome(s.invite(&hex_arg(g)?, account).map_err(e)?)),
+        ["invite", g, account] => {
+            let (o, warnings) = s.invite(&hex_arg(g)?, account).map_err(e)?;
+            for w in &warnings {
+                print_event(w);
+            }
+            println!("{}", outcome(o));
+        }
+        ["contacts"] => {
+            for c in s.contacts().map_err(e)? {
+                println!("{}  {} device(s)  {}", c.account, c.members.len(), if c.verified { "verified" } else { "not verified" });
+            }
+        }
+        ["safety", account] => {
+            println!("{}", s.safety_number(account).map_err(e)?);
+            println!("compare these digits with {account} in person or on a call; then: tree verify {account}");
+        }
+        ["verify", account] => {
+            s.verify(account, None).map_err(e)?;
+            println!("{account} marked verified");
+        }
         ["members", g] => {
             for m in s.members(&hex_arg(g)?).map_err(e)? {
                 println!(
@@ -155,6 +177,11 @@ fn print_event(ev: &Event) {
             println!("[{}] {} asks to leave: tree remove {} {}", &hex(group)[..8], &member.to_hex()[..8], hex(group), member)
         }
         Event::RemovedFromGroup { group } => println!("[{}] this device was removed", &hex(group)[..8]),
+        Event::KeyChanged { account, new_members, was_verified } => println!(
+            "!! {account} has {} new device key(s){}: compare the safety number again (tree safety {account})",
+            new_members.len(),
+            if *was_verified { " since you verified it" } else { "" }
+        ),
         Event::Held => println!("(a message was kept for later)"),
         Event::Dropped { reason } => println!("(dropped: {reason})"),
     }

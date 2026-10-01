@@ -17,6 +17,7 @@ pub mod features;
 pub mod group;
 mod group_state;
 pub mod provider;
+pub mod safety;
 pub mod storage;
 pub mod wire;
 

@@ -68,7 +68,7 @@ fn three_devices_chat_through_the_server() {
 
     // alice starts a group and invites bob's account.
     let g = alice.create_group().unwrap();
-    assert_eq!(alice.invite(&g, bob.account_id()).unwrap(), CommitOutcome::Accepted { epoch: 1 });
+    assert_eq!(alice.invite(&g, bob.account_id()).unwrap(), (CommitOutcome::Accepted { epoch: 1 }, vec![]));
     let ev = bob.sync(0).unwrap();
     assert!(ev.contains(&Event::Joined { group: g.clone() }), "{ev:?}");
     assert!(ev.contains(&Event::RosterUpdated { group: g.clone() }), "{ev:?}");
@@ -85,11 +85,12 @@ fn three_devices_chat_through_the_server() {
 
     // Race for epoch 1 -> 2: bob refreshes his keys first, alice's invite of carol loses.
     assert_eq!(bob.refresh_keys(&g).unwrap(), CommitOutcome::Accepted { epoch: 2 });
-    assert_eq!(alice.invite(&g, carol.account_id()).unwrap(), CommitOutcome::Lost);
+    assert_eq!(alice.invite(&g, carol.account_id()).unwrap().0, CommitOutcome::Lost);
     let ev = alice.sync(0).unwrap();
     assert!(ev.iter().any(|e| matches!(e, Event::Changed { epoch: 2, .. })), "{ev:?}");
     // alice decides again in epoch 2 and wins.
-    assert_eq!(alice.invite(&g, carol.account_id()).unwrap(), CommitOutcome::Accepted { epoch: 3 });
+    // Same devices as in the lost attempt: no key-change warning.
+    assert_eq!(alice.invite(&g, carol.account_id()).unwrap(), (CommitOutcome::Accepted { epoch: 3 }, vec![]));
     let ev = carol.sync(0).unwrap();
     assert!(ev.contains(&Event::Joined { group: g.clone() }), "{ev:?}");
     let ev = bob.sync(0).unwrap();
@@ -98,6 +99,16 @@ fn three_devices_chat_through_the_server() {
     carol.send_text(&g, "나도 왔어").unwrap();
     assert_eq!(texts(&alice.sync(0).unwrap()), vec![("carol".into(), "나도 왔어".into())]);
     assert_eq!(texts(&bob.sync(0).unwrap()), vec![("carol".into(), "나도 왔어".into())]);
+    // Safety numbers: alice (who invited bob) and bob (who learned alice's
+    // account from the roster) see the same digits; bob pinned carol's
+    // devices from alice's roster too.
+    let n = alice.safety_number(bob.account_id()).unwrap();
+    assert_eq!(n, bob.safety_number(alice.account_id()).unwrap());
+    assert!(bob.contact(carol.account_id()).unwrap().is_some());
+    let qr = bob.safety_qr(alice.account_id()).unwrap();
+    alice.verify(bob.account_id(), Some(&qr)).unwrap();
+    assert!(alice.contact(bob.account_id()).unwrap().unwrap().verified);
+    assert!(alice.verify(carol.account_id(), Some(&qr)).is_err(), "bob's code is not carol's");
     let code = alice.verification_code(&g).unwrap();
     assert_eq!(bob.verification_code(&g).unwrap(), code, "one group state, no fork");
     assert_eq!(carol.verification_code(&g).unwrap(), code);

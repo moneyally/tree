@@ -57,6 +57,10 @@ pub enum Event {
     Changed { group: Vec<u8>, added: Vec<MemberId>, removed: Vec<MemberId>, epoch: u64, own_commit_discarded: bool },
     /// A member announced its display name.
     Profile { group: Vec<u8>, member: MemberId, name: String },
+    /// A contact's devices changed (new device or replaced key): compare the
+    /// safety number again. Always reported (`user.key_change_warning` is
+    /// permanently on). `was_verified`: the old set had been verified.
+    KeyChanged { account: String, new_members: Vec<MemberId>, was_verified: bool },
     RosterUpdated { group: Vec<u8> },
     LeaveRequested { group: Vec<u8>, member: MemberId },
     RemovedFromGroup { group: Vec<u8> },
@@ -102,6 +106,29 @@ fn names_key(g: &[u8]) -> String {
 fn announce_key(g: &[u8]) -> String {
     format!("announce/{}", hex::encode(g))
 }
+fn accounts_key(g: &[u8]) -> String {
+    format!("accounts/{}", hex::encode(g))
+}
+fn contact_key(account: &str) -> String {
+    format!("contact/{account}")
+}
+
+/// What this device knows about another account (trust on first use, then
+/// pinned).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Contact {
+    pub account: String,
+    /// Member ids (hex) of the account's devices seen so far.
+    pub members: Vec<String>,
+    /// The user compared the safety number for exactly these devices.
+    pub verified: bool,
+}
+
+impl Contact {
+    pub fn member_ids(&self) -> Vec<MemberId> {
+        self.members.iter().filter_map(|m| MemberId::from_hex(m)).collect()
+    }
+}
 
 /// One member as the app shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,6 +140,28 @@ pub struct MemberInfo {
     /// Another member uses the same name: tell them apart by id (F-008).
     pub duplicate_name: bool,
 }
+
+/// Pinning rule (trust on first use): the first set of devices of an account
+/// is taken as it is; afterwards every member id not seen before is a key
+/// change, reported, and clears "verified". Returns the updated contact if
+/// anything changed.
+fn merge_pins(old: Option<Contact>, account: &str, members: &[MemberId]) -> Option<(Contact, Option<Event>)> {
+    let first = old.is_none();
+    let mut c = old.unwrap_or_else(|| Contact { account: account.to_string(), ..Default::default() });
+    let mut new: Vec<MemberId> = members.iter().filter(|m| !c.members.contains(&m.to_hex())).copied().collect();
+    new.sort();
+    new.dedup();
+    if new.is_empty() && !first {
+        return None;
+    }
+    let event = (!first).then(|| Event::KeyChanged { account: account.to_string(), new_members: new.clone(), was_verified: c.verified });
+    if !first {
+        c.verified = false;
+    }
+    c.members.extend(new.iter().map(MemberId::to_hex));
+    Some((c, event))
+}
+
 
 /// One device: its encrypted profile, its server account and its groups.
 pub struct Session {
@@ -198,6 +247,25 @@ impl Session {
         Ok(f(groups.get_mut(gid).expect("loaded"), client)?)
     }
 
+    fn map(&self, key: &str) -> Result<Roster, Error> {
+        Ok(match self.client.app_data(key)? {
+            Some(v) => serde_json::from_slice(&v).map_err(|_| Error::Protocol(format!("damaged {key}")))?,
+            None => Roster::new(),
+        })
+    }
+
+    fn save_map(&self, key: &str, m: &Roster) -> Result<(), Error> {
+        Ok(self.client.set_app_data(key, Some(&serde_json::to_vec(m).expect("JSON")))?)
+    }
+
+    /// Starts the per-group maps with this device's own entries.
+    fn init_group_maps(&self, gid: &[u8]) -> Result<(), Error> {
+        let me = self.member_id().to_hex();
+        self.save_roster(gid, &[(me.clone(), self.creds.device_id.clone())].into())?;
+        self.save_names(gid, &[(me.clone(), self.name().to_string())].into())?;
+        self.save_map(&accounts_key(gid), &[(me, self.creds.account_id.clone())].into())
+    }
+
     fn roster(&self, gid: &[u8]) -> Result<Roster, Error> {
         Ok(match self.client.app_data(&roster_key(gid))? {
             Some(v) => serde_json::from_slice(&v).map_err(|_| Error::Protocol("damaged roster".into()))?,
@@ -269,30 +337,93 @@ impl Session {
         let g = self.client.create_group()?;
         let gid = g.id();
         self.groups.insert(gid.clone(), g);
-        let mut r = Roster::new();
-        r.insert(self.member_id().to_hex(), self.creds.device_id.clone());
-        self.save_roster(&gid, &r)?;
-        let mut n = Roster::new();
-        n.insert(self.member_id().to_hex(), self.name().to_string());
-        self.save_names(&gid, &n)?;
+        self.init_group_maps(&gid)?;
         Ok(gid)
     }
 
-    /// Adds every device of `account_id` in one commit.
-    pub fn invite(&mut self, gid: &[u8], account_id: &str) -> Result<CommitOutcome, Error> {
+    pub fn contact(&self, account: &str) -> Result<Option<Contact>, Error> {
+        Ok(match self.client.app_data(&contact_key(account))? {
+            Some(v) => Some(serde_json::from_slice(&v).map_err(|_| Error::Protocol("damaged contact".into()))?),
+            None => None,
+        })
+    }
+
+    pub fn contacts(&self) -> Result<Vec<Contact>, Error> {
+        let mut out = Vec::new();
+        for k in self.client.app_data_keys("contact/")? {
+            if let Some(c) = self.contact(&k["contact/".len()..])? {
+                out.push(c);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Records that `members` belong to `account`. The first time they are
+    /// trusted as they are; afterwards any member id not seen before is a
+    /// key change and is reported (and clears "verified").
+    fn pin(&self, account: &str, members: &[MemberId], events: &mut Vec<Event>) -> Result<(), Error> {
+        if account == self.creds.account_id {
+            return Ok(());
+        }
+        if let Some((c, ev)) = merge_pins(self.contact(account)?, account, members) {
+            self.client.set_app_data(&contact_key(account), Some(&serde_json::to_vec(&c).expect("JSON")))?;
+            events.extend(ev);
+        }
+        Ok(())
+    }
+
+    /// The safety number shared with `account` (60 digits), from this
+    /// device and the account's pinned devices.
+    pub fn safety_number(&self, account: &str) -> Result<String, Error> {
+        let c = self.contact(account)?.ok_or_else(|| Error::Usage("unknown contact".into()))?;
+        Ok(tree_core::safety::safety_number(&[self.member_id()], &c.member_ids()))
+    }
+
+    /// The QR payload this device shows for `account`.
+    pub fn safety_qr(&self, account: &str) -> Result<Vec<u8>, Error> {
+        let c = self.contact(account)?.ok_or_else(|| Error::Usage("unknown contact".into()))?;
+        Ok(tree_core::safety::qr_payload(&[self.member_id()], &c.member_ids()))
+    }
+
+    /// Marks the contact verified after the user compared the safety number
+    /// (or scanned the other side's QR code: pass it to check it first).
+    pub fn verify(&self, account: &str, scanned_qr: Option<&[u8]>) -> Result<(), Error> {
+        let mut c = self.contact(account)?.ok_or_else(|| Error::Usage("unknown contact".into()))?;
+        if let Some(q) = scanned_qr {
+            if !tree_core::safety::qr_matches(q, &[self.member_id()], &c.member_ids()) {
+                return Err(Error::Usage("the scanned code does not match: do not trust this contact".into()));
+            }
+        }
+        c.verified = true;
+        Ok(self.client.set_app_data(&contact_key(account), Some(&serde_json::to_vec(&c).expect("JSON")))?)
+    }
+
+    /// Adds every device of `account_id` in one commit. Returns the outcome
+    /// and any key-change warnings for that account.
+    pub fn invite(&mut self, gid: &[u8], account_id: &str) -> Result<(CommitOutcome, Vec<Event>), Error> {
         self.group(gid)?;
         let claimed = self.api.claim(&self.creds, account_id)?;
         if claimed.is_empty() {
             return Err(Error::Usage("that account has no key packages left".into()));
         }
         let mut added = Vec::new();
+        let mut ids = Vec::new();
         for (device, kp) in &claimed {
-            added.push((MemberId::of_key_package(kp)?.to_hex(), device.clone()));
+            let id = MemberId::of_key_package(kp)?;
+            ids.push(id);
+            added.push((id.to_hex(), device.clone()));
         }
+        let mut events = Vec::new();
+        self.pin(account_id, &ids, &mut events)?;
+        let mut accounts = self.map(&accounts_key(gid))?;
+        for i in &ids {
+            accounts.insert(i.to_hex(), account_id.to_string());
+        }
+        self.save_map(&accounts_key(gid), &accounts)?;
         let kps: Vec<&[u8]> = claimed.iter().map(|(_, kp)| kp.as_slice()).collect();
         self.with(gid, |g, c| g.add(c, &kps))?;
         self.save_pending(gid, &PendingExtra { added, removed_devices: vec![] })?;
-        self.submit(gid)
+        Ok((self.submit(gid)?, events))
     }
 
     /// Removes members (devices) in one commit.
@@ -365,7 +496,11 @@ impl Session {
         if !extra.added.is_empty() {
             // Tell everyone, including the new devices, who is where.
             let names = self.names(gid)?;
-            self.send_payload(gid, &Payload::Roster { devices: roster, names })?;
+            let members: Vec<String> = self.group(gid)?.members().iter().map(|m| m.to_hex()).collect();
+            let mut accounts = self.map(&accounts_key(gid))?;
+            accounts.retain(|m, _| members.contains(m));
+            self.save_map(&accounts_key(gid), &accounts)?;
+            self.send_payload(gid, &Payload::Roster { devices: roster, names, accounts })?;
         }
         Ok(CommitOutcome::Accepted { epoch })
     }
@@ -430,12 +565,7 @@ impl Session {
                     Ok(g) => {
                         let gid = g.id();
                         self.groups.insert(gid.clone(), g);
-                        let mut r = Roster::new();
-                        r.insert(self.member_id().to_hex(), self.creds.device_id.clone());
-                        self.save_roster(&gid, &r)?;
-                        let mut n = Roster::new();
-                        n.insert(self.member_id().to_hex(), self.name().to_string());
-                        self.save_names(&gid, &n)?;
+                        self.init_group_maps(&gid)?;
                         self.client.set_app_data(&announce_key(&gid), Some(b"1"))?;
                         events.push(Event::Joined { group: gid });
                         Ok(true)
@@ -502,7 +632,7 @@ impl Session {
                 let name = self.names(gid)?.get(&from.to_hex()).cloned();
                 events.push(Event::Text { group: gid.to_vec(), from, name, text })
             }
-            Some(Payload::Roster { devices, names }) => {
+            Some(Payload::Roster { devices, names, accounts }) => {
                 // Only entries for current members are taken; names only as
                 // hints where the member has not announced its own.
                 let members: Vec<String> = self.group(gid)?.members().iter().map(|m| m.to_hex()).collect();
@@ -525,6 +655,19 @@ impl Session {
                     known.insert(from.to_hex(), n);
                 }
                 self.save_names(gid, &known)?;
+                // Remember and pin the devices of each named account.
+                let mut known_accounts = self.map(&accounts_key(gid))?;
+                let mut by_account: BTreeMap<String, Vec<MemberId>> = BTreeMap::new();
+                for (m, a) in accounts {
+                    if let (true, Some(id)) = (members.contains(&m) && m != me, MemberId::from_hex(&m)) {
+                        known_accounts.insert(m, a.clone());
+                        by_account.entry(a).or_default().push(id);
+                    }
+                }
+                self.save_map(&accounts_key(gid), &known_accounts)?;
+                for (a, ids) in by_account {
+                    self.pin(&a, &ids, events)?;
+                }
                 events.push(Event::RosterUpdated { group: gid.to_vec() });
             }
             Some(Payload::Profile { name }) => {
@@ -570,5 +713,34 @@ impl Session {
             }
         }
         Ok(moved)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn id(b: u8) -> MemberId {
+        MemberId([b; 32])
+    }
+
+    #[test]
+    fn pinning_rules() {
+        // first contact: trusted as is, no warning
+        let (c, ev) = merge_pins(None, "acc", &[id(1), id(1)]).unwrap();
+        assert_eq!((c.members.len(), c.verified, ev), (1, false, None));
+        // same devices again: nothing to do
+        assert!(merge_pins(Some(c.clone()), "acc", &[id(1)]).is_none());
+        // a device missing from a claim (no key packages left) is no change
+        assert!(merge_pins(Some(c.clone()), "acc", &[]).is_none());
+        // verified, then a new device appears: warning, verification cleared
+        let verified = Contact { verified: true, ..c };
+        let (c2, ev) = merge_pins(Some(verified), "acc", &[id(1), id(2)]).unwrap();
+        assert_eq!(ev, Some(Event::KeyChanged { account: "acc".into(), new_members: vec![id(2)], was_verified: true }));
+        assert!(!c2.verified);
+        assert_eq!(c2.member_ids(), vec![id(1), id(2)]);
+        // unverified change is reported too
+        let (_, ev) = merge_pins(Some(c2), "acc", &[id(3)]).unwrap();
+        assert!(matches!(ev, Some(Event::KeyChanged { was_verified: false, .. })));
     }
 }

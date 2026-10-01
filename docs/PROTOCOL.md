@@ -317,8 +317,8 @@ Rules: `Incoming::Message` reports the sender's `member_id`; `Group::remove`
 takes member ids, several in one commit (all devices of a person);
 `Group::members` returns member ids; the app shows names (learned inside the
 group) only next to a member id and flags two members using the same name. The safety number
-a user compares out of band is derived from the signature key (format: open
-question Q4).
+a user compares out of band is derived from the member ids of a person's
+devices (section 5.4).
 
 For an application message of a past epoch (section 6.2) the sender's
 member id is taken from the members of **that** epoch, which the receiver
@@ -362,6 +362,34 @@ bind them to the uploading device's identity beyond the upload request
 signature. A malicious server can hand out key packages it generated. This is
 only detected by comparing safety numbers or, later, by key transparency
 (stage 4). See claim C3.
+
+### 5.4 Safety numbers
+
+What two people compare out of band. A person is the set of their devices'
+member ids. Per side:
+
+```
+fingerprint = SHA-256("tree/safety-number/v1" || uint32 n || member_id_1 || ... || member_id_n)
+              (member ids sorted, duplicates removed)
+digits      = for each of the first 6 five-byte chunks of fingerprint:
+              (chunk as a 40-bit big-endian integer) mod 100000, as 5 digits
+```
+
+The safety number is the two 30-digit strings, the smaller first, as 12
+groups of 5 digits; both people see the same 60 digits. The QR code is
+`0x01 || fingerprint(shower) || fingerprint(scanner)`; the scanner checks that
+the second half is its own fingerprint and the first the one it holds for the
+contact (`crates/tree-core/src/safety.rs`). About 100 bits per side: a
+substituted key would have to match 30 decimal digits.
+
+Pinning (`tree-client`): the first set of devices learned for an account
+(from a key-package claim, or from a roster inside a group) is trusted as it
+is; any later member id not seen before for that account raises a key-change
+warning (`user.key_change_warning`, permanently on) and clears "verified".
+This is trust on first use; key transparency (stage 4) removes the first-use
+gap. Today a person's side contains only the devices the other side has
+seen; with several devices per person (stage 3) the safety number changes
+whenever a device is added, which is the intended warning.
 
 ---
 
@@ -569,7 +597,7 @@ and credential.
 `Group::verification_code` returns the epoch authenticator (RFC 9420 §8.7).
 Two members who see the same value are in the same epoch with the same group
 state. It changes every epoch and is not an identity check. The identity
-check is the safety number of each member's signature key (Q4).
+check is the safety number (section 5.4).
 
 ---
 
@@ -1159,9 +1187,8 @@ the server cannot learn it from what it sees or stores.
   step 7 (pending commit stored in the same transaction; resubmit after a
   restart). Remaining: how long a client keeps retrying before it gives up
   and discards.
-- **Q4 Safety number format.** Encoding and length of the out-of-band
-  fingerprint of a member's signature key, and how it combines for a person
-  with several devices.
+- **Q4 Safety number format.** Decided for v1 in section 5.4 (needs the
+  external review like everything else).
 - **Q5 Inactive devices.** Policy for removing devices that never come back
   online (they block healing, C5, and lose mailbox messages after 30 days).
 - **Q6 Key-package revocation.** An API to delete one's own unused key

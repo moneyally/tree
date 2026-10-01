@@ -17,7 +17,7 @@ One JSON object per application message, UTF-8, field `t` names the type:
 | --- | --- | --- | --- |
 | `text` | `text` | a chat message | any member |
 | `profile` | `name` | the sender's own display name | any member, about itself |
-| `roster` | `devices`: member id (hex) -> device id; `names` (optional): member id -> name | who is reachable at which server device, and the sender's view of names | the member that just added devices (others may too) |
+| `roster` | `devices`: member id (hex) -> device id; `names` (optional): member id -> name; `accounts` (optional): member id -> account id | who is reachable at which server device, the sender's view of names, and which account each device belongs to | the member that just added devices (others may too) |
 | `leave` | — | the sender asks to be removed (PROTOCOL.md 6.5) | any member |
 
 ```json
@@ -43,6 +43,11 @@ as text. Message padding (256 bytes) is applied by MLS below this layer.
   the roster sender's entry for itself counts as its own word. A device that
   joined sends its `profile` once it knows where the others are. Two members
   with the same name are flagged; the app tells them apart by member id.
+- **Accounts and pinning.** `accounts` lets every member, not only the
+  adder, pin a contact's devices (PROTOCOL.md 5.4). Entries are taken for
+  current members only; a new member id for a known account is reported as
+  a key change. A false entry can at worst raise a warning or attach a
+  device to the wrong contact, which the safety-number comparison exposes.
 - **Leave.** A member that receives `leave` from X may remove X. Several
   members doing so race for the same epoch; the server's ordering keeps one.
 - **Recipients.** Every message goes to the devices in the roster except the
@@ -76,3 +81,5 @@ In the same encrypted database as the core (`tree_app` table, SCHEMA.md):
 | `pending/<group hex>` | JSON: added (member id, device id) pairs, removed device ids of the pending commit |
 | `announce/<group hex>` | present until the own profile was sent |
 | `held/<20-digit counter>` | a held message body |
+| `accounts/<group hex>` | JSON member id -> account id |
+| `contact/<account id>` | JSON: pinned member ids, verified flag |

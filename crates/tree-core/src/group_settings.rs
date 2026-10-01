@@ -91,6 +91,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn decode_limit_and_name_length() {
+        let base = GroupSettings { name: Some(String::new()), ..Default::default() }.encode().unwrap().len();
+        let at = GroupSettings { name: Some("a".repeat(MAX_LEN - base)), ..Default::default() }.encode().unwrap();
+        assert!(GroupSettings::decode(&at).is_ok(), "exactly the limit decodes");
+        let mut over = at.clone();
+        over.insert(0, b' ');
+        assert!(matches!(GroupSettings::decode(&over), Err(TreeError::Malformed(e)) if e.contains("too large")));
+        let m = [id(1)];
+        let named = |n: usize| GroupSettings { admins: vec![id(1)], name: Some("가".repeat(n)), ..Default::default() };
+        assert!(named(128).check(&m).is_ok(), "128 characters (not bytes) are fine");
+        assert!(named(129).check(&m).is_err());
+    }
+
+    #[test]
     fn size_limit_is_exact() {
         assert_eq!(MAX_LEN, 16 * 1024);
         let base = GroupSettings { name: Some(String::new()), ..Default::default() }.encode().unwrap().len();

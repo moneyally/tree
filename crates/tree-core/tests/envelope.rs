@@ -230,3 +230,35 @@ fn header_epoch_must_match_envelope_key() {
     assert!(matches!(r, Err(TreeError::Rejected(ref s)) if s.contains("header")), "{r:?}");
     assert!(matches!(b.receive(&bob, &honest), Ok(Incoming::Message { .. })));
 }
+
+/// `wire::peek` routes bytes before any group sees them (PROTOCOL.md 4.1).
+#[test]
+fn peek_classifies_real_messages() {
+    use tree_core::wire::{peek, Kind, Peek};
+    let (alice, _bob, mut a, _b) = two_person_chat();
+    let carol = Client::new("carol").unwrap();
+    let gid = a.id();
+    let epoch = a.epoch();
+    let msg = a.send(&alice, b"hi").unwrap();
+    assert_eq!(peek(&msg), Some(Peek::Envelope { group_id: gid.clone(), epoch, kind: Kind::Application }));
+    let added = a.add_now(&alice, &carol.key_package().unwrap()).unwrap();
+    assert_eq!(peek(&added.welcome), Some(Peek::Welcome));
+    assert_eq!(peek(&added.commit), Some(Peek::Envelope { group_id: gid, epoch, kind: Kind::Commit }));
+
+    // Not ours: empty, unknown version byte, an envelope too short to hold
+    // a tag and a message, damaged MLS bytes, a bare MLS message that is not
+    // a welcome.
+    assert_eq!(peek(&[]), None);
+    assert_eq!(peek(&[2, 0, 1]), None);
+    assert_eq!(peek(&msg[..33]), None);
+    let mut short = msg[..33].to_vec();
+    short.push(0);
+    assert_eq!(peek(&short), None);
+    let mut bad = msg.clone();
+    bad.truncate(40);
+    assert_eq!(peek(&bad), None);
+    assert_eq!(peek(&msg[33..]), None, "a bare MLS private message (no envelope) is not routed");
+    let mut w = added.welcome.clone();
+    w.truncate(w.len() - 1);
+    assert_eq!(peek(&w), None, "damaged welcome");
+}

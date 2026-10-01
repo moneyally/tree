@@ -225,8 +225,6 @@ mod tests {
             f(&mut c);
             assert!(c.validate().is_err(), "case {i}");
         }
-        let mut c = Config::default();
-        c.pow_bits = 40;
-        assert!(c.validate().is_ok());
+        assert!(Config { pow_bits: 40, ..Config::default() }.validate().is_ok());
     }
 }

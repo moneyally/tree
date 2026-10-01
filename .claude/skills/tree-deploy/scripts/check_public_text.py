@@ -17,7 +17,7 @@ LOWER = {
 CASED = {"d041924c15885af6"}  # a common English word; blocked only when capitalized
 
 ROOT = pathlib.Path(__file__).resolve().parents[4]
-PUBLIC = ["README.md", "SECURITY.md", "CLAUDE.md", "THIRD_PARTY_LICENSES.md", "docs", ".claude", "crates"]
+PUBLIC = ["README.md", "SECURITY.md", "CLAUDE.md", "HANDOFF.md", "THIRD_PARTY_LICENSES.md", "docs", ".claude", "crates"]
 SKIP_DIRS = {"target", ".git"}
 EXT = {".md", ".rs", ".toml", ".py", ".txt", ".kt", ".swift", ".ts"}
 

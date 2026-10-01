@@ -21,15 +21,18 @@ step()  { printf '\n== %s\n' "$*"; }
 step "alice and bob create profiles and accounts (no phone number)"
 alice init alice "$URL" 12
 bob init bob "$URL" 12
-BOB_ACCOUNT=$(bob whoami | awk '/^account/ {print $2}')
+bob username bob_tree
+BOB_ACCOUNT=$(alice find @bob_tree)
 BOB_MEMBER=$(bob whoami | awk '/^member/ {print $2}')
 
 step "alice starts a group and invites bob's account"
 G=$(alice create-group)
 alice invite "$G" "$BOB_ACCOUNT"
 
-step "bob syncs: joins, learns who is who"
+step "bob syncs: alice is a stranger to him, so her chat arrives as a request"
 bob sync
+bob requests
+bob accept "$G"
 
 step "chat"
 alice send "$G" "안녕 밥, 서버를 거쳐서 왔어"
@@ -37,9 +40,11 @@ bob sync
 bob send "$G" "잘 받았어, 앨리스"
 alice sync
 
-step "both compare the verification code"
-alice code "$G"
-bob code "$G"
+step "both compare the safety number (the same 60 digits on both sides)"
+alice safety "$BOB_ACCOUNT"
+ALICE_ACCOUNT=$(alice whoami | awk '/^account/ {print $2}')
+bob safety "$ALICE_ACCOUNT"
+alice verify "$BOB_ACCOUNT"
 
 step "members as alice sees them"
 alice members "$G"
@@ -53,7 +58,7 @@ alice send "$G" "밥은 이제 못 읽어"
 bob sync
 
 step "what the server database holds (searching for the plaintext)"
-if grep -a -q "서버를 거쳐서" "$DIR"/server.db* 2>/dev/null || grep -a -q "alice" "$DIR"/server.db* 2>/dev/null; then
+if grep -a -q -e "서버를 거쳐서" -e "alice" -e "bob_tree" "$DIR"/server.db* 2>/dev/null; then
   echo "!!! plaintext or name found on the server"; exit 1
 else
   echo "no plaintext, no names in the server database"

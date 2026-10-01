@@ -28,7 +28,13 @@ commands:
   code <group>                           verification code of the group state
   contacts                               known accounts and whether verified
   safety <account-id>                    safety number to compare out of band
-  verify <account-id>                    mark verified after comparing";
+  verify <account-id>                    mark verified after comparing
+  add-contact <account-id>               trust this account (its chats are not requests)
+  requests                               pending chat requests and invitations
+  accept <group> | decline <group> [block]
+  block <account-id> | unblock <account-id>
+  settings                               my apply/release settings
+  apply <feature> [option] | release <feature>";
 
 fn main() -> ExitCode {
     match run(std::env::args().skip(1).collect()) {
@@ -130,6 +136,55 @@ fn run(args: Vec<String>) -> Result<(), String> {
             Some(a) => println!("{a}"),
             None => println!("no one is called {name} (or they hid their name)"),
         },
+        ["requests"] => {
+            for g in s.group_ids().map_err(e)? {
+                if let tree_client::GroupStatus::Request { from } = s.group_status(&g).map_err(e)? {
+                    println!("{}  from {}", hex(&g), from.as_deref().unwrap_or("(not known yet)"));
+                }
+            }
+        }
+        ["accept", g] => {
+            s.accept_request(&hex_arg(g)?).map_err(e)?;
+            println!("accepted");
+        }
+        ["decline", g, more @ ..] => {
+            s.decline(&hex_arg(g)?, more.first() == Some(&"block")).map_err(e)?;
+            println!("declined");
+        }
+        ["block", account] => {
+            s.block(account).map_err(e)?;
+            println!("{account} blocked");
+        }
+        ["unblock", account] => {
+            s.unblock(account).map_err(e)?;
+            println!("{account} unblocked");
+        }
+        ["add-contact", account] => {
+            s.add_contact(account).map_err(e)?;
+            println!("{account} added to contacts");
+        }
+        ["settings"] => {
+            for f in s.features().map_err(e)? {
+                println!(
+                    "{:<28} {:<8} {}{}",
+                    f.key,
+                    format!("{:?}", f.state).to_lowercase(),
+                    f.option.as_deref().unwrap_or(""),
+                    match &f.locked_by {
+                        Some(r) => format!("  (locked: {r:?})"),
+                        None => String::new(),
+                    }
+                );
+            }
+        }
+        ["apply", key, more @ ..] => {
+            let st = s.apply_feature(key, more.first().map(|o| o.to_string())).map_err(e)?;
+            println!("{} {:?}", st.key, st.state);
+        }
+        ["release", key] => {
+            let st = s.release_feature(key).map_err(e)?;
+            println!("{} {:?}", st.key, st.state);
+        }
         ["contacts"] => {
             for c in s.contacts().map_err(e)? {
                 println!("{}  {} device(s)  {}", c.account, c.members.len(), if c.verified { "verified" } else { "not verified" });
@@ -181,9 +236,22 @@ fn run(args: Vec<String>) -> Result<(), String> {
 
 fn print_event(ev: &Event) {
     match ev {
-        Event::Text { group, from, name, text } => {
-            println!("[{}] {} ({}): {}", &hex(group)[..8], name.as_deref().unwrap_or("?"), &from.to_hex()[..8], text)
-        }
+        Event::Text { group, from, name, text, request } => println!(
+            "[{}]{} {} ({}): {}",
+            &hex(group)[..8],
+            if *request { " [request]" } else { "" },
+            name.as_deref().unwrap_or("?"),
+            &from.to_hex()[..8],
+            text
+        ),
+        Event::Request { group, from, direct } => println!(
+            "[{}] {} from {from}: tree accept {} / tree decline {} [block]",
+            &hex(group)[..8],
+            if *direct { "chat request" } else { "group invitation" },
+            hex(group),
+            hex(group)
+        ),
+        Event::Declined { group, from, reason } => println!("[{}] declined (from {from}): {reason}", &hex(group)[..8]),
         Event::Joined { group } => println!("joined group {}", hex(group)),
         Event::Changed { group, added, removed, epoch, own_commit_discarded } => println!(
             "[{}] group changed: epoch {epoch}, {} added, {} removed{}",

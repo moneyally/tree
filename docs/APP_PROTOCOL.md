@@ -53,7 +53,30 @@ as text. Message padding (256 bytes) is applied by MLS below this layer.
 - **Recipients.** Every message goes to the devices in the roster except the
   sender's own device. Commits also go to devices being removed.
 
-## 3. Client behaviour (`tree_client::Session`)
+## 3. Requests, blocking, who may add me
+
+A welcome is always processed (MLS needs it), but the group starts as a
+request until the adder's account is known from its `roster`. Then
+(`crates/tree-client/src/requests.rs`):
+
+| Adder | 1:1 chat (2 members) | Group (3 or more) |
+| --- | --- | --- |
+| a contact the user chose (invited, accepted, added) | accepted | accepted, unless `user.group_add` = `nobody` |
+| blocked | declined | declined |
+| stranger, `user.stranger_block` applied | declined | declined |
+| stranger | request if `user.message_requests` applied (default), else accepted | declined if `user.group_add` applied (default: contacts only), else as for a 1:1 chat |
+
+Messages in a request are shown as such (`request: true`) until accepted.
+Declining sends `leave` and ignores the group from then on; it can also
+block the adder. Messages from a blocked account are dropped in every group.
+All of this is enforced on the device: the server cannot know contacts, by
+design, so it still delivers.
+
+User settings (`apply` / `release` of user-scope features) are kept in the
+device database and checked against the registry (permanent locks such as
+`user.key_change_warning` cannot be released).
+
+## 4. Client behaviour (`tree_client::Session`)
 
 | Step | Behaviour |
 | --- | --- |
@@ -68,7 +91,7 @@ as text. Message padding (256 bytes) is applied by MLS below this layer.
 Not yet: holding expiry (7 days), retry limits for commits, contacts and
 safety numbers, message history.
 
-## 4. What the client stores
+## 5. What the client stores
 
 In the same encrypted database as the core (`tree_app` table, SCHEMA.md):
 
@@ -82,4 +105,7 @@ In the same encrypted database as the core (`tree_app` table, SCHEMA.md):
 | `announce/<group hex>` | present until the own profile was sent |
 | `held/<20-digit counter>` | a held message body |
 | `accounts/<group hex>` | JSON member id -> account id |
-| `contact/<account id>` | JSON: pinned member ids, verified flag |
+| `contact/<account id>` | JSON: pinned member ids, verified, accepted (chosen by the user), blocked |
+| `gstatus/<group hex>` | request (with adder account) or declined; absent = accepted |
+| `feature/<key>` | the user's setting: applied or released, option |
+| `profile/username` | the own @username |

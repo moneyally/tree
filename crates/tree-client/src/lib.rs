@@ -8,7 +8,11 @@
 
 pub mod api;
 pub mod payload;
+pub mod requests;
+pub mod settings;
 pub mod username;
+
+pub use requests::GroupStatus;
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -41,6 +45,9 @@ pub enum Error {
     NoSuchGroup,
     #[error("{0}")]
     Usage(String),
+    /// A feature-registry error code (`LOCKED_ALWAYS`, `NOT_ADMIN`, ...).
+    #[error("feature: {0}")]
+    Feature(String),
 }
 
 /// Key packages kept on the server; topped up when fewer remain.
@@ -53,7 +60,13 @@ pub const MAX_HELD: usize = 256;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     /// `name` is the sender's display name if known (shared inside the group).
-    Text { group: Vec<u8>, from: MemberId, name: Option<String>, text: String },
+    /// `request`: the group is still a message request (not yet accepted).
+    Text { group: Vec<u8>, from: MemberId, name: Option<String>, text: String, request: bool },
+    /// A stranger started a chat (`direct`) or added this device to a
+    /// group; shown in the request inbox until accepted or declined.
+    Request { group: Vec<u8>, from: String, direct: bool },
+    /// A group was declined automatically (blocked adder, settings).
+    Declined { group: Vec<u8>, from: String, reason: String },
     Joined { group: Vec<u8> },
     Changed { group: Vec<u8>, added: Vec<MemberId>, removed: Vec<MemberId>, epoch: u64, own_commit_discarded: bool },
     /// A member announced its display name.
@@ -123,6 +136,11 @@ pub struct Contact {
     pub members: Vec<String>,
     /// The user compared the safety number for exactly these devices.
     pub verified: bool,
+    /// The user chose this contact (invited it or accepted its request).
+    #[serde(default)]
+    pub accepted: bool,
+    #[serde(default)]
+    pub blocked: bool,
 }
 
 impl Contact {
@@ -446,6 +464,7 @@ impl Session {
         }
         let mut events = Vec::new();
         self.pin(account_id, &ids, &mut events)?;
+        self.accept_contact(account_id)?;
         let mut accounts = self.map(&accounts_key(gid))?;
         for i in &ids {
             accounts.insert(i.to_hex(), account_id.to_string());
@@ -598,6 +617,7 @@ impl Session {
                         self.groups.insert(gid.clone(), g);
                         self.init_group_maps(&gid)?;
                         self.client.set_app_data(&announce_key(&gid), Some(b"1"))?;
+                        self.set_group_status(&gid, &GroupStatus::Request { from: None })?;
                         events.push(Event::Joined { group: gid });
                         Ok(true)
                     }
@@ -615,6 +635,9 @@ impl Session {
         };
         if !self.client.group_ids()?.contains(&gid) {
             return self.hold(body, events, may_hold, "unknown group");
+        }
+        if self.group_status(&gid)? == GroupStatus::Declined {
+            return Ok(false); // ignored after declining
         }
         self.group(&gid)?;
         let incoming = self.groups.get_mut(&gid).expect("loaded").receive(&self.client, body);
@@ -660,8 +683,15 @@ impl Session {
         let me = self.member_id().to_hex();
         match Payload::decode(body) {
             Some(Payload::Text { text }) => {
+                if let Some(a) = self.map(&accounts_key(gid))?.get(&from.to_hex()) {
+                    if self.is_blocked(a)? {
+                        events.push(Event::Dropped { reason: "from a blocked account".into() });
+                        return Ok(());
+                    }
+                }
                 let name = self.names(gid)?.get(&from.to_hex()).cloned();
-                events.push(Event::Text { group: gid.to_vec(), from, name, text })
+                let request = matches!(self.group_status(gid)?, GroupStatus::Request { .. });
+                events.push(Event::Text { group: gid.to_vec(), from, name, text, request })
             }
             Some(Payload::Roster { devices, names, accounts }) => {
                 // Only entries for current members are taken; names only as
@@ -698,6 +728,10 @@ impl Session {
                 self.save_map(&accounts_key(gid), &known_accounts)?;
                 for (a, ids) in by_account {
                     self.pin(&a, &ids, events)?;
+                }
+                // The roster's sender added us if we are still a request.
+                if let Some(adder) = self.map(&accounts_key(gid))?.get(&from.to_hex()).cloned() {
+                    self.decide_request(gid, &adder, events)?;
                 }
                 events.push(Event::RosterUpdated { group: gid.to_vec() });
             }

@@ -2,52 +2,10 @@
 //! HTTP: invite, chat, a commit race, a restart, removal, leaving. Then the
 //! server's database is searched for the plaintext.
 
-use std::path::PathBuf;
+mod common;
 
+use common::Env;
 use tree_client::{CommitOutcome, Event, Session};
-use tree_server::Config;
-
-struct Env {
-    dir: PathBuf,
-    url: String,
-    db: PathBuf,
-    _rt: tokio::runtime::Runtime,
-}
-
-impl Env {
-    fn new(tag: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!("tree-e2e-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let db = dir.join("server.db");
-        let cfg = Config {
-            database_url: format!("sqlite://{}", db.display()),
-            bind_addr: "127.0.0.1:0".parse().unwrap(),
-            pow_bits: 8,
-            ..Config::default()
-        };
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let server = rt.block_on(tree_server::start(cfg)).unwrap();
-        let url = format!("http://{}", server.addr);
-        std::mem::forget(server); // runs until the runtime is dropped
-        Self { dir, url, db, _rt: rt }
-    }
-
-    fn device(&self, name: &str) -> Session {
-        let p = self.profile(name);
-        Session::create(&p, &format!("{name} passphrase"), name, &self.url, 8).unwrap()
-    }
-
-    fn profile(&self, name: &str) -> String {
-        self.dir.join(format!("{name}.db")).display().to_string()
-    }
-}
-
-impl Drop for Env {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
-}
 
 fn texts(events: &[Event]) -> Vec<(String, String)> {
     events
@@ -79,6 +37,9 @@ fn three_devices_chat_through_the_server() {
     let ev = bob.sync(0).unwrap();
     assert!(ev.contains(&Event::Joined { group: g.clone() }), "{ev:?}");
     assert!(ev.contains(&Event::RosterUpdated { group: g.clone() }), "{ev:?}");
+    // alice is a stranger to bob: her 1:1 chat is a message request.
+    assert!(ev.contains(&Event::Request { group: g.clone(), from: alice.account_id().into(), direct: true }), "{ev:?}");
+    bob.accept_request(&g).unwrap();
 
     alice.send_text(&g, "안녕 밥, 서버를 거쳐 가는 첫 메시지 7f3a").unwrap();
     let ev = bob.sync(0).unwrap();
@@ -96,6 +57,8 @@ fn three_devices_chat_through_the_server() {
     let ev = alice.sync(0).unwrap();
     assert!(ev.iter().any(|e| matches!(e, Event::Changed { epoch: 2, .. })), "{ev:?}");
     // alice decides again in epoch 2 and wins.
+    // carol knows alice (e.g. found her @username): only contacts may add her to groups.
+    carol.add_contact(alice.account_id()).unwrap();
     // Same devices as in the lost attempt: no key-change warning.
     assert_eq!(alice.invite(&g, carol.account_id()).unwrap(), (CommitOutcome::Accepted { epoch: 3 }, vec![]));
     let ev = carol.sync(0).unwrap();

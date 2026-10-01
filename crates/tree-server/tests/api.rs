@@ -968,3 +968,63 @@ async fn purge_counts_what_it_removes() {
     assert_eq!(tree_server::purge_expired(&ts.server.state, later).await.unwrap(), 0);
     ts.stop().await;
 }
+
+/// The last-resort key package is handed out only when no one-time one is
+/// left, as often as asked, and replaced by the device.
+#[tokio::test]
+async fn last_resort_key_package() {
+    let ts = boot(|c| c.max_key_package_bytes = 3000).await;
+    let api = &ts.api;
+    let (alice, bob) = (api.signup().await, api.signup().await);
+    let alice2 = api.add_device(&alice).await;
+    let put = |dev: &Device, kp: &[u8]| {
+        let body = json!({ "key_package": b64(kp) });
+        let dev = dev.clone();
+        async move { api.call(&dev, Method::PUT, "/v1/keypackages/last-resort", Some(body)).await }
+    };
+    let got = |v: &Value| {
+        v["key_packages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| {
+                let kp = unb64(p["key_package"].as_str().unwrap());
+                (p["device_id"].as_str().unwrap().to_string(), kp, p["last_resort"].as_bool().unwrap())
+            })
+            .collect::<Vec<_>>()
+    };
+    let (_, v) = api.call(&alice, Method::GET, "/v1/keypackages/count", None).await;
+    assert_eq!(v["last_resort"], false);
+
+    assert_eq!(put(&alice, b"lr-1").await.0, StatusCode::OK);
+    assert_eq!(put(&alice, b"lr-2").await.0, StatusCode::OK, "replaces");
+    assert_eq!(put(&alice, &[1u8; 3001]).await.0, StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(put(&alice, b"").await.0, StatusCode::BAD_REQUEST);
+    let (_, v) = api.call(&alice, Method::GET, "/v1/keypackages/count", None).await;
+    assert_eq!((v["count"].as_i64(), v["last_resort"].as_bool()), (Some(0), Some(true)));
+    api.upload(&alice, &[b"one-time".to_vec()]).await;
+
+    // One-time first; then the last-resort one, again and again.
+    let (_, v) = api.claim(&bob, &alice.account_id).await;
+    assert_eq!(got(&v), vec![(alice.device_id.clone(), b"one-time".to_vec(), false)]);
+    assert_eq!(v["exhausted"], json!([alice2.device_id]));
+    for _ in 0..3 {
+        let (_, v) = api.claim(&bob, &alice.account_id).await;
+        assert_eq!(got(&v), vec![(alice.device_id.clone(), b"lr-2".to_vec(), true)]);
+    }
+    let (_, v) = api.call(&alice, Method::GET, "/v1/keypackages/count", None).await;
+    assert_eq!((v["count"].as_i64(), v["last_resort"].as_bool()), (Some(0), Some(true)));
+
+    // Gone with the account.
+    let n = || async {
+        let n: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM last_resort_key_packages")
+            .fetch_one(&ts.server.state.db)
+            .await
+            .unwrap();
+        n.0
+    };
+    assert_eq!(n().await, 1);
+    assert_eq!(api.call(&alice, Method::DELETE, "/v1/accounts", None).await.0, StatusCode::OK);
+    assert_eq!(n().await, 0);
+    ts.stop().await;
+}

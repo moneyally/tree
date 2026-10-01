@@ -116,7 +116,7 @@ Deletes the device, its key packages and its mailbox. Removing the last device
 removes the account. `200` → `{ "removed": "<device_id>" }`; `NOT_FOUND` if it is
 not on my account.
 
-## Key packages (one-time, MLS)
+## Key packages (MLS)
 
 ### `POST /v1/keypackages` — upload
 
@@ -137,18 +137,30 @@ At most 100 per upload, 16 KiB each, 200 stored per device.
 
 ```json
 {
-  "key_packages": [{ "device_id": "...", "key_package": "<base64>" }],
-  "exhausted": ["<device_id with none left>"]
+  "key_packages": [{ "device_id": "...", "key_package": "<base64>", "last_resort": false }],
+  "exhausted": ["<device_id with none left, not even a last-resort one>"]
 }
 ```
 
 Each package is selected and deleted in one statement, so it is never handed
-out twice, even under concurrent claims. Oldest first. A claim costs extra
+out twice, even under concurrent claims. Oldest first. A device with no
+one-time package left gets its last-resort package instead
+(`"last_resort": true`), which is not deleted. A claim costs extra
 rate-limit tokens. `NOT_FOUND` for an unknown account.
 
 ### `GET /v1/keypackages/count` — my remaining count
 
-`200` → `{ "count": 42 }`
+`200` → `{ "count": 42, "last_resort": true }` (one-time packages left;
+whether a last-resort package is stored).
+
+### `PUT /v1/keypackages/last-resort` — set my last-resort key package
+
+```json
+{ "key_package": "<base64>" }
+```
+
+One per device; a new one replaces the old. Same size limit as uploads.
+`200` → `{ "ok": true }`. Errors: `TOO_LARGE`, `BAD_REQUEST`.
 
 ## Mailbox
 

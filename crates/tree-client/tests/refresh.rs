@@ -30,7 +30,7 @@ fn refreshes_after_joining_with_traffic_and_on_demand() {
 
     // bob refreshes right after joining (his leaf key came from a key
     // package that waited on the server).
-    bob.set_refresh_policy(RefreshPolicy { interval: 24 * 3600, join_delay_max: 0 });
+    bob.set_refresh_policy(RefreshPolicy { interval: 24 * 3600, join_delay_max: 0, ..Default::default() });
     alice.invite(&g, bob.account_id()).unwrap();
     bob.sync(0).unwrap(); // joins, then refreshes in the same sync
     let after_join = bob.epoch(&g).unwrap();
@@ -40,7 +40,7 @@ fn refreshes_after_joining_with_traffic_and_on_demand() {
     carol.sync(0).unwrap();
 
     // With traffic and the interval passed, the next sync refreshes.
-    bob.set_refresh_policy(RefreshPolicy { interval: 1, join_delay_max: 0 });
+    bob.set_refresh_policy(RefreshPolicy { interval: 1, join_delay_max: 0, ..Default::default() });
     alice.send_text(&g, "hi").unwrap();
     std::thread::sleep(std::time::Duration::from_millis(2100));
     bob.sync(0).unwrap();

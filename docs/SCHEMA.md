@@ -103,7 +103,7 @@ Created by the library's own migrations. The ones Tree uses:
 | Table | Content | Secret |
 | --- | --- | --- |
 | `openmls_signature_keys` | the device's MLS signature key pair | yes |
-| `openmls_key_packages` | private parts of unused one-time key packages | yes |
+| `openmls_key_packages` | private parts of unused one-time key packages, and of the current and previous last-resort key package | yes |
 | `openmls_encryption_keys`, `openmls_epoch_keys_pairs` | HPKE private keys of the leaf and path | yes |
 | `openmls_group_data` | group context, ratchet tree, epoch secrets, secret tree (message keys) incl. retained past epochs, pending commit, join config | yes |
 | `openmls_own_leaf_nodes` | own leaf nodes | no |
@@ -142,6 +142,11 @@ CREATE TABLE devices (
 CREATE TABLE key_packages (                      -- one-time MLS key packages, opaque
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
     device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    data      BLOB NOT NULL
+);
+
+CREATE TABLE last_resort_key_packages (          -- one per device, never deleted by a claim
+    device_id TEXT PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
     data      BLOB NOT NULL
 );
 

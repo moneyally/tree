@@ -22,3 +22,4 @@ zeroize = "1.9"
 [dev-dependencies]
 tree-server = { path = "../tree-server" }
 tokio = { version = "1", features = ["full"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite-bundled", "migrate", "macros"] }

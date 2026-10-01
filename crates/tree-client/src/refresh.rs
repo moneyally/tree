@@ -24,11 +24,20 @@ pub struct RefreshPolicy {
     /// A just-joined device refreshes after a random delay of one minute up
     /// to this long (0: at its next sync).
     pub join_delay_max: i64,
+    /// Seconds between replacements of the last-resort key package.
+    pub last_resort_rotate: i64,
+    /// Sync checks the key package supply at most this often (seconds).
+    pub key_package_check: i64,
 }
 
 impl Default for RefreshPolicy {
     fn default() -> Self {
-        RefreshPolicy { interval: 24 * 3600, join_delay_max: 600 }
+        RefreshPolicy {
+            interval: 24 * 3600,
+            join_delay_max: 600,
+            last_resort_rotate: crate::LAST_RESORT_ROTATE,
+            key_package_check: crate::KEY_PACKAGE_CHECK,
+        }
     }
 }
 
@@ -41,11 +50,11 @@ fn traffic_key(gid: &[u8]) -> String {
 }
 
 impl Session {
-    fn time_of(&self, key: &str) -> Result<Option<i64>, Error> {
+    pub(crate) fn time_of(&self, key: &str) -> Result<Option<i64>, Error> {
         Ok(self.client.app_data(key)?.and_then(|v| String::from_utf8(v).ok()).and_then(|s| s.parse().ok()))
     }
 
-    fn set_time(&self, key: &str, t: i64) -> Result<(), Error> {
+    pub(crate) fn set_time(&self, key: &str, t: i64) -> Result<(), Error> {
         Ok(self.client.set_app_data(key, Some(t.to_string().as_bytes()))?)
     }
 

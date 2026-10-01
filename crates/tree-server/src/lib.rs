@@ -48,7 +48,7 @@ use axum::extract::{MatchedPath, Request, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::Response;
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use serde_json::json;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
@@ -219,6 +219,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/keypackages", post(keypackages::upload))
         .route("/v1/keypackages/claim", post(keypackages::claim))
         .route("/v1/keypackages/count", get(keypackages::count))
+        .route("/v1/keypackages/last-resort", put(keypackages::set_last_resort))
         .route("/v1/messages", post(messages::send).get(messages::fetch))
         .route("/v1/messages/ack", post(messages::ack))
         .route("/v1/commits", post(commits::submit))

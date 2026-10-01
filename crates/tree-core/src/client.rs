@@ -201,7 +201,9 @@ impl<P: TreeProvider> Client<P> {
 
     /// Leaf capabilities: Tree's group-settings extension (PROTOCOL.md 6.11).
     pub(crate) fn capabilities() -> Capabilities {
-        Capabilities::builder().extensions(vec![ExtensionType::Unknown(EXTENSION_TYPE)]).build()
+        Capabilities::builder()
+            .extensions(vec![ExtensionType::Unknown(EXTENSION_TYPE), ExtensionType::LastResort])
+            .build()
     }
 
     /// Publishes a fresh one-time key package (uploaded to the server so
@@ -217,6 +219,42 @@ impl<P: TreeProvider> Client<P> {
                 .key_package()
                 .tls_serialize_detached()
                 .map_err(|e| TreeError::Malformed(format!("{e:?}")))
+        })
+    }
+
+    /// Publishes a last-resort key package (RFC 9420 section 16.8): the
+    /// server hands it out only when no one-time key package is left, and
+    /// may hand it out many times, so filling the store cannot stop others
+    /// from adding this device. Its private part is kept after a join; the
+    /// caller replaces it from time to time and then calls
+    /// [`Client::forget_key_package`] on the old one.
+    pub fn last_resort_key_package(&self) -> Result<Vec<u8>, TreeError> {
+        self.provider.atomically(|| {
+            let bundle = KeyPackage::builder()
+                .leaf_node_capabilities(Self::capabilities())
+                .mark_as_last_resort()
+                .build(self.ciphersuite, &self.provider, &self.signer, self.credential.clone())
+                .map_err(|e| TreeError::Identity(format!("{e:?}")))?;
+            bundle
+                .key_package()
+                .tls_serialize_detached()
+                .map_err(|e| TreeError::Malformed(format!("{e:?}")))
+        })
+    }
+
+    /// Deletes the private part of one of this device's key packages (given
+    /// as published), so a welcome made from it can no longer be opened.
+    pub fn forget_key_package(&self, key_package: &[u8]) -> Result<(), TreeError> {
+        let kp = KeyPackageIn::tls_deserialize_exact(key_package)
+            .map_err(|e| TreeError::Malformed(format!("{e:?}")))?
+            .validate(self.provider.crypto(), ProtocolVersion::Mls10)
+            .map_err(|e| TreeError::Malformed(format!("{e:?}")))?;
+        let r = kp.hash_ref(self.provider.crypto()).map_err(|e| TreeError::Malformed(format!("{e:?}")))?;
+        self.provider.atomically(|| {
+            self.provider
+                .storage()
+                .delete_key_package(&r)
+                .map_err(|e| TreeError::Storage(format!("{e:?}")))
         })
     }
 

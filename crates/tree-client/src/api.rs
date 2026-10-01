@@ -257,8 +257,20 @@ impl Api {
     }
 
     pub fn key_package_count(&self, c: &Creds) -> Result<u64, Error> {
+        Ok(self.key_package_status(c)?.0)
+    }
+
+    /// One-time key packages left on the server, and whether a last-resort
+    /// one is there.
+    pub fn key_package_status(&self, c: &Creds) -> Result<(u64, bool), Error> {
         let v = self.call(c, Method::GET, "/v1/keypackages/count", None)?.ok()?;
-        Ok(v["count"].as_u64().unwrap_or(0))
+        Ok((v["count"].as_u64().unwrap_or(0), v["last_resort"].as_bool().unwrap_or(false)))
+    }
+
+    /// Sets or replaces this device's last-resort key package.
+    pub fn set_last_resort(&self, c: &Creds, kp: &[u8]) -> Result<(), Error> {
+        self.call(c, Method::PUT, "/v1/keypackages/last-resort", Some(&json!({ "key_package": b64(kp) })))?.ok()?;
+        Ok(())
     }
 
     /// One key package per device of `account_id`: (device id, key package).

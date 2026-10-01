@@ -1,4 +1,6 @@
-//! One-time MLS key packages. Opaque to the server; each one is handed out once.
+//! MLS key packages. Opaque to the server. One-time key packages are handed
+//! out once; a device's single last-resort key package is handed out only
+//! when it has none of those left, and is kept.
 
 use axum::extract::State;
 use axum::Json;
@@ -36,6 +38,20 @@ async fn count_for(db: impl sqlx::SqliteExecutor<'_>, device_id: &str) -> Result
         .try_get("n")
 }
 
+fn decode(cfg: &crate::config::Config, kp: &str) -> ApiResult<Vec<u8>> {
+    if b64_exceeds(kp, cfg.max_key_package_bytes) {
+        return Err(ApiError::too_large("key package too large"));
+    }
+    let bytes = unb64(kp, "key package")?;
+    if bytes.is_empty() {
+        return Err(ApiError::bad_request("empty key package"));
+    }
+    if bytes.len() > cfg.max_key_package_bytes {
+        return Err(ApiError::too_large("key package too large"));
+    }
+    Ok(bytes)
+}
+
 /// `POST /v1/keypackages`
 pub async fn upload(
     State(state): State<AppState>,
@@ -52,20 +68,7 @@ pub async fn upload(
             cfg.max_key_packages_per_upload
         )));
     }
-    let mut decoded = Vec::with_capacity(list.len());
-    for kp in list {
-        if b64_exceeds(kp, cfg.max_key_package_bytes) {
-            return Err(ApiError::too_large("key package too large"));
-        }
-        let bytes = unb64(kp, "key package")?;
-        if bytes.is_empty() {
-            return Err(ApiError::bad_request("empty key package"));
-        }
-        if bytes.len() > cfg.max_key_package_bytes {
-            return Err(ApiError::too_large("key package too large"));
-        }
-        decoded.push(bytes);
-    }
+    let decoded = list.iter().map(|kp| decode(cfg, kp)).collect::<ApiResult<Vec<_>>>()?;
 
     let device_id = &req.device.device_id;
     let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
@@ -100,17 +103,21 @@ json_body!(ClaimReq, |_cfg| 256);
 pub struct ClaimedPackage {
     pub device_id: String,
     pub key_package: String,
+    /// The device's last-resort key package (it had no one-time one left).
+    pub last_resort: bool,
 }
 
 #[derive(Serialize)]
 pub struct ClaimResp {
     pub key_packages: Vec<ClaimedPackage>,
-    /// Devices of the account that have no key package left.
+    /// Devices of the account that have no key package left, not even a
+    /// last-resort one.
     pub exhausted: Vec<String>,
 }
 
 /// `POST /v1/keypackages/claim` — one key package per device of the account,
-/// each deleted in the same statement that reads it.
+/// each deleted in the same statement that reads it; the last-resort key
+/// package of a device without one-time ones, which stays.
 pub async fn claim(
     State(state): State<AppState>,
     req: Signed<ClaimReq>,
@@ -143,12 +150,23 @@ pub async fn claim(
         .bind(&device_id)
         .fetch_optional(&state.db)
         .await?;
+        let (row, last_resort) = match row {
+            Some(r) => (Some(r), false),
+            None => {
+                let r = sqlx::query("SELECT data FROM last_resort_key_packages WHERE device_id = ?")
+                    .bind(&device_id)
+                    .fetch_optional(&state.db)
+                    .await?;
+                (r, true)
+            }
+        };
         match row {
             Some(r) => {
                 let data: Vec<u8> = r.try_get("data")?;
                 key_packages.push(ClaimedPackage {
                     device_id,
                     key_package: b64(&data),
+                    last_resort,
                 });
             }
             None => exhausted.push(device_id),
@@ -160,11 +178,40 @@ pub async fn claim(
     }))
 }
 
-/// `GET /v1/keypackages/count` — the caller's remaining key packages.
+/// `GET /v1/keypackages/count` — the caller's remaining one-time key
+/// packages, and whether it has a last-resort one.
 pub async fn count(
     State(state): State<AppState>,
     req: Signed<NoBody>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let n = count_for(&state.db, &req.device.device_id).await?;
-    Ok(Json(serde_json::json!({ "count": n })))
+    let lr: Option<(i64,)> = sqlx::query_as("SELECT 1 FROM last_resort_key_packages WHERE device_id = ?")
+        .bind(&req.device.device_id)
+        .fetch_optional(&state.db)
+        .await?;
+    Ok(Json(serde_json::json!({ "count": n, "last_resort": lr.is_some() })))
+}
+
+#[derive(Deserialize)]
+pub struct LastResortReq {
+    pub key_package: String,
+}
+json_body!(LastResortReq, |cfg| cfg.max_key_package_bytes.div_ceil(3) * 4 + 64);
+
+/// `PUT /v1/keypackages/last-resort` — sets or replaces the caller's
+/// last-resort key package.
+pub async fn set_last_resort(
+    State(state): State<AppState>,
+    req: Signed<LastResortReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let bytes = decode(&state.cfg, &req.body.key_package)?;
+    sqlx::query(
+        "INSERT INTO last_resort_key_packages (device_id, data) VALUES (?, ?) \
+         ON CONFLICT(device_id) DO UPDATE SET data = excluded.data",
+    )
+    .bind(&req.device.device_id)
+    .bind(&bytes)
+    .execute(&state.db)
+    .await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
 }

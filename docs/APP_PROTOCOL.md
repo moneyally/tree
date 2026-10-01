@@ -177,6 +177,7 @@ In the same encrypted database as the core (`tree_app` table, SCHEMA.md):
 | `note/self` | the notes group (one member) |
 | `folders`, `muted` | the user's chat folders (name -> group ids) and muted chats |
 | `refresh/<group hex>`, `traffic/<group hex>` | when this device last refreshed its keys in the group, and when the group last had traffic (PROTOCOL.md 6.9) |
+| `keypackages/last_resort`, `keypackages/last_resort_prev`, `keypackages/last_resort_at`, `keypackages/checked` | current and previous last-resort key package as published, when the current one was made, when the server supply was last checked (PROTOCOL.md 5.3) |
 | `invite/<link hash hex>` | a link this device made: group, expiry, use limit (PROTOCOL.md 8.7) |
 | `linkjoin/<link hash hex>` | the user opened this link: owner account and time (one day, used once) |
 | `feature/user.recovery_phrase` | applied once a recovery phrase was made (the phrase itself is never stored) |

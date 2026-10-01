@@ -61,6 +61,12 @@ pub enum Error {
 /// Key packages kept on the server; topped up when fewer remain.
 pub const KEY_PACKAGES_TARGET: usize = 20;
 pub const KEY_PACKAGES_LOW: u64 = 10;
+/// The last-resort key package is replaced this often; the one before the
+/// previous is then forgotten, so a welcome made from it can no longer be
+/// opened (PROTOCOL.md 5.3).
+pub const LAST_RESORT_ROTATE: i64 = 7 * 86400;
+/// Sync checks the key package supply at most this often.
+pub const KEY_PACKAGE_CHECK: i64 = 3600;
 /// Messages for unknown groups or future epochs kept for a retry (PROTOCOL.md 6.7).
 pub const MAX_HELD: usize = 256;
 
@@ -167,6 +173,10 @@ const K_SERVER: &str = "server/url";
 const K_ACCOUNT: &str = "server/account_id";
 const K_DEVICE: &str = "server/device_id";
 const K_AUTH_KEY: &str = "server/auth_key";
+const LAST_RESORT_CUR: &str = "keypackages/last_resort";
+const LAST_RESORT_PREV: &str = "keypackages/last_resort_prev";
+const LAST_RESORT_AT: &str = "keypackages/last_resort_at";
+const KEY_PACKAGES_CHECKED: &str = "keypackages/checked";
 
 fn roster_key(g: &[u8]) -> String {
     format!("roster/{}", hex::encode(g))
@@ -452,14 +462,34 @@ impl Session {
     }
 
     /// Keeps enough one-time key packages on the server for others to add
-    /// this device while it is offline.
+    /// this device while it is offline, and a fresh last-resort one for when
+    /// they run out (PROTOCOL.md 5.3).
     pub fn ensure_key_packages(&mut self) -> Result<(), Error> {
-        let count = self.api.key_package_count(&self.creds)?;
+        let (count, has_last_resort) = self.api.key_package_status(&self.creds)?;
         if count < KEY_PACKAGES_LOW {
             let kps = (0..KEY_PACKAGES_TARGET).map(|_| self.client.key_package()).collect::<Result<Vec<_>, _>>()?;
             self.api.upload_key_packages(&self.creds, &kps)?;
         }
-        Ok(())
+        let t = messages::now();
+        let fresh = self.time_of(LAST_RESORT_AT)?.is_some_and(|at| t - at < self.refresh_policy.last_resort_rotate);
+        if !has_last_resort || !fresh {
+            let kp = self.client.last_resort_key_package()?;
+            self.api.set_last_resort(&self.creds, &kp)?;
+            if let Some(old) = self.client.app_data(LAST_RESORT_PREV)? {
+                self.client.forget_key_package(&old)?;
+            }
+            if let Some(cur) = self.client.app_data(LAST_RESORT_CUR)? {
+                self.client.set_app_data(LAST_RESORT_PREV, Some(&cur))?;
+            }
+            self.client.set_app_data(LAST_RESORT_CUR, Some(&kp))?;
+            self.set_time(LAST_RESORT_AT, t)?;
+        }
+        self.set_time(KEY_PACKAGES_CHECKED, t)
+    }
+
+    /// Others may have claimed key packages since the last check.
+    fn key_packages_due(&self) -> Result<bool, Error> {
+        Ok(self.time_of(KEY_PACKAGES_CHECKED)?.is_none_or(|at| messages::now() - at >= self.refresh_policy.key_package_check))
     }
 
     /// Starts a group with only this device in it.
@@ -845,7 +875,7 @@ impl Session {
         while moved {
             moved = self.retry_held(&mut events)?;
         }
-        if events.iter().any(|e| matches!(e, Event::Joined { .. })) {
+        if events.iter().any(|e| matches!(e, Event::Joined { .. })) || self.key_packages_due()? {
             self.ensure_key_packages()?;
         }
         self.handle_invite_requests(&mut events)?;

@@ -57,6 +57,47 @@ impl Env {
         (r.status().as_u16(), r.json().unwrap_or_default())
     }
 
+    /// Runs one statement on the server database; rows changed.
+    pub fn sql(&self, q: &'static str, arg: &str) -> u64 {
+        let arg = arg.to_string();
+        self._rt.block_on(async {
+            let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", self.db.display())).await.unwrap();
+            let n = sqlx::query(q).bind(arg).execute(&pool).await.unwrap().rows_affected();
+            pool.close().await;
+            n
+        })
+    }
+
+    /// The last-resort key package the server holds for a device.
+    pub fn last_resort(&self, device: &str) -> Option<Vec<u8>> {
+        let device = device.to_string();
+        self._rt.block_on(async {
+            let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", self.db.display())).await.unwrap();
+            let r: Option<(Vec<u8>,)> = sqlx::query_as("SELECT data FROM last_resort_key_packages WHERE device_id = ?")
+                .bind(device)
+                .fetch_optional(&pool)
+                .await
+                .unwrap();
+            pool.close().await;
+            r.map(|r| r.0)
+        })
+    }
+
+    /// Puts a last-resort key package back on the server for a device.
+    pub fn set_last_resort(&self, device: &str, kp: &[u8]) {
+        let (device, kp) = (device.to_string(), kp.to_vec());
+        self._rt.block_on(async {
+            let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", self.db.display())).await.unwrap();
+            sqlx::query("UPDATE last_resort_key_packages SET data = ? WHERE device_id = ?")
+                .bind(kp)
+                .bind(device)
+                .execute(&pool)
+                .await
+                .unwrap();
+            pool.close().await;
+        })
+    }
+
     pub fn profile(&self, name: &str) -> String {
         self.dir.join(format!("{name}.db")).display().to_string()
     }

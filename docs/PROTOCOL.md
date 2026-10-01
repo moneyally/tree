@@ -332,21 +332,31 @@ different member in the current epoch.
 - Content: ciphersuite `0x004E`, `BasicCredential` holding the signature
   key (no name), the device's MLS signature key, a fresh HPKE init key, lifetime `not_before = now - 1 h`,
   `not_after = now + 84 days` (library default).
-- One-time use: each key package is used for at most one add. There is no
-  last-resort key package in v1; a device with none left cannot be added
-  until it uploads more.
+- One-time use: each key package is used for at most one add.
 - Upload: at most 100 per request, 16 KiB each, 200 stored per device
-  (server limits, [SERVER_API.md](SERVER_API.md)). A device SHOULD keep at
-  least 50 on the server and SHOULD upload more when `GET
-  /v1/keypackages/count` is lower **(in progress: no client logic yet)**.
+  (server limits, [SERVER_API.md](SERVER_API.md)). The client keeps 20 on
+  the server and uploads 20 more when `GET /v1/keypackages/count` is below
+  10: at sign-up, after joining a group, and during sync at most once an
+  hour (others may have claimed some meanwhile).
+- Last resort (RFC 9420 §16.8): each device also keeps one key package with
+  the `last_resort` extension on the server (`PUT
+  /v1/keypackages/last-resort`). The server hands it out only when the
+  device has no one-time key package left, and keeps it, so claiming all
+  one-time key packages (claims cost 5 rate tokens) cannot stop others from
+  adding the device. Its private part is not deleted on join, so welcomes to
+  it lose some forward secrecy until it is replaced: the client replaces it
+  every 7 days and then deletes the private part of the one before the
+  previous one (the previous one stays for welcomes still on their way).
 - Claim: `POST /v1/keypackages/claim` returns one key package per device of
-  an account and deletes it in the same statement, oldest first.
+  an account and deletes it in the same statement, oldest first; for a
+  device without one, its last-resort key package (`last_resort: true`).
 - Validation by the adder (RFC 9420 §10.1, done by `KeyPackageIn::validate`):
   signatures, lifetime, protocol version, `init_key != encryption_key`,
   extension support; plus Tree's ciphersuite check. The adder SHOULD also
   check that the key package's signature key is the one it expects for that
   contact (pinned or verified) and warn on change (`user.key_change_warning`
-  is always on) **(in progress: no pinning yet)**.
+  is always on): the client pins each contact's device keys at the first
+  add and reports a change as `KeyChanged`.
 - Joining: the library deletes the private part of a key package as soon as
   it finds its reference in a welcome, before verifying the welcome. Tree
   keeps a copy and writes it back if the join fails (finding F-006, fixed).

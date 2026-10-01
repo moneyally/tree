@@ -28,7 +28,13 @@ who leaks a conversation can prove it is genuine.
 | Network eavesdropper, incl. future quantum computer | TLS 1.3 + hybrid PQ MLS | message size and timing (padding reduces size leakage) |
 | The Tree server (breach, insider, legal compulsion) | stores only ciphertext; outer seal blocks forged inputs | sees mailbox, approximate time; can drop messages |
 | Outsider who can write to a mailbox | outer envelope seal checked before MLS | none known |
-| Malicious group member | MLS authentication | can leak what they read; can make one message undecryptable (F-001); can get changes committed in an honest member's name or cut members off through proposals (F-007) |
+| Malicious group member | MLS authentication; proposals rejected (F-007); only admins remove or change settings, checked by every device (PROTOCOL.md 6.11) | can leak what they read; can make one message undecryptable (F-001); a modified client can ignore chat settings for itself (keep copies, show expired messages) |
+| Malicious reporter | message franking: a report verifies only for content the reported account really sent in that group (PROTOCOL.md 8.5, `formal/franking.pv`) | can report genuine messages out of context; at most 20 reports a day (F-012) |
+| Thief with an unlocked device | recovery-key changes without the old phrase wait 7 days and are shown on every device; the owner's phrase recovers meanwhile and removes the thief's device (F-010) | can read and send as the owner until then; can delete the account |
+| Holder of an invite link | the server enforces expiry and use limit; the owner's admin device adds only while `chat.invite_link` is applied; blocked accounts are refused | anyone with the link can ask to join while it is valid |
+| Push gateway operator | receives only the word `wake`, coalesced (PROTOCOL.md 8.8) | learns when a device gets something, roughly how often |
+| Spammer | signup proof of work, per-device and per-IP rate limits, message requests and blocking, reports and suspension | a determined spammer with many accounts still reaches request inboxes; no new-account sending limit yet |
+| The operator (moderation) | sees only what a user reports, with the franking result; can suspend accounts | reported messages are readable by the operator by design; a file report hands over that file's key |
 | Removed member with a modified client | new epoch keys after removal | none known for later epochs (attack-scenario tests; formal model `formal/removal_secrecy.pv` under abstractions); can burn keys of messages from epochs it knew while they are in the past-epoch window |
 | Device thief | encrypted local storage (below); (planned) hardware-wrapped keys | an unlocked phone; a weak passphrase until the hardware keystore is used |
 | Spyware on the device | out of scope | no messenger can protect a compromised OS |

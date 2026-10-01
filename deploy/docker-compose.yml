@@ -11,6 +11,7 @@ services:
     environment:
       BIND_ADDR: 0.0.0.0:8080
       DATABASE_URL: sqlite:///data/tree.db
+      ATTACHMENT_DIR: /data/attachments
       # Caddy overwrites X-Forwarded-For with the real client address.
       TRUST_FORWARDED_FOR: "true"
     volumes:

@@ -53,7 +53,7 @@ in section 5.
 | Recovery phrase (12-24 words) | missing | threat model in RECOVERY_THREAT_MODEL.md |
 | Safety number / QR comparison, key change warning | done | PROTOCOL.md 5.4 (Q4 decided); pinning on first use, warning on any new device key; CLI `safety`, `verify` |
 | Device link with confirmation code on both devices | missing | permanent lock in the registry, no code (multi-device is stage 3) |
-| Per-file encryption for attachments | missing | |
+| Per-file encryption for attachments | done | PROTOCOL.md 6.12: AES-256-GCM STREAM per file, key in the message, ciphertext and plaintext hashes as key commitment; `chat.media` enforced; CLI `send-file`, `download` |
 | Message franking for reports | missing | |
 | Admin roles inside the group (admins, kick) | done | PROTOCOL.md 6.11: admins, name and chat settings in the MLS group context; non-admin settings changes and removals rejected by every device; CLI `make-admin`, `name`, `group-apply` |
 | Invite links with expiry / use count | missing | |
@@ -76,7 +76,7 @@ in section 5.
 | Message request inbox for strangers, blocking | done (on the device) | APP_PROTOCOL.md 3: requests, decline, block, `user.message_requests` / `stranger_block` / `group_add`; the server still delivers (it cannot know contacts) |
 | Report service (reporter's device submits) | missing | |
 | Spam limits for new accounts | partial | per-device rate limits and signup limits exist; no new-account sending limit |
-| File service (encrypted blobs only) | missing | |
+| File service (encrypted blobs only) | done | `/v1/attachments`, files on disk, 30-day purge; 100 MiB per file (design: 2 GB free; needs chunked upload) |
 | Push relay without content | missing | |
 | Docker Compose + Caddy TLS, one region | partial | files in `deploy/`; never deployed (HANDOFF 3.5) |
 | Stateless, partitionable by user-id hash | partial | the server keeps a replay cache and rate limits in memory (Q7) |
@@ -105,7 +105,8 @@ in section 5.
 | Mutation testing | done for the core | 3.1: 277 mutants of the changed files; TESTING.md |
 | Formal models of Tree's own additions | done | 9 ProVerif models (envelope, commit ordering, removal, PCS, FS), abstract; formal/README.md |
 | Design's "tests not run yet" for stage 1: removed member cannot read (real OpenMLS code) | done | `removed_member_cannot_decrypt_even_if_ignoring_removal` |
-| Same: device link code commitment, key-committing file encryption | missing | features not built |
+| Same: key-committing file encryption | done | `attachment::tests::key_commitment`, `files_end_to_end` |
+| Same: device link code commitment | missing | multi-device is stage 3 |
 | Load test | missing | |
 | External review of the crypto code (stage-1 exit criterion) | missing | owner to engage a reviewer |
 | Reproducible builds | missing (stage 4) | |

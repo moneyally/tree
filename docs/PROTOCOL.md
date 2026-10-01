@@ -634,6 +634,35 @@ who is removed drops out of the admin list automatically. A leave request
 Chat features are stored here; what they enforce on each device (media off,
 edit window, disappearing timer, ...) is implemented feature by feature.
 
+### 6.12 Attachments
+
+Each file is encrypted with its own key and uploaded as an opaque blob
+(`POST /v1/attachments`); the reference travels in an end-to-end encrypted
+application message ([APP_PROTOCOL.md](APP_PROTOCOL.md) `file`).
+
+| Item | Value |
+| --- | --- |
+| Cipher | AES-256-GCM in the STREAM construction (Hoang, Reyhanitabar, Rogaway, Vizár, CRYPTO 2015), RustCrypto `aead::stream::StreamBE32` |
+| Chunks | 64 KiB of plaintext + 16-byte tag; nonce = 7-byte random prefix ‖ 32-bit big-endian chunk counter ‖ last-chunk flag; an empty file is one empty last chunk |
+| Key | 32 random bytes per file, never reused |
+| Commitment | the reference carries SHA-256 of the ciphertext and of the plaintext; the receiver checks the first before decrypting and the second (and the size) after |
+| Retention | the server deletes the blob after the mailbox TTL (30 days) |
+
+Why the hashes: AES-GCM is not key-committing, so one ciphertext can be made
+to decrypt under two keys to two different files. Every member of a group
+receives the same reference, so within a group this cannot show different
+files to different members; the plaintext hash also binds the content for
+later reporting. Chunk reordering, dropping and truncation are detected by
+STREAM itself.
+
+The server learns the size of each ciphertext and when it was uploaded and
+fetched (and by which device, while the request runs); not its name, type,
+uploader (not stored) or content. A device that has the id can fetch the
+ciphertext; it is useless without the key from the message.
+
+The group's `chat.media` setting (section 6.11) is enforced by every device:
+when released, sending is refused and received references are dropped.
+
 ---
 
 ## 7. Commit ordering
@@ -1215,7 +1244,7 @@ the server cannot learn it from what it sees or stores.
 | Group membership | **not protected** | the cleartext MLS group id in every message header plus the recipient list of each send; commit endpoint keeps an eligibility set | stage 4: group mailboxes with anonymous subscription |
 | Group size | **not protected** | number of recipients; commit and welcome sizes grow with the tree | stage 4 reduces (group mailbox); not fully hidden |
 | Group epoch and message type | **not protected** | cleartext `epoch` and `content_type` (application or commit) | none planned in MLS framing |
-| Message size | **partially protected** | ciphertext padded to multiples of 256 bytes; attachments sized separately | larger padding buckets (open) |
+| Message size | **partially protected** | ciphertext padded to multiples of 256 bytes; attachments sized separately (exact ciphertext size, section 6.12) | larger padding buckets (open) |
 | Timing | **not protected** | exact arrival time live; stored rounded to the minute | stage 4-5: cover traffic (optional) |
 | IP address | **not protected** from the server or network | live only; not stored (signup limiter keeps it in memory) | stage 4: relayed requests for sensitive endpoints; stage 5: independent proxies |
 | Online status | **not protected** | long-poll and fetch times per device; acknowledgements | partly with relays; push providers learn wake-ups |

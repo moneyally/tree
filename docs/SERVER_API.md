@@ -238,6 +238,20 @@ transaction ends.
 `full_devices` missed the commit (mailbox full) and must be removed from the
 group and added again.
 
+## Attachments
+
+### `POST /v1/attachments` — upload ciphertext
+
+Body: the raw encrypted file (`Content-Type: application/octet-stream`),
+signed like every request (the body hash covers the raw bytes). At most
+`MAX_ATTACHMENT_BYTES` (default 100 MiB); one extra rate-limit token per MiB.
+`201` → `{ "id": "...", "size": 1234 }`. Empty body: `BAD_REQUEST`.
+
+### `GET /v1/attachments/{id}` — download
+
+Any registered device that knows the id. `200` with the raw bytes, or
+`404 NOT_FOUND`. Blobs are deleted after `MESSAGE_TTL_SECS`.
+
 ## Usernames
 
 The client sends `hash` = standard base64 of `SHA-256("tree/username/v1" ||
@@ -289,6 +303,7 @@ Errors: `UNAUTHORIZED`, `UNKNOWN_FEATURE`.
 | account id, device ids, device authentication public keys | yes |
 | account/device creation date | day only |
 | key packages | until claimed |
+| attachment ciphertext (file named by a random id), its size and upload minute; not the uploader | until the mailbox TTL (30 days) |
 | username hash per account (if registered), discoverable flag, day registered | until released or the account is deleted |
 | per group: last accepted epoch, the device ids that may commit next, SHA-256 and id of the last 64 accepted commits | while one of its devices exists |
 | message ciphertext + recipient device + arrival minute | until acknowledged, at most 30 days |
@@ -312,6 +327,7 @@ Logs contain method, route template, status and latency only.
 | `MAX_KEY_PACKAGES_PER_DEVICE` / `_PER_UPLOAD` / `MAX_KEY_PACKAGE_BYTES` | `200` / `100` / `16384` |
 | `MAX_MESSAGE_BYTES` / `MAX_RECIPIENTS` / `MAX_MAILBOX_MESSAGES` / `FETCH_LIMIT` | `262144` / `2048` / `10000` / `100` |
 | `MAX_COMMIT_BYTES` / `MAX_WELCOME_BYTES` | `4194304` / `4194304` |
+| `ATTACHMENT_DIR` / `MAX_ATTACHMENT_BYTES` | `attachments` / `104857600` |
 | `RATE_PER_SEC` / `RATE_BURST` (per device) | `20` / `200` |
 | `SIGNUP_PER_HOUR` / `SIGNUP_BURST` (per address, IPv6 per /64) | `20` / `10` |
 | `TRUST_FORWARDED_FOR` | `false` (set `true` only behind a proxy that overwrites `X-Forwarded-For`) |

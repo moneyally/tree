@@ -42,6 +42,10 @@ pub struct Config {
     /// `MAX_WELCOME_BYTES`: size of one decoded welcome (about 2.8 MB at
     /// 2,000 leaves).
     pub max_welcome_bytes: usize,
+    /// `ATTACHMENT_DIR`: where encrypted attachments are stored.
+    pub attachment_dir: std::path::PathBuf,
+    /// `MAX_ATTACHMENT_BYTES`: size of one encrypted attachment.
+    pub max_attachment_bytes: usize,
     /// `MAX_MAILBOX_MESSAGES`: pending messages per device mailbox.
     pub max_mailbox_messages: u32,
     /// `FETCH_LIMIT`: messages returned per fetch.
@@ -76,6 +80,8 @@ impl Default for Config {
             max_recipients: 2048,
             max_commit_bytes: 4 * 1024 * 1024,
             max_welcome_bytes: 4 * 1024 * 1024,
+            attachment_dir: "attachments".into(),
+            max_attachment_bytes: 100 * 1024 * 1024,
             max_mailbox_messages: 10_000,
             fetch_limit: 100,
             rate_per_sec: 20.0,
@@ -149,6 +155,8 @@ impl Config {
             max_recipients: env_parse("MAX_RECIPIENTS", d.max_recipients)?,
             max_commit_bytes: env_parse("MAX_COMMIT_BYTES", d.max_commit_bytes)?,
             max_welcome_bytes: env_parse("MAX_WELCOME_BYTES", d.max_welcome_bytes)?,
+            attachment_dir: env_parse("ATTACHMENT_DIR", d.attachment_dir)?,
+            max_attachment_bytes: env_parse("MAX_ATTACHMENT_BYTES", d.max_attachment_bytes)?,
             max_mailbox_messages: env_parse("MAX_MAILBOX_MESSAGES", d.max_mailbox_messages)?,
             fetch_limit: env_parse("FETCH_LIMIT", d.fetch_limit)?,
             rate_per_sec: env_parse("RATE_PER_SEC", d.rate_per_sec)?,
@@ -169,6 +177,7 @@ impl Config {
             || self.max_recipients == 0
             || self.max_commit_bytes == 0
             || self.max_welcome_bytes == 0
+            || self.max_attachment_bytes == 0
             || self.max_key_packages_per_upload == 0
         {
             return Err(ConfigError("limits must be positive".into()));

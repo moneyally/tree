@@ -8,6 +8,7 @@
 //! * [`messages`] — per-device mailboxes with long-poll
 //! * [`commits`] — commit ordering: first commit per group and epoch wins
 //! * [`usernames`] — @usernames, stored as hashes only
+//! * [`attachments`] — encrypted attachments (ciphertext blobs)
 //! * [`features`] — operator flags with apply/release
 //!
 //! Privacy: no IP addresses, message bodies or key packages are logged. Logs
@@ -15,6 +16,7 @@
 //! message is known only while its request is processed and is never stored.
 
 pub mod accounts;
+pub mod attachments;
 pub mod auth;
 pub mod commits;
 pub mod config;
@@ -189,6 +191,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/messages", post(messages::send).get(messages::fetch))
         .route("/v1/messages/ack", post(messages::ack))
         .route("/v1/commits", post(commits::submit))
+        .route("/v1/attachments", post(attachments::upload))
+        .route("/v1/attachments/{id}", get(attachments::download))
         .route("/v1/usernames/apply", post(usernames::apply))
         .route("/v1/usernames/release", post(usernames::release))
         .route("/v1/usernames/lookup", post(usernames::lookup))
@@ -259,7 +263,8 @@ pub async fn purge_expired(state: &AppState, now: i64) -> Result<u64, sqlx::Erro
     )
     .execute(&state.db)
     .await?;
-    Ok(expired + orphans)
+    let files = attachments::purge(state, cutoff).await?;
+    Ok(expired + orphans + files)
 }
 
 /// A running server.

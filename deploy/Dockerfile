@@ -17,7 +17,8 @@ COPY --from=build /tree-server /usr/local/bin/tree-server
 COPY --from=build --chown=65532:65532 /data /data
 USER 65532:65532
 ENV BIND_ADDR=0.0.0.0:8080 \
-    DATABASE_URL=sqlite:///data/tree.db
+    DATABASE_URL=sqlite:///data/tree.db \
+    ATTACHMENT_DIR=/data/attachments
 EXPOSE 8080
 VOLUME ["/data"]
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

@@ -19,6 +19,7 @@ One JSON object per application message, UTF-8, field `t` names the type:
 | `profile` | `name` | the sender's own display name | any member, about itself |
 | `roster` | `devices`: member id (hex) -> device id; `names` (optional): member id -> name; `accounts` (optional): member id -> account id | who is reachable at which server device, the sender's view of names, and which account each device belongs to | the member that just added devices (others may too) |
 | `leave` | — | the sender asks to be removed (PROTOCOL.md 6.5) | any member |
+| `file` | `id`, `key` (base64), `nonce` (base64, 7 bytes), `size`, `ct_sha256`, `pt_sha256` (hex), `name`, `mime` | an encrypted attachment (PROTOCOL.md 6.12) | any member, if `chat.media` is applied |
 
 ```json
 {"t":"text","text":"안녕"}
@@ -110,3 +111,4 @@ In the same encrypted database as the core (`tree_app` table, SCHEMA.md):
 | `gstatus/<group hex>` | request (with adder account) or declined; absent = accepted |
 | `feature/<key>` | the user's setting: applied or released, option |
 | `profile/username` | the own @username |
+| `file/<attachment id>` | a received `file` reference (to download later) |

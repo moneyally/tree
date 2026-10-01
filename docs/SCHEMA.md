@@ -188,3 +188,11 @@ CREATE TABLE usernames (
 );
 ```
 
+### 2.3 Attachments (migration `0004_attachments.sql`)
+
+```sql
+CREATE TABLE attachments (id TEXT PRIMARY KEY, size INTEGER NOT NULL, created_at INTEGER NOT NULL);
+```
+
+The ciphertext itself is a file named by the id in `ATTACHMENT_DIR`. Deleted
+with the row after the mailbox TTL.

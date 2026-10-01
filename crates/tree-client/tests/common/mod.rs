@@ -24,6 +24,7 @@ impl Env {
             database_url: format!("sqlite://{}", db.display()),
             bind_addr: "127.0.0.1:0".parse().unwrap(),
             pow_bits: 8,
+            attachment_dir: dir.join("attachments"),
             ..Config::default()
         };
         let rt = tokio::runtime::Runtime::new().unwrap();

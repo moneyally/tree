@@ -31,6 +31,25 @@ pub enum Payload {
     Profile { name: String },
     /// The sender asks to be removed (PROTOCOL.md 6.5).
     Leave,
+    /// An encrypted attachment (PROTOCOL.md 6.12).
+    File(FileInfo),
+}
+
+/// Where an attachment is and how to open it. Only ever inside an
+/// end-to-end encrypted message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileInfo {
+    /// Server attachment id.
+    pub id: String,
+    /// File key (base64, 32 bytes) and STREAM nonce prefix (base64, 7 bytes).
+    pub key: String,
+    pub nonce: String,
+    pub size: u64,
+    /// Hex SHA-256 of the ciphertext and of the plaintext (key commitment).
+    pub ct_sha256: String,
+    pub pt_sha256: String,
+    pub name: String,
+    pub mime: String,
 }
 
 impl Payload {

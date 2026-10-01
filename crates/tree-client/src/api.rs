@@ -184,6 +184,54 @@ impl Api {
         Ok(out)
     }
 
+    /// Uploads an encrypted attachment; returns its id.
+    pub fn upload(&self, c: &Creds, ciphertext: &[u8]) -> Result<String, Error> {
+        let reply = self.request_raw(&c.key, &c.device_id, Method::POST, "/v1/attachments", ciphertext.to_vec())?;
+        let status = reply.status();
+        let v: Value = reply.json().unwrap_or(Value::Null);
+        if !status.is_success() {
+            return Err(Error::Server { status: status.as_u16(), code: v["code"].as_str().unwrap_or("").into() });
+        }
+        field(&v, "id")
+    }
+
+    pub fn download(&self, c: &Creds, id: &str) -> Result<Vec<u8>, Error> {
+        let path = format!("/v1/attachments/{id}");
+        let reply = self.request_raw(&c.key, &c.device_id, Method::GET, &path, vec![])?;
+        let status = reply.status();
+        if !status.is_success() {
+            return Err(Error::Server { status: status.as_u16(), code: "DOWNLOAD_FAILED".into() });
+        }
+        Ok(reply.bytes().map_err(|e| Error::Network(e.to_string()))?.to_vec())
+    }
+
+    /// A signed request with a raw (non-JSON) body; returns the response.
+    fn request_raw(&self, key: &SigningKey, device_id: &str, method: Method, path: &str, body: Vec<u8>) -> Result<reqwest::blocking::Response, Error> {
+        let ts = now().to_string();
+        let nonce = URL_SAFE_NO_PAD.encode(random::<16>());
+        let signing = format!(
+            "tree-auth-v1\n{}\n{}\n{}\n{}\n{}\n{}",
+            method.as_str(),
+            path,
+            ts,
+            nonce,
+            device_id,
+            hex::encode(Sha256::digest(&body))
+        );
+        let sig = key.sign(signing.as_bytes());
+        let mut req = self
+            .http
+            .request(method, format!("{}{}", self.base, path))
+            .header("X-Tree-Device", device_id)
+            .header("X-Tree-Timestamp", ts)
+            .header("X-Tree-Nonce", nonce)
+            .header("X-Tree-Signature", b64(&sig.to_bytes()));
+        if !body.is_empty() {
+            req = req.header("Content-Type", "application/octet-stream").body(body);
+        }
+        req.send().map_err(|e| Error::Network(e.to_string()))
+    }
+
     /// `POST /v1/usernames/{action}` (apply, release, lookup).
     pub fn username(&self, c: &Creds, action: &str, body: Option<&Value>) -> Result<Value, Error> {
         self.call(c, Method::POST, &format!("/v1/usernames/{action}"), body)?.ok()

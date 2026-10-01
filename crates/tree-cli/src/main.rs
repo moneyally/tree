@@ -21,6 +21,8 @@ commands:
   find <@name>                           account id behind a @username
   members <group>                        members, devices, names
   send <group> <text>                    send a message
+  send-file <group> <path>               send an encrypted attachment
+  download <file-id> <path>              fetch, check and save a received attachment
   sync [wait-seconds]                    receive and print
   remove <group> <member-id>             remove a member (device)
   refresh <group>                        refresh this device's keys
@@ -140,6 +142,18 @@ fn run(args: Vec<String>) -> Result<(), String> {
             Some(a) => println!("{a}"),
             None => println!("no one is called {name} (or they hid their name)"),
         },
+        ["send-file", g, path] => {
+            let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+            let name = std::path::Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or("file");
+            let f = s.send_file(&hex_arg(g)?, &bytes, name, "application/octet-stream").map_err(e)?;
+            println!("sent {} ({} bytes) as attachment {}", f.name, f.size, f.id);
+        }
+        ["download", id, out] => {
+            let f = s.received_file(id).map_err(e)?.ok_or("no such received file")?;
+            let bytes = s.download(&f).map_err(e)?;
+            std::fs::write(out, &bytes).map_err(|e| format!("{out}: {e}"))?;
+            println!("saved {} ({} bytes, checked) to {out}", f.name, bytes.len());
+        }
         ["group-settings", g] => {
             let st = s.group_settings(&hex_arg(g)?).map_err(e)?;
             println!("name    {}", st.name.as_deref().unwrap_or("(none)"));
@@ -267,6 +281,16 @@ fn print_event(ev: &Event) {
             name.as_deref().unwrap_or("?"),
             &from.to_hex()[..8],
             text
+        ),
+        Event::File { group, from, name, file, request } => println!(
+            "[{}]{} {} ({}) sent a file: {} ({} bytes): tree download {} <path>",
+            &hex(group)[..8],
+            if *request { " [request]" } else { "" },
+            name.as_deref().unwrap_or("?"),
+            &from.to_hex()[..8],
+            file.name,
+            file.size,
+            file.id
         ),
         Event::Request { group, from, direct } => println!(
             "[{}] {} from {from}: tree accept {} / tree decline {} [block]",

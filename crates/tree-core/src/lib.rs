@@ -11,6 +11,7 @@
 //! Wire formats are plain bytes so that any transport (server mailbox,
 //! file, QR code) can carry them.
 
+pub mod attachment;
 pub mod client;
 pub mod error;
 pub mod features;

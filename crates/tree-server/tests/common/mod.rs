@@ -48,6 +48,7 @@ pub async fn boot(tweak: impl FnOnce(&mut Config)) -> TestServer {
         rate_burst: 10_000.0,
         signup_per_hour: 1_000_000.0,
         signup_burst: 10_000.0,
+        attachment_dir: dir.join("attachments"),
         ..Config::default()
     };
     tweak(&mut cfg);

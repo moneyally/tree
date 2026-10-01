@@ -31,6 +31,7 @@ use tree_core::{
 use zeroize::Zeroizing;
 
 pub use api::{Api, Creds};
+pub use messages::TextOptions;
 pub use payload::{FileInfo, Payload};
 pub use tree_core::recovery::{Phrase, Words};
 pub use tree_core::MemberId;
@@ -66,7 +67,19 @@ pub const MAX_HELD: usize = 256;
 pub enum Event {
     /// `name` is the sender's display name if known (shared inside the group).
     /// `request`: the group is still a message request (not yet accepted).
-    Text { group: Vec<u8>, id: String, from: MemberId, name: Option<String>, text: String, request: bool },
+    /// `formatted`: show Tree markup (sent with it and `chat.formatting`
+    /// applied). `mentions_me`: this device's member is mentioned, or an
+    /// @all the group allows.
+    Text {
+        group: Vec<u8>,
+        id: String,
+        from: MemberId,
+        name: Option<String>,
+        text: String,
+        request: bool,
+        formatted: bool,
+        mentions_me: bool,
+    },
     /// The sender edited its message `id`.
     Edited { group: Vec<u8>, id: String, from: MemberId, text: String },
     /// The sender deleted its message `id` for everyone.

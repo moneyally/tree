@@ -15,14 +15,14 @@ One JSON object per application message, UTF-8, field `t` names the type:
 
 | `t` | Fields | Meaning | Who may send |
 | --- | --- | --- | --- |
-| `text` | `id` (16 random bytes, hex), `text` | a chat message | any member |
+| `text` | `id` (16 random bytes, hex), `text`; optional `fmt` (true: Tree markup, 1.1), `mentions` (member ids, at most 50), `all` (@all) | a chat message | any member; `fmt` only while `chat.formatting` is applied; `all` as `chat.mention_all` allows |
 | `edit` | `id`, `text` | replaces the text of the sender's own message `id` | its sender, if `chat.edit` is applied, within the window |
 | `delete` | `id` | deletes the sender's own message `id` for everyone | its sender, if `chat.delete_for_all` is applied, within the window |
 | `react` | `id`, `emoji` (1 to 8 characters), `remove` (optional) | adds or takes back a reaction | any member, if `chat.reactions` is applied |
 | `profile` | `name` | the sender's own display name | any member, about itself |
 | `roster` | `devices`: member id (hex) -> device id; `names` (optional): member id -> name; `accounts` (optional): member id -> account id | who is reachable at which server device, the sender's view of names, and which account each device belongs to | the member that just added devices (others may too) |
 | `leave` | — | the sender asks to be removed (PROTOCOL.md 6.5) | any member |
-| `file` | `msg_id`, `view_once` (optional), `id`, `key` (base64), `nonce` (base64, 7 bytes), `size`, `ct_sha256`, `pt_sha256` (hex), `name`, `mime` | an encrypted attachment (PROTOCOL.md 6.12) | any member, if `chat.media` is applied (and `chat.view_once` for view-once) |
+| `file` | `msg_id`, `view_once` (optional), `voice` and `duration_ms` (optional, voice message), `id`, `key` (base64), `nonce` (base64, 7 bytes), `size`, `ct_sha256`, `pt_sha256` (hex), `name`, `mime` | an encrypted attachment (PROTOCOL.md 6.12) | any member, if `chat.media` is applied (and `chat.view_once` for view-once, `chat.voice` for voice) |
 | `franked` | `p` (the inner `text`, `edit` or `file` payload as a JSON string), `k` (base64), `tag` (base64), `m` (minute) | how every `text`, `edit` and `file` is sent: the inner payload with its franking (PROTOCOL.md 8.5); the receiver keeps `p`, `k`, `tag`, `m` to be able to report it | any member |
 
 ```json
@@ -35,6 +35,14 @@ One JSON object per application message, UTF-8, field `t` names the type:
 A `franked` payload whose `p` is not a `text`, `edit` or `file` is dropped.
 Unfranked `text`, `edit` and `file` are still accepted (a report of them shows
 as unverified).
+
+### 1.1 Formatting markup (`fmt: true`)
+
+`**bold**`, `_italic_`, `~~strike~~`, `||spoiler||`, `` `code` ``, a line
+starting with `> ` is a quote, a line starting with `- ` a list item. Apps
+render it; the text itself is sent unchanged, so a device that shows plain
+text loses nothing. With `chat.formatting` released the sender sends no
+`fmt` and receivers ignore one (plain text).
 
 Unknown types or malformed JSON are dropped and shown as "unsupported", never
 as text. Message padding (256 bytes) is applied by MLS below this layer.
@@ -77,6 +85,10 @@ sending device before sending and by every receiving device on arrival
 | `chat.reactions` | applied | reactions allowed |
 | `chat.view_once` | applied | view-once files allowed; the reference is deleted after the first successful download (and the sender keeps none) |
 | `chat.disappearing` | released; option = seconds | every message expires that long after it arrives on each device and is deleted from its history |
+| `chat.voice` | applied | voice messages (files with `voice`) allowed |
+| `chat.formatting` | applied | markup shown; released: plain text |
+| `chat.mention_all` | applied, option `admins` (default) or `all` | who may send @all; a refused @all is ignored by receivers (the text still arrives); released: nobody |
+| `chat.screenshot_block` | released | apps block screenshots of the chat for every member; a user can also block them for themselves (`screenshot/<group>`). It stops honest apps' screenshot function, not cameras or modified apps |
 
 Windows and expiry are measured with the device's own clock from when it
 received (or sent) the original, never from a time the sender claims. A
@@ -155,6 +167,7 @@ In the same encrypted database as the core (`tree_app` table, SCHEMA.md):
 | `feature/<key>` | the user's setting: applied or released, option |
 | `profile/username` | the own @username |
 | `file/<attachment id>` | a received `file` reference and its group (deleted after a view-once download) |
+| `screenshot/<group hex>` | this user's own screenshot block for the chat |
 | `invite/<link hash hex>` | a link this device made: group, expiry, use limit (PROTOCOL.md 8.7) |
 | `linkjoin/<account id>` | time the user opened that account's invite link (one day) |
 | `feature/user.recovery_phrase` | applied once a recovery phrase was made (the phrase itself is never stored) |

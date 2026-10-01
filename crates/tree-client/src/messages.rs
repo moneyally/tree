@@ -14,6 +14,10 @@
 //! | `chat.reactions` | applied | reactions allowed |
 //! | `chat.view_once` | applied | view-once files allowed |
 //! | `chat.disappearing` | released; option = seconds | every message expires that long after it arrives |
+//! | `chat.voice` | applied | voice messages allowed |
+//! | `chat.formatting` | applied | formatting markup is shown; released: shown as plain text |
+//! | `chat.mention_all` | applied, option `admins` (default) or `all` | who may @all; otherwise the @all is ignored |
+//! | `chat.screenshot_block` | released | the apps block screenshots of the chat (also per user) |
 //!
 //! Windows are measured with this device's own clock from when it received
 //! (or sent) the original, never from a time the sender claims.
@@ -30,6 +34,18 @@ use crate::{api, Error, Event, GroupStatus, Session};
 
 /// Default edit / delete-for-all window (design: 24 hours).
 pub const DEFAULT_WINDOW: i64 = 24 * 3600;
+/// Mentions per message.
+pub const MAX_MENTIONS: usize = 50;
+
+/// How a text is sent.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TextOptions {
+    /// The text uses Tree's formatting markup.
+    pub formatted: bool,
+    pub mentions: Vec<MemberId>,
+    /// @all.
+    pub all: bool,
+}
 
 pub(crate) fn now() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
@@ -39,6 +55,15 @@ fn new_id() -> String {
     let mut b = [0u8; 16];
     getrandom::getrandom(&mut b).expect("operating system random number generator failed");
     hex::encode(b)
+}
+
+fn screenshot_key(gid: &[u8]) -> String {
+    format!("screenshot/{}", hex::encode(gid))
+}
+
+/// What a stored text keeps besides its text: whether it is formatted.
+fn text_data(formatted: bool) -> Option<Vec<u8>> {
+    formatted.then(|| br#"{"fmt":true}"#.to_vec())
 }
 
 /// A stored file reference: which group and message it belongs to.
@@ -108,11 +133,45 @@ impl Session {
 
     /// Sends a text message; returns its id.
     pub fn send_text(&mut self, gid: &[u8], text: &str) -> Result<String, Error> {
-        let id = new_id();
-        self.send_payload(gid, &Payload::Text { id: id.clone(), text: text.to_string() })?;
+        self.send_text_with(gid, text, &TextOptions::default())
+    }
+
+    /// Sends a text with formatting and mentions. Formatting is dropped
+    /// (plain text sent) if the group released `chat.formatting`; an @all
+    /// the group does not allow this device is refused.
+    pub fn send_text_with(&mut self, gid: &[u8], text: &str, o: &TextOptions) -> Result<String, Error> {
+        if o.mentions.len() > MAX_MENTIONS {
+            return Err(Error::Usage(format!("at most {MAX_MENTIONS} mentions")));
+        }
         let me = self.member_id();
-        self.store(gid, &id, &me, "text", Some(text.to_string()), None, None)?;
+        if o.all && !self.may_mention_all(gid, &me)? {
+            return Err(Self::locked_by_chat());
+        }
+        let fmt = o.formatted && self.chat_allows(gid, "chat.formatting")?;
+        let id = new_id();
+        let mentions = o.mentions.iter().map(|m| m.to_hex()).collect();
+        self.send_payload(gid, &Payload::Text { id: id.clone(), text: text.to_string(), fmt, mentions, all: o.all })?;
+        self.store(gid, &id, &me, "text", Some(text.to_string()), text_data(fmt), None)?;
         Ok(id)
+    }
+
+    /// May `who` @all in this group (`chat.mention_all`)?
+    fn may_mention_all(&mut self, gid: &[u8], who: &MemberId) -> Result<bool, Error> {
+        let (on, opt) = self.chat_feature(gid, "chat.mention_all")?;
+        Ok(on && (opt.as_deref() == Some("all") || self.group(gid)?.is_admin(who)))
+    }
+
+    /// Whether the apps must block screenshots of this chat: the admins
+    /// applied `chat.screenshot_block`, or this user did for this chat. It
+    /// stops the screenshot function of honest apps; it cannot stop a camera
+    /// or a modified app.
+    pub fn screenshot_blocked(&mut self, gid: &[u8]) -> Result<bool, Error> {
+        Ok(self.chat_allows(gid, "chat.screenshot_block")? || self.client.app_data(&screenshot_key(gid))?.is_some())
+    }
+
+    /// This user's own choice for one chat (independent of the admins').
+    pub fn set_screenshot_block(&self, gid: &[u8], on: bool) -> Result<(), Error> {
+        Ok(self.client.set_app_data(&screenshot_key(gid), on.then_some(&b"1"[..]))?)
     }
 
     /// The own message `id`, if it can still be changed under `key`'s window.
@@ -168,7 +227,27 @@ impl Session {
     /// key inside the group (PROTOCOL.md 6.12). `view_once` needs
     /// `chat.view_once`; every file needs `chat.media`.
     pub fn send_file(&mut self, gid: &[u8], bytes: &[u8], name: &str, mime: &str, view_once: bool) -> Result<FileInfo, Error> {
-        if !self.chat_allows(gid, "chat.media")? || (view_once && !self.chat_allows(gid, "chat.view_once")?) {
+        self.send_attachment(gid, bytes, name, mime, view_once, None)
+    }
+
+    /// Sends a voice message (`chat.voice` and `chat.media`).
+    pub fn send_voice(&mut self, gid: &[u8], bytes: &[u8], mime: &str, duration_ms: u64) -> Result<FileInfo, Error> {
+        self.send_attachment(gid, bytes, "voice", mime, false, Some(duration_ms))
+    }
+
+    fn send_attachment(
+        &mut self,
+        gid: &[u8],
+        bytes: &[u8],
+        name: &str,
+        mime: &str,
+        view_once: bool,
+        voice: Option<u64>,
+    ) -> Result<FileInfo, Error> {
+        if !self.chat_allows(gid, "chat.media")?
+            || (view_once && !self.chat_allows(gid, "chat.view_once")?)
+            || (voice.is_some() && !self.chat_allows(gid, "chat.voice")?)
+        {
             return Err(Self::locked_by_chat());
         }
         let (ct, fk) = tree_core::attachment::encrypt(bytes)?;
@@ -176,6 +255,8 @@ impl Session {
         let info = FileInfo {
             msg_id: new_id(),
             view_once,
+            voice: voice.is_some(),
+            duration_ms: voice,
             id,
             key: api::b64(&fk.key[..]),
             nonce: api::b64(&fk.nonce_prefix),
@@ -264,12 +345,18 @@ impl Session {
         let request = matches!(self.group_status(gid)?, GroupStatus::Request { .. });
         let name = self.names(gid)?.get(&from.to_hex()).cloned();
         match p {
-            Payload::Text { id, text } => {
-                if !self.store(gid, &id, &from, "text", Some(text.clone()), None, franking)? {
+            Payload::Text { id, text, fmt, mentions, all } => {
+                // Formatting the group released is shown as plain text; an
+                // @all the sender may not make is ignored.
+                let formatted = fmt && self.chat_allows(gid, "chat.formatting")?;
+                let me = self.member_id().to_hex();
+                let all = all && self.may_mention_all(gid, &from)?;
+                let mentions_me = all || mentions.iter().take(MAX_MENTIONS).any(|m| *m == me);
+                if !self.store(gid, &id, &from, "text", Some(text.clone()), text_data(formatted), franking)? {
                     refuse(events, "duplicate message id");
                     return Ok(());
                 }
-                events.push(Event::Text { group: gid.to_vec(), id, from, name, text, request });
+                events.push(Event::Text { group: gid.to_vec(), id, from, name, text, request, formatted, mentions_me });
             }
             Payload::Edit { id, text } => match self.changeable_by(gid, &id, &from, "chat.edit")? {
                 Ok(m) if m.kind == "text" => {
@@ -306,6 +393,10 @@ impl Session {
             Payload::File(file) => {
                 if !self.chat_allows(gid, "chat.media")? {
                     refuse(events, "attachments are released in this group (chat.media)");
+                    return Ok(());
+                }
+                if file.voice && !self.chat_allows(gid, "chat.voice")? {
+                    refuse(events, "voice messages are released in this group (chat.voice)");
                     return Ok(());
                 }
                 if file.view_once && !self.chat_allows(gid, "chat.view_once")? {

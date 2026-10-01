@@ -29,6 +29,9 @@ commands:
   find <@name>                           account id behind a @username
   members <group>                        members, devices, names
   send <group> <text>                    send a message (prints its id)
+  send-all <group> <text>                send with @all (chat.mention_all)
+  send-voice <group> <path> <ms>         send a voice message (chat.voice)
+  screenshot-block <group> on|off        my own screenshot block for this chat
   edit <group> <id> <text> | delete <group> <id> | react <group> <id> <emoji>
   history <group> | search <text>        messages kept on this device
   report <group> <reason> <id>...        report messages of one sender to the operator
@@ -304,6 +307,20 @@ fn run(args: Vec<String>) -> Result<(), String> {
             }
         }
         ["send", g, text @ ..] => println!("sent message {}", s.send_text(&hex_arg(g)?, &text.join(" ")).map_err(e)?),
+        ["send-all", g, text @ ..] => {
+            let o = tree_client::TextOptions { all: true, ..Default::default() };
+            println!("sent message {}", s.send_text_with(&hex_arg(g)?, &text.join(" "), &o).map_err(e)?)
+        }
+        ["send-voice", g, path, ms] => {
+            let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+            let ms: u64 = ms.parse().map_err(|_| "duration must be milliseconds")?;
+            let f = s.send_voice(&hex_arg(g)?, &bytes, "audio/ogg", ms).map_err(e)?;
+            println!("sent voice message {} ({} ms)", f.msg_id, ms);
+        }
+        ["screenshot-block", g, on] => {
+            s.set_screenshot_block(&hex_arg(g)?, *on == "on").map_err(e)?;
+            println!("screenshot block for this chat: {}", if s.screenshot_blocked(&hex_arg(g)?).map_err(e)? { "on" } else { "off" });
+        }
         ["edit", g, id, text @ ..] => {
             s.edit(&hex_arg(g)?, id, &text.join(" ")).map_err(e)?;
             println!("edited");
@@ -363,10 +380,11 @@ fn run(args: Vec<String>) -> Result<(), String> {
 
 fn print_event(ev: &Event) {
     match ev {
-        Event::Text { group, id, from, name, text, request } => println!(
-            "[{}]{} {} ({}): {}   #{id}",
+        Event::Text { group, id, from, name, text, request, mentions_me, .. } => println!(
+            "[{}]{}{} {} ({}): {}   #{id}",
             &hex(group)[..8],
             if *request { " [request]" } else { "" },
+            if *mentions_me { " [@you]" } else { "" },
             name.as_deref().unwrap_or("?"),
             &from.to_hex()[..8],
             text

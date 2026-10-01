@@ -12,7 +12,20 @@ use std::collections::BTreeMap;
 pub enum Payload {
     /// A chat message. `id`: random, unique in the group (hex), used by
     /// edits, deletions and reactions.
-    Text { id: String, text: String },
+    Text {
+        id: String,
+        text: String,
+        /// The text uses Tree's formatting markup (APP_PROTOCOL.md 1.1;
+        /// `chat.formatting`).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        fmt: bool,
+        /// Member ids (hex) mentioned (at most 50).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        mentions: Vec<String>,
+        /// @all (`chat.mention_all`).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        all: bool,
+    },
     /// The sender replaces the text of its own message `id` (chat.edit).
     Edit { id: String, text: String },
     /// The sender deletes its own message `id` for everyone (chat.delete_for_all).
@@ -61,6 +74,11 @@ pub struct FileInfo {
     /// Opened once, then the reference is deleted (chat.view_once).
     #[serde(default)]
     pub view_once: bool,
+    /// A voice message (`chat.voice`), with its length.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub voice: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
     /// Server attachment id.
     pub id: String,
     /// File key (base64, 32 bytes) and STREAM nonce prefix (base64, 7 bytes).
@@ -95,7 +113,7 @@ mod tests {
 
     #[test]
     fn round_trip_and_format() {
-        let t = Payload::Text { id: "01".into(), text: "안녕".into() };
+        let t = Payload::Text { id: "01".into(), text: "안녕".into(), fmt: false, mentions: vec![], all: false };
         assert_eq!(String::from_utf8(t.encode()).unwrap(), r#"{"t":"text","id":"01","text":"안녕"}"#);
         for p in [
             Payload::Edit { id: "01".into(), text: "x".into() },

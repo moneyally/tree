@@ -12,7 +12,7 @@ use getrandom::getrandom;
 
 use crate::error::TreeError;
 
-const MAGIC: &[u8] = b"TREEMSG\x01";
+pub(crate) const MESSAGE_MAGIC: &[u8] = b"TREEMSG\x01";
 const MAX_BODY: usize = 512 * 1024;
 const MAX_REACTION: usize = 64;
 const MAX_PREVIEW: usize = 16 * 1024;
@@ -205,10 +205,10 @@ impl MessageEvent {
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, TreeError> {
-        if !bytes.starts_with(MAGIC) {
+        if !bytes.starts_with(MESSAGE_MAGIC) {
             return Err(TreeError::Malformed("not a Tree message".into()));
         }
-        let mut r = Reader(&bytes[MAGIC.len()..]);
+        let mut r = Reader(&bytes[MESSAGE_MAGIC.len()..]);
         let kind = match r.u8()? {
             1 => MessageKind::New,
             2 => MessageKind::Edit,

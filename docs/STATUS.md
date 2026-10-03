@@ -159,4 +159,4 @@ UI design together
 The app design is **not being chosen unilaterally**. When the backend contract is stable, the UI work
 will start with concrete questions about navigation, chat layout, onboarding/recovery, security
 verification, notifications and visual direction.
-Verification note: the latest cycle also normalized strict rustfmt/clippy findings and backend integration-test fixtures.
+Verification note: the latest cycle also normalized strict rustfmt/clippy findings and backend integration-test fixtures. Final integration-test pattern and warning cleanup is included in the next CI run.

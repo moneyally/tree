@@ -205,6 +205,29 @@ impl Api {
         decode(resp).await
     }
 
+
+    async fn group_devices(
+        &self,
+        client: &Client<StoredProvider>,
+        group_id: &[u8],
+    ) -> Result<Vec<String>> {
+        let path = format!("/v1/groups/{}/devices", hex::encode(group_id));
+        let (status, body) = self.signed(client, Method::GET, &path, None).await?;
+        if !status.is_success() {
+            bail!("group roster failed ({status}): {body}");
+        }
+        body.get("devices")
+            .and_then(Value::as_array)
+            .ok_or_else(|| anyhow!("group roster response has no devices"))
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .collect()
+            })
+    }
+
     async fn signup(&self, seed: [u8; 32], pow_bits: u32) -> Result<(String, String)> {
         let key = SigningKey::from_bytes(&seed);
         let pubkey = key.verifying_key().to_bytes();
@@ -455,6 +478,15 @@ async fn create_group(args: ProfileArgs) -> Result<()> {
     Ok(())
 }
 
+
+fn group_member_device_id(client: &Client<StoredProvider>) -> String {
+    client
+        .server_account()
+        .expect("profile server metadata readable")
+        .expect("profile is registered")
+        .1
+}
+
 async fn invite(args: InviteArgs) -> Result<()> {
     if args.account.is_empty() {
         bail!("account must not be empty");
@@ -495,6 +527,12 @@ async fn invite(args: InviteArgs) -> Result<()> {
         );
     }
 
+    let mut recipients = args.recipients;
+    if recipients.is_empty() && group.epoch() > 0 {
+        recipients = api.group_devices(&client, &group.id()).await?;
+        recipients.retain(|id| id != group_member_device_id(&client));
+    }
+
     let pending = group
         .add(&client, &packages)
         .map_err(|e| anyhow!("build invite commit: {e}"))?;
@@ -506,7 +544,7 @@ async fn invite(args: InviteArgs) -> Result<()> {
     let body = json!({
         "group_id": STANDARD.encode(&pending.group_id),
         "epoch": pending.epoch,
-        "recipients": args.recipients,
+        "recipients": recipients,
         "body": STANDARD.encode(&pending.commit),
         "added": transport_added,
         "welcome": STANDARD.encode(welcome),

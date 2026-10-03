@@ -75,9 +75,7 @@ pub struct LinkStatusResp {
 
 type SessionFlags = (Vec<u8>, Option<Vec<u8>>, bool, bool, i64);
 
-fn session_row(
-    row: &sqlx::sqlite::SqliteRow,
-) -> Result<SessionFlags, sqlx::Error> {
+fn session_row(row: &sqlx::sqlite::SqliteRow) -> Result<SessionFlags, sqlx::Error> {
     Ok((
         row.try_get("challenge")?,
         row.try_get("joiner_auth_pub")?,

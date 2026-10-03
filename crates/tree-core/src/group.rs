@@ -20,7 +20,7 @@ use zeroize::Zeroizing;
 use crate::{
     client::Client,
     error::{group_err, TreeError},
-    group_state::{GroupState, PastEpoch, Pending},
+    group_state::{GroupState, PastEpoch, Pending, PendingEnvelope},
     provider::TreeProvider,
 };
 
@@ -111,6 +111,8 @@ pub enum Incoming {
     OwnCommitMerged { epoch: u64 },
     /// This device was removed; it can no longer read or send.
     RemovedFromGroup,
+    /// A future-epoch envelope was held locally until the corresponding commit arrives.
+    HeldForRetry { epoch: u64 },
     /// Our own message or already merged commit echoed back; nothing to do.
     OwnEcho,
 }
@@ -388,6 +390,27 @@ impl Group {
         if self.state.sent.iter().any(|(_, h)| bool::from(h.ct_eq(&hash))) {
             return Ok(Incoming::OwnEcho);
         }
+        if self.state.processed.iter().any(|(_, h)| bool::from(h.ct_eq(&hash))) {
+            return Ok(Incoming::OwnEcho);
+        }
+        let now = unix_now();
+        self.state.prune_future(now);
+
+        // Read only enough of the MLS message to learn its epoch. No MLS
+        // state is touched until the Tree envelope seal is verified.
+        let announced = peek_epoch(bytes, self.mls.group_id().as_slice())?;
+        if announced > self.epoch() {
+            if !self.state.future.iter().any(|p| bool::from(sha256(&p.bytes).ct_eq(&hash))) {
+                self.state.future.push(PendingEnvelope {
+                    epoch: announced,
+                    received_at: now,
+                    bytes: bytes.to_vec(),
+                });
+                self.state.prune_future(now);
+                self.save(me)?;
+            }
+            return Ok(Incoming::HeldForRetry { epoch: announced });
+        }
 
         // Checked before anything is written.
         let (epoch, body) = self.open_envelope(me, bytes)?;
@@ -409,7 +432,9 @@ impl Group {
                 return Err(TreeError::Rejected("proposals are not accepted in Tree v1 (F-007)".into()))
             }
         }
-        me.provider.atomically(|| self.process(me, protocol, epoch))
+        me.provider.atomically(|| {
+            self.process(me, protocol, epoch, hash)
+        })
     }
 
     fn process<P: TreeProvider>(
@@ -417,6 +442,7 @@ impl Group {
         me: &Client<P>,
         protocol: ProtocolMessage,
         epoch: u64,
+        hash: [u8; 32],
     ) -> Result<Incoming, TreeError> {
         let processed = self
             .mls
@@ -432,6 +458,9 @@ impl Group {
                     return Err(TreeError::Rejected("authenticated data must be empty".into()));
                 }
                 let from = self.sender_id(epoch, &sender)?;
+                self.mark_processed(epoch, hash);
+                self.state.future.retain(|p| p.bytes.as_slice() != hash.as_slice());
+                self.save(me)?;
                 Ok(Incoming::Message { from, name, body: m.into_bytes() })
             }
             ProcessedMessageContent::StagedCommitMessage(staged) => {
@@ -459,6 +488,8 @@ impl Group {
                 self.mls.merge_staged_commit(&me.provider, *staged).map_err(group_err)?;
                 self.state.pending = None;
                 self.entered_new_epoch(past);
+                self.mark_processed(epoch, hash);
+                self.state.future.retain(|p| p.epoch > self.epoch());
                 self.save(me)?;
                 if !self.mls.is_active() {
                     return Ok(Incoming::RemovedFromGroup);
@@ -466,7 +497,12 @@ impl Group {
                 let added = self.members().into_iter().filter(|m| added_ids.contains(&m.id)).collect();
                 Ok(Incoming::GroupChanged { added, removed, epoch: self.epoch(), own_commit_discarded })
             }
-            ProcessedMessageContent::OwnPrivateMessage => Ok(Incoming::OwnEcho),
+            ProcessedMessageContent::OwnPrivateMessage => {
+                self.mark_processed(epoch, hash);
+                self.state.future.retain(|p| p.bytes.as_slice() != hash.as_slice());
+                self.save(me)?;
+                Ok(Incoming::OwnEcho)
+            },
             _ => Err(TreeError::Rejected("message type not accepted in Tree v1".into())),
         }
     }
@@ -506,6 +542,16 @@ impl Group {
 
     fn save<P: TreeProvider>(&self, me: &Client<P>) -> Result<(), TreeError> {
         me.provider.save_group_state(self.mls.group_id().as_slice(), &self.state.encode())
+    }
+
+    fn mark_processed(&mut self, epoch: u64, hash: [u8; 32]) {
+        self.state.processed.push((epoch, hash));
+        const MAX_PROCESSED: usize = 2048;
+        if self.state.processed.len() > MAX_PROCESSED {
+            let drop_n = self.state.processed.len() - MAX_PROCESSED;
+            self.state.processed.drain(0..drop_n);
+        }
+        self.state.prune(self.epoch().saturating_sub(Self::PAST_EPOCHS));
     }
 
     // ----- envelope (PROTOCOL.md section 4) ----------------------------------
@@ -595,4 +641,36 @@ fn name_of(credential: &Credential) -> String {
 
 fn sha256(data: &[u8]) -> [u8; 32] {
     Sha256::digest(data).into()
+}
+
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Parses only the MLS private-message header from an untrusted envelope.
+/// No ratchet or group state is modified here.
+fn peek_epoch(bytes: &[u8], expected_group: &[u8]) -> Result<u64, TreeError> {
+    if bytes.len() < 1 + Group::TAG_LEN {
+        return Err(TreeError::Malformed("bad envelope".into()));
+    }
+    let mut mls = &bytes[1 + Group::TAG_LEN..];
+    let input = MlsMessageIn::tls_deserialize(&mut mls)
+        .map_err(|e| TreeError::Malformed(format!("{e:?}")))?;
+    let protocol = input
+        .try_into_protocol_message()
+        .map_err(|_| TreeError::Malformed("not a group message".into()))?;
+    if protocol.wire_format() != WireFormat::PrivateMessage {
+        return Err(TreeError::Rejected("only private messages are accepted".into()));
+    }
+    if protocol.group_id().as_slice() != expected_group {
+        return Err(TreeError::Rejected("envelope belongs to another group".into()));
+    }
+    match protocol.content_type() {
+        ContentType::Application | ContentType::Commit => Ok(protocol.epoch().as_u64()),
+        ContentType::Proposal => Err(TreeError::Rejected("proposals are not accepted in Tree v1 (F-007)".into())),
+    }
 }

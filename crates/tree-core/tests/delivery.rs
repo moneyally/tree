@@ -283,7 +283,7 @@ fn pending_removal_lists_removed() {
     assert!(p.welcome.is_none());
 }
 
-/// While a commit is pending no other commit can be made.
+/// Only the deterministic group administrator can add/remove members.
 #[test]
 fn non_admin_cannot_add_or_remove_members() {
     let (alice, bob, mut a, mut b) = two_person_chat();
@@ -307,7 +307,6 @@ fn non_admin_cannot_add_or_remove_members() {
 
     let rm = a.remove(&alice, &[alice.member_id()]);
     assert!(rm.is_err(), "administrator cannot remove itself");
-}
 }
 
 

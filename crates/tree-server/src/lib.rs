@@ -262,9 +262,8 @@ pub async fn purge_expired(state: &AppState, now: i64) -> Result<u64, sqlx::Erro
         .execute(&state.db)
         .await?
         .rows_affected();
-    let file_cutoff = now - state.cfg.file_ttl_secs as i64;
     let expired_files = sqlx::query("DELETE FROM files WHERE expires_at <= ?")
-        .bind(file_cutoff)
+        .bind(now)
         .execute(&state.db)
         .await?
         .rows_affected();

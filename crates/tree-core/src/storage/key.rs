@@ -9,8 +9,7 @@
 //! [`KeySource`] implementation and needs no change to the storage code.
 
 use std::{
-    fmt,
-    fs,
+    fmt, fs,
     io::Write,
     path::{Path, PathBuf},
 };
@@ -65,24 +64,42 @@ impl KdfParams {
     /// This is the memory-constrained profile of RFC 9106 (section 4) with
     /// one lane. It takes a fraction of a second on a current phone and makes
     /// every passphrase guess cost an attacker the same 64 MiB and 3 passes.
-    pub const RECOMMENDED: Self = Self { memory_kib: 64 * 1024, iterations: 3, parallelism: 1 };
+    pub const RECOMMENDED: Self = Self {
+        memory_kib: 64 * 1024,
+        iterations: 3,
+        parallelism: 1,
+    };
 
     /// Weakest accepted setting (OWASP minimum for Argon2id: 19 MiB, 2 passes).
-    pub const MIN: Self = Self { memory_kib: 19 * 1024, iterations: 2, parallelism: 1 };
+    pub const MIN: Self = Self {
+        memory_kib: 19 * 1024,
+        iterations: 2,
+        parallelism: 1,
+    };
 
     /// Strongest accepted setting. A header asking for more is treated as
     /// damaged, so a tampered header cannot make the app run out of memory.
-    pub const MAX: Self = Self { memory_kib: 1024 * 1024, iterations: 16, parallelism: 4 };
+    pub const MAX: Self = Self {
+        memory_kib: 1024 * 1024,
+        iterations: 16,
+        parallelism: 4,
+    };
 
     fn validate(&self) -> Result<(), TreeError> {
         let ok = |v: u32, lo: u32, hi: u32| (lo..=hi).contains(&v);
         if ok(self.memory_kib, Self::MIN.memory_kib, Self::MAX.memory_kib)
             && ok(self.iterations, Self::MIN.iterations, Self::MAX.iterations)
-            && ok(self.parallelism, Self::MIN.parallelism, Self::MAX.parallelism)
+            && ok(
+                self.parallelism,
+                Self::MIN.parallelism,
+                Self::MAX.parallelism,
+            )
         {
             Ok(())
         } else {
-            Err(TreeError::Storage("key derivation parameters out of range".into()))
+            Err(TreeError::Storage(
+                "key derivation parameters out of range".into(),
+            ))
         }
     }
 }
@@ -143,7 +160,11 @@ impl KeyHeader {
             return Err(TreeError::Storage("unsupported key header version".into()));
         }
         let u32_at = |i: usize| u32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]);
-        let params = KdfParams { memory_kib: u32_at(10), iterations: u32_at(14), parallelism: u32_at(18) };
+        let params = KdfParams {
+            memory_kib: u32_at(10),
+            iterations: u32_at(14),
+            parallelism: u32_at(18),
+        };
         let mut salt = [0u8; SALT_LEN];
         salt.copy_from_slice(&b[22..]);
         Self::new(params, salt)
@@ -208,7 +229,12 @@ impl KeySource for Passphrase {
         let mut memory = WorkMemory(vec![Block::new(); params.block_count()]);
         let mut out = Zeroizing::new([0u8; KEY_LEN]);
         Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
-            .hash_password_into_with_memory(&self.0, &header.salt, out.as_mut(), memory.0.as_mut_slice())
+            .hash_password_into_with_memory(
+                &self.0,
+                &header.salt,
+                out.as_mut(),
+                memory.0.as_mut_slice(),
+            )
             .map_err(|e| TreeError::Storage(format!("argon2: {e}")))?;
         Ok(DbKey(out))
     }

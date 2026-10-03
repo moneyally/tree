@@ -1184,12 +1184,10 @@ impl Group {
             }
             MessageEvent::Edit { target, .. } | MessageEvent::Delete { target, .. } => {
                 if self.state.messages.record(*target).is_none() {
-                    self.state
-                        .messages
-                        .queue_pending(PendingMutation {
-                            from,
-                            event: event.clone(),
-                        });
+                    self.state.messages.queue_pending(PendingMutation {
+                        from,
+                        event: event.clone(),
+                    });
                     return Ok(Vec::new());
                 }
                 if self.apply_pending_mutation(now, from, event.clone())? {

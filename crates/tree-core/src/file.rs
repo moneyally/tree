@@ -157,11 +157,7 @@ pub fn encrypt(key: &FileKey, aad: &[u8], plaintext: &[u8]) -> Result<EncryptedF
     })
 }
 
-pub fn decrypt(
-    key: &FileKey,
-    aad: &[u8],
-    encrypted: &EncryptedFile,
-) -> Result<Vec<u8>, TreeError> {
+pub fn decrypt(key: &FileKey, aad: &[u8], encrypted: &EncryptedFile) -> Result<Vec<u8>, TreeError> {
     validate_aad(aad)?;
     let cipher = Aes256Gcm::new_from_slice(key.as_bytes())
         .map_err(|_| TreeError::FileCrypto("invalid AES-256 key".into()))?;
@@ -199,7 +195,6 @@ fn commitment(
     h.update(ciphertext);
     h.finalize().into()
 }
-
 
 const SHARE_MAGIC: &[u8] = b"TREEFSHARE\x01";
 const MAX_FILE_ID: usize = 64;

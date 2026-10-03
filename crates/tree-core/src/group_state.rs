@@ -143,7 +143,7 @@ impl GroupState {
     pub fn decode(bytes: &[u8]) -> Result<Self, TreeError> {
         let mut r = Reader(bytes);
         let version = r.u8()?;
-        if version != 1 && version != VERSION {
+        if !matches!(version, 1..=VERSION) {
             return Err(damaged());
         }
         let pending = match r.u8()? {

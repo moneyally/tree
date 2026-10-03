@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::error::TreeError;
-use crate::features::{Caller, FeatureError, Registry, State, Status, Scope};
+use crate::features::{Caller, FeatureError, Registry, Scope, State, Status};
 use crate::provider::TreeProvider;
 
 const META_USER_FEATURES: &str = "user_features_v1";

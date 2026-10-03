@@ -116,7 +116,11 @@ fn message_from_next_epoch_before_commit() {
     let (alice, bob, mut a, mut b) = two_person_chat();
     let c = a.refresh_now(&alice).unwrap();
     let early = a.send(&alice, b"epoch 2 message").unwrap();
-    assert!(b.receive(&bob, &early).is_err());
+    assert_eq!(
+        b.receive(&bob, &early).unwrap(),
+        Incoming::HeldForRetry { epoch: 2 }
+    );
+    assert_eq!(b.receive(&bob, &early).unwrap(), Incoming::HeldForRetry { epoch: 2 });
     b.receive(&bob, &c).unwrap();
     assert!(is_message(&b.receive(&bob, &early), b"epoch 2 message"));
 }

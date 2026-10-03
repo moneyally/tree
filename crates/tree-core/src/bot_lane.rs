@@ -205,7 +205,9 @@ fn validate_command(command: &str) -> Result<(), TreeError> {
 
 fn validate_text(text: &str) -> Result<(), TreeError> {
     if text.len() > MAX_TEXT || text.chars().any(char::is_control) {
-        return Err(TreeError::Group("bot-lane text is too large or contains controls".into()));
+        return Err(TreeError::Group(
+            "bot-lane text is too large or contains controls".into(),
+        ));
     }
     Ok(())
 }

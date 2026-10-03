@@ -366,14 +366,25 @@ mod tests {
     }
 
     #[test]
-    fn decodes_version_two_state_without_admin() {
-        let v3 = GroupState::default().encode();
-        // v3 default adds one admin flag byte before n_past. Remove that byte
-        // and use version 2 so the legacy decoder layout is restored.
-        let admin_pos = 1 + 1 + 1;
-        let mut v2 = v3.clone();
+    fn decodes_version_three_state_without_settings() {
+        let v4 = GroupState::default().encode();
+        let mut v3 = v4[..v4.len() - 13].to_vec();
+        v3[0] = 3;
+        let decoded = GroupState::decode(&v3).unwrap();
+        assert!(decoded.admin.is_none());
+        assert!(decoded.processed.is_empty());
+        assert!(decoded.future.is_empty());
+        assert!(decoded.title.is_none());
+    }
+
+    #[test]
+    fn decodes_version_two_state_without_admin_or_settings() {
+        let v4 = GroupState::default().encode();
+        let mut v3 = v4[..v4.len() - 13].to_vec();
+        v3[0] = 3;
+        let mut v2 = v3;
         v2[0] = 2;
-        v2.remove(admin_pos);
+        v2.remove(1 + 1 + 1); // admin flag
         let decoded = GroupState::decode(&v2).unwrap();
         assert!(decoded.admin.is_none());
         assert!(decoded.processed.is_empty());
@@ -385,10 +396,14 @@ mod tests {
 
     #[test]
     fn decodes_legacy_version_one_state() {
-        let v3 = GroupState::default().encode();
-        let mut v1 = v3.clone();
+        let v4 = GroupState::default().encode();
+        let mut v3 = v4[..v4.len() - 13].to_vec();
+        v3[0] = 3;
+        let mut v2 = v3;
+        v2[0] = 2;
+        v2.remove(1 + 1 + 1); // admin flag
+        let mut v1 = v2;
         v1[0] = 1;
-        v1.remove(1 + 1 + 1); // admin flag
         v1.truncate(v1.len() - 4); // processed/future counters
         let decoded = GroupState::decode(&v1).unwrap();
         assert!(decoded.admin.is_none());

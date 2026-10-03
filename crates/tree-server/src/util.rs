@@ -28,7 +28,7 @@ pub fn round_to_minute(t: i64) -> i64 {
 /// Fills `buf` from the operating system's CSPRNG.
 pub fn random_bytes<const N: usize>() -> [u8; N] {
     let mut buf = [0u8; N];
-    getrandom::getrandom(&mut buf).expect("operating system random number generator failed");
+    getrandom::fill(&mut buf).expect("operating system random number generator failed");
     buf
 }
 

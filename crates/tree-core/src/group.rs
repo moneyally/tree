@@ -964,17 +964,6 @@ impl Group {
                         ));
                     }
                     let control = decode_control(&body)?;
-                    let stale = control.seq < self.state.last_control_seq
-                        || (control.seq == self.state.last_control_seq
-                            && self
-                                .state
-                                .last_control_author
-                                .is_some_and(|author| from <= author));
-                    if stale {
-                        self.mark_processed(epoch, hash);
-                        self.save(me)?;
-                        return Ok(Incoming::OwnEcho);
-                    }
                     let members = self
                         .mls
                         .members()

@@ -91,18 +91,24 @@ impl MessageLedger {
     pub fn queue_pending(&mut self, mutation: PendingMutation) -> Result<(), TreeError> {
         let encoded_len = mutation.event.encode()?.len() + 32;
         if encoded_len > MAX_PENDING_BYTES {
-            return Err(TreeError::Group("pending message operation is too large".into()));
+            return Err(TreeError::Group(
+                "pending message operation is too large".into(),
+            ));
         }
         let mut pending_bytes = self
             .pending
             .iter()
             .filter_map(|m| m.event.encode().ok().map(|b| b.len() + 32))
             .sum::<usize>();
-        while self.pending.len() >= MAX_PENDING || pending_bytes.saturating_add(encoded_len) > MAX_PENDING_BYTES
+        while self.pending.len() >= MAX_PENDING
+            || pending_bytes.saturating_add(encoded_len) > MAX_PENDING_BYTES
         {
             if let Some(old) = self.pending.first() {
                 pending_bytes = pending_bytes.saturating_sub(
-                    old.event.encode().map(|b| b.len() + 32).unwrap_or(MAX_PENDING_BYTES)
+                    old.event
+                        .encode()
+                        .map(|b| b.len() + 32)
+                        .unwrap_or(MAX_PENDING_BYTES),
                 );
             }
             self.pending.remove(0);

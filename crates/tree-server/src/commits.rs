@@ -154,18 +154,6 @@ pub async fn submit(
         .map(|r| r.try_get("last_epoch"))
         .transpose()?;
 
-    if last.is_none()
-        && (epoch_db != 0
-            || !recipients.is_empty()
-            || !added.is_empty()
-            || !removed.is_empty()
-            || welcome.is_some())
-    {
-        return Err(ApiError::bad_request(
-            "initial group commit must be epoch 0 with no recipients or membership changes",
-        ));
-    }
-
     if let Some(last) = last {
         if epoch_db <= last {
             let winner = sqlx::query(

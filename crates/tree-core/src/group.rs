@@ -573,7 +573,7 @@ impl Group {
             .members()
             .map(|m| MemberId::of(&m.signature_key))
             .collect();
-        if self.admin_id().is_none_or(|admin| current.contains(&admin)) {
+        if match self.admin_id() { Some(admin) => current.contains(&admin), None => true } {
             return;
         }
         self.state.admin = current.into_iter().min();

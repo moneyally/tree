@@ -261,6 +261,11 @@ impl Group {
         if !self.members().iter().any(|member| member.id == target) {
             return Err(TreeError::UnknownMember(target.to_hex()));
         }
+        if !self.state.admins.contains(&target) && self.state.admins.len() >= 64 {
+            return Err(TreeError::Group(
+                "administrator limit reached".into(),
+            ));
+        }
         self.send_control(me, Control::AddAdmin(target))
     }
 
@@ -1536,6 +1541,9 @@ fn apply_control_state(
                 .is_none_or(|(_, old_seq, old_author)| tag > (*old_seq, *old_author));
             if !newer {
                 return Ok(());
+            }
+            if !state.admins.contains(target) && matches!(control, Control::AddAdmin(_)) && state.admins.len() >= 64 {
+                return Err(TreeError::Group("administrator limit reached".into()));
             }
             state.admin_tags.retain(|(id, _, _)| id != target);
             state.admin_tags.push((*target, seq, author));

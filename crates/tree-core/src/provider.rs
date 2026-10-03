@@ -34,6 +34,12 @@ pub trait TreeProvider: OpenMlsProvider {
         Ok(None)
     }
 
+    /// Stored providers must reload OpenMLS after a failed transaction because
+    /// the database was rolled back underneath the in-memory group object.
+    fn reload_group_after_error(&self) -> bool {
+        false
+    }
+
     /// Stores small device-local metadata. StoredProvider encrypts it with
     /// SQLCipher; in-memory providers intentionally discard it.
     fn put_meta(&self, _key: &str, _value: &[u8]) -> Result<(), TreeError> {

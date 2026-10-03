@@ -9,8 +9,8 @@ use crate::{error::TreeError, DefaultProvider, LibcruxProvider};
 /// In-memory providers use the defaults (nothing to persist). The encrypted
 /// [`crate::storage::StoredProvider`] overrides both methods.
 pub trait TreeProvider: OpenMlsProvider {
-    /// Runs one complete operation (send, receive, add, ...) so that a crash
-    /// can never leave half of it on disk.
+    /// Runs one complete operation (send, receive, add, ...) transactionally.
+    /// A successful operation is committed; an error is rolled back.
     fn atomically<T>(&self, op: impl FnOnce() -> Result<T, TreeError>) -> Result<T, TreeError> {
         op()
     }

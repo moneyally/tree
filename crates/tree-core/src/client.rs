@@ -127,8 +127,10 @@ impl Client<StoredProvider> {
     /// requests to a Tree server. The value is stored inside the SQLCipher
     /// database, never in a sidecar plaintext file.
     pub fn set_server_auth_seed(&self, seed: &[u8; 32]) -> Result<(), TreeError> {
-        self.provider.put_meta(META_SERVER_AUTH_SEED, seed)?;
-        Ok(())
+        self.provider.atomically(|| {
+            self.provider.put_meta(META_SERVER_AUTH_SEED, seed)?;
+            Ok(())
+        })
     }
 
     /// Returns the persisted server-auth seed, if this device has been
@@ -143,9 +145,11 @@ impl Client<StoredProvider> {
     /// Stores the server account/device identifiers belonging to this local
     /// profile. They are metadata, but are kept encrypted with the profile.
     pub fn set_server_account(&self, account_id: &str, device_id: &str) -> Result<(), TreeError> {
-        self.provider.put_meta(META_SERVER_ACCOUNT, account_id.as_bytes())?;
-        self.provider.put_meta(META_SERVER_DEVICE, device_id.as_bytes())?;
-        Ok(())
+        self.provider.atomically(|| {
+            self.provider.put_meta(META_SERVER_ACCOUNT, account_id.as_bytes())?;
+            self.provider.put_meta(META_SERVER_DEVICE, device_id.as_bytes())?;
+            Ok(())
+        })
     }
 
     pub fn server_account(&self) -> Result<Option<(String, String)>, TreeError> {

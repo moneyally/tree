@@ -138,9 +138,14 @@ impl CryptoProfile {
 /// A target profile can only be selected if the exact profile is supported
 /// locally; there is no silent downgrade from a triple profile to a double
 /// profile.
-pub fn negotiate(local: &[CryptoProfile], remote: &[CryptoProfile]) -> Result<CryptoProfile, TreeError> {
+pub fn negotiate(
+    local: &[CryptoProfile],
+    remote: &[CryptoProfile],
+) -> Result<CryptoProfile, TreeError> {
     for candidate in local {
-        if remote.iter().any(|p| p == candidate) && candidate.is_supported_by_current_core() {
+        if remote.iter().any(|p| p == candidate)
+            && candidate.is_supported_by_current_core()
+        {
             return Ok(candidate.clone());
         }
     }

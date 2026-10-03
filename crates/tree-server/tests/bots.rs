@@ -112,7 +112,12 @@ async fn bot_commands_are_bounded_and_owner_only() {
     let alice = api.signup().await;
     let bob = api.signup().await;
     let (st, created) = api
-        .call(&alice, Method::POST, "/v1/bots", Some(json!({"name":"CmdBot"})))
+        .call(
+            &alice,
+            Method::POST,
+            "/v1/bots",
+            Some(json!({"name":"CmdBot"})),
+        )
         .await;
     assert_eq!(st, StatusCode::CREATED, "{created}");
     let bot_id = created["id"].as_str().unwrap().to_string();

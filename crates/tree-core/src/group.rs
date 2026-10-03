@@ -976,7 +976,9 @@ impl Group {
     }
 
     fn save<P: TreeProvider>(&self, me: &Client<P>) -> Result<(), TreeError> {
-        me.provider.save_group_state(self.mls.group_id().as_slice(), &self.state.encode())
+        let encoded = self.state.encode()?;
+        me.provider
+            .save_group_state(self.mls.group_id().as_slice(), &encoded)
     }
 
     fn reconcile_admins(&mut self) {

@@ -169,6 +169,21 @@ async fn report_stores_only_opaque_evidence_hash_and_bytes() {
     let ts = boot(|_| {}).await;
     let api = &ts.api;
     let alice = api.signup().await;
+    let bob = api.signup().await;
+    let setup = json!({
+        "group_id": b64(&GROUP),
+        "epoch": 0,
+        "recipients": [bob.device_id],
+        "body": b64(&commit(&GROUP, 0, b"report-setup"))
+    });
+    let (st, setup_body) = api
+        .call(&alice, Method::POST, "/v1/commits", Some(setup))
+        .await;
+    assert_eq!(st, StatusCode::OK, "{setup_body}");
+    let setup_messages = api.fetch(&bob, 0).await;
+    assert_eq!(setup_messages.len(), 1);
+    api.ack(&bob, &[setup_messages[0]["id"].as_str().unwrap()]).await;
+
     let evidence = fake_application();
     let hash: [u8; 32] = Sha256::digest(&evidence).into();
 

@@ -15,6 +15,7 @@ pub mod client;
 pub mod error;
 pub mod features;
 pub mod group;
+pub mod identity;
 mod group_state;
 pub mod provider;
 pub mod storage;
@@ -22,6 +23,7 @@ pub mod storage;
 pub use client::Client;
 pub use error::TreeError;
 pub use group::{Group, Incoming, Member, MemberId, PendingCommit};
+pub use identity::{fingerprint_hex, normalize_username, safety_fingerprint, username_hash};
 pub use provider::TreeProvider;
 pub use storage::{KdfParams, KeySource, Passphrase, StoredProvider};
 

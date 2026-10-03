@@ -54,7 +54,10 @@ async fn encrypted_file_capability_controls_download() {
     )
     .unwrap();
     assert_eq!(returned, wire);
-    assert_eq!(downloaded["sha256"].as_str(), Some(hex::encode(digest).as_str()));
+    assert_eq!(
+        downloaded["sha256"].as_str(),
+        Some(hex::encode(digest).as_str())
+    );
 
     let path = format!("/v1/files/{file_id}");
     let mut bad_headers = HeaderMap::new();
@@ -63,7 +66,9 @@ async fn encrypted_file_capability_controls_download() {
         b64(&[7u8; 32]).parse().unwrap(),
     );
     let signed = Signed::new(Method::GET, &path, Some(&alice.device_id), None);
-    let (st, _) = api.send_with_headers(&signed, &alice.key, bad_headers).await;
+    let (st, _) = api
+        .send_with_headers(&signed, &alice.key, bad_headers)
+        .await;
     assert_eq!(st, StatusCode::NOT_FOUND);
 
     let (st, _) = api
@@ -104,7 +109,9 @@ async fn encrypted_file_expires_and_server_purge_removes_it() {
         .await
         .unwrap();
 
-    let removed = tree_server::purge_expired(&ts.server.state, 100).await.unwrap();
+    let removed = tree_server::purge_expired(&ts.server.state, 100)
+        .await
+        .unwrap();
     assert!(removed >= 1);
 
     let (st, _) = api.call(&alice, Method::GET, &path, None).await;

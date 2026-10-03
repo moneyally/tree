@@ -15,19 +15,19 @@
 
 pub mod accounts;
 pub mod auth;
-pub mod commits;
-pub mod device_links;
-pub mod config;
 pub mod bots;
+pub mod commits;
+pub mod config;
+pub mod device_links;
 pub mod error;
 pub mod features;
 pub mod files;
 pub mod groups;
 pub mod keypackages;
-pub mod social;
-pub mod recovery;
 pub mod limits;
 pub mod messages;
+pub mod recovery;
+pub mod social;
 pub mod util;
 pub mod wire;
 pub mod ws;
@@ -193,17 +193,38 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/device-links", post(device_links::initiate))
         .route("/v1/device-links/{link_id}", get(device_links::status))
         .route("/v1/device-links/{link_id}/join", post(device_links::join))
-        .route("/v1/device-links/{link_id}/confirm", post(device_links::confirm_initiator))
-        .route("/v1/device-links/{link_id}/confirm-join", post(device_links::confirm_join))
+        .route(
+            "/v1/device-links/{link_id}/confirm",
+            post(device_links::confirm_initiator),
+        )
+        .route(
+            "/v1/device-links/{link_id}/confirm-join",
+            post(device_links::confirm_join),
+        )
         .route("/v1/keypackages", post(keypackages::upload))
         .route("/v1/groups/{group_id}/devices", get(groups::list_devices))
-        .route("/v1/username", put(social::set_username).delete(social::delete_username))
+        .route(
+            "/v1/username",
+            put(social::set_username).delete(social::delete_username),
+        )
         .route("/v1/username/{username_hash}", get(social::lookup_username))
-        .route("/v1/message-requests", get(social::list_message_requests).post(social::create_message_request))
-        .route("/v1/message-requests/{requester_account_id}/accept", post(social::accept_message_request))
-        .route("/v1/message-requests/{requester_account_id}/reject", post(social::reject_message_request))
+        .route(
+            "/v1/message-requests",
+            get(social::list_message_requests).post(social::create_message_request),
+        )
+        .route(
+            "/v1/message-requests/{requester_account_id}/accept",
+            post(social::accept_message_request),
+        )
+        .route(
+            "/v1/message-requests/{requester_account_id}/reject",
+            post(social::reject_message_request),
+        )
         .route("/v1/blocks", get(social::list_blocks))
-        .route("/v1/blocks/{account_id}", post(social::block_account).delete(social::unblock_account))
+        .route(
+            "/v1/blocks/{account_id}",
+            post(social::block_account).delete(social::unblock_account),
+        )
         .route("/v1/reports", post(social::report))
         .route("/v1/files", post(files::upload))
         .route("/v1/files/{file_id}", get(files::download))
@@ -216,15 +237,30 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/messages/ack", post(messages::ack))
         .route("/v1/commits", post(commits::submit))
         .route("/v1/bots", post(bots::create).get(bots::list))
-        .route("/v1/bot/register-device", post(bots::register_gateway_device))
+        .route(
+            "/v1/bot/register-device",
+            post(bots::register_gateway_device),
+        )
         .route("/v1/bot/getMe", get(bots::get_me))
         .route("/v1/bot/commands", get(bots::bot_commands))
         .route("/v1/bots/{bot_id}/token", post(bots::issue_token))
         .route("/v1/bots/{bot_id}/revoke", post(bots::revoke_token))
-        .route("/v1/bots/{bot_id}", patch(bots::update_metadata).delete(bots::delete))
-        .route("/v1/bots/{bot_id}/features/{feature}/apply", post(bots::feature_apply))
-        .route("/v1/bots/{bot_id}/features/{feature}/release", post(bots::feature_release))
-        .route("/v1/bots/{bot_id}/commands", put(bots::set_commands).get(bots::get_commands))
+        .route(
+            "/v1/bots/{bot_id}",
+            patch(bots::update_metadata).delete(bots::delete),
+        )
+        .route(
+            "/v1/bots/{bot_id}/features/{feature}/apply",
+            post(bots::feature_apply),
+        )
+        .route(
+            "/v1/bots/{bot_id}/features/{feature}/release",
+            post(bots::feature_release),
+        )
+        .route(
+            "/v1/bots/{bot_id}/commands",
+            put(bots::set_commands).get(bots::get_commands),
+        )
         .route("/v1/features", get(features::list))
         .route("/v1/features/{key}/apply", post(features::apply))
         .route("/v1/features/{key}/release", post(features::release))
@@ -308,13 +344,12 @@ pub async fn purge_expired(state: &AppState, now: i64) -> Result<u64, sqlx::Erro
         .execute(&state.db)
         .await?
         .rows_affected();
-    let expired_device_links = sqlx::query(
-        "DELETE FROM device_link_sessions WHERE expires_at <= ? OR used = 1",
-    )
-    .bind(now)
-    .execute(&state.db)
-    .await?
-    .rows_affected();
+    let expired_device_links =
+        sqlx::query("DELETE FROM device_link_sessions WHERE expires_at <= ? OR used = 1")
+            .bind(now)
+            .execute(&state.db)
+            .await?
+            .rows_affected();
     let orphans = sqlx::query(
         "DELETE FROM blobs WHERE NOT EXISTS (SELECT 1 FROM deliveries d WHERE d.blob_id = blobs.id)",
     )

@@ -491,12 +491,11 @@ pub async fn register_gateway_device(
     }
 
     let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
-    let existing: Option<String> = sqlx::query_scalar(
-        "SELECT gateway_device_id FROM bot_identities WHERE bot_id = ?",
-    )
-    .bind(&identity.id)
-    .fetch_one(&mut *tx)
-    .await?;
+    let existing: Option<String> =
+        sqlx::query_scalar("SELECT gateway_device_id FROM bot_identities WHERE bot_id = ?")
+            .bind(&identity.id)
+            .fetch_one(&mut *tx)
+            .await?;
     if let Some(existing) = existing {
         return Ok((
             StatusCode::OK,
@@ -527,13 +526,11 @@ pub async fn register_gateway_device(
     .bind(crate::util::today())
     .execute(&mut *tx)
     .await?;
-    sqlx::query(
-        "UPDATE bot_identities SET gateway_device_id = ? WHERE bot_id = ?",
-    )
-    .bind(&device_id)
-    .bind(&identity.id)
-    .execute(&mut *tx)
-    .await?;
+    sqlx::query("UPDATE bot_identities SET gateway_device_id = ? WHERE bot_id = ?")
+        .bind(&device_id)
+        .bind(&identity.id)
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
 
     Ok((
@@ -621,9 +618,7 @@ pub async fn set_commands(
         {
             return Err(ApiError::bad_request("invalid bot command name"));
         }
-        if cmd.description.len() > MAX_COMMAND_DESC
-            || cmd.description.chars().any(char::is_control)
-        {
+        if cmd.description.len() > MAX_COMMAND_DESC || cmd.description.chars().any(char::is_control) {
             return Err(ApiError::bad_request("invalid bot command description"));
         }
     }
@@ -666,10 +661,7 @@ pub async fn get_commands(
 
 /// Authenticate a bot gateway request. Tokens are accepted only via
 /// Authorization: Bot <token>; URL paths must never contain token material.
-pub async fn authenticate_token(
-    state: &AppState,
-    headers: &HeaderMap,
-) -> ApiResult<BotIdentity> {
+pub async fn authenticate_token(state: &AppState, headers: &HeaderMap) -> ApiResult<BotIdentity> {
     let auth = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())

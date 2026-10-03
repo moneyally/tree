@@ -35,7 +35,10 @@ fn all_bytes(dir: &Path) -> Vec<(String, Vec<u8>)> {
         .unwrap()
         .map(|e| {
             let p = e.unwrap().path();
-            (p.file_name().unwrap().to_string_lossy().into_owned(), fs::read(&p).unwrap())
+            (
+                p.file_name().unwrap().to_string_lossy().into_owned(),
+                fs::read(&p).unwrap(),
+            )
         })
         .collect()
 }
@@ -45,7 +48,11 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
 }
 
 /// What an attacker holding the raw files would look for.
-fn needles(client: &Client<StoredProvider>, name: &str, message: &str) -> Vec<(&'static str, Vec<u8>)> {
+fn needles(
+    client: &Client<StoredProvider>,
+    name: &str,
+    message: &str,
+) -> Vec<(&'static str, Vec<u8>)> {
     let json = serde_json::to_value(&client.signer).unwrap();
     let private: Vec<u8> = serde_json::from_value(json["private"].clone()).unwrap();
     assert!(private.len() >= 32, "unexpected private key length");
@@ -54,7 +61,10 @@ fn needles(client: &Client<StoredProvider>, name: &str, message: &str) -> Vec<(&
         ("client name", name.as_bytes().to_vec()),
         ("message plaintext", message.as_bytes().to_vec()),
         ("private key (raw)", private.clone()),
-        ("private key (as stored)", serde_json::to_vec(&private).unwrap()),
+        (
+            "private key (as stored)",
+            serde_json::to_vec(&private).unwrap(),
+        ),
     ]
 }
 
@@ -66,9 +76,15 @@ fn chat(client: &Client<StoredProvider>, message: &str) {
     g.confirm_commit(client).unwrap();
     let mut p = peer.join(added.welcome.as_ref().unwrap()).unwrap();
     let m = g.send(client, message.as_bytes()).unwrap();
-    assert!(matches!(p.receive(&peer, &m).unwrap(), Incoming::Message { .. }));
+    assert!(matches!(
+        p.receive(&peer, &m).unwrap(),
+        Incoming::Message { .. }
+    ));
     let m = p.send(&peer, message.as_bytes()).unwrap();
-    assert!(matches!(g.receive(client, &m).unwrap(), Incoming::Message { .. }));
+    assert!(matches!(
+        g.receive(client, &m).unwrap(),
+        Incoming::Message { .. }
+    ));
     client.key_package().unwrap();
 }
 
@@ -94,7 +110,10 @@ fn files_on_disk_reveal_nothing() {
             .collect();
         // Messages are not stored by the core yet, so only these are expected.
         for expected in ["sqlite header", "client name", "private key (as stored)"] {
-            assert!(found.contains(&expected), "control scan missed {expected}: found {found:?}");
+            assert!(
+                found.contains(&expected),
+                "control scan missed {expected}: found {found:?}"
+            );
         }
     }
 
@@ -152,16 +171,24 @@ fn schema_v1_is_upgraded() {
     set_version(&path, 1, true);
     let c = Client::open(&path, "pw").unwrap();
     let conn = &c.provider.storage.conn;
-    let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+    let v: i64 = conn
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
     assert_eq!(v, TREE_SCHEMA_VERSION);
     c.provider.save_group_state(b"g", b"state").unwrap();
-    assert_eq!(c.provider.load_group_state(b"g").unwrap(), Some(b"state".to_vec()));
+    assert_eq!(
+        c.provider.load_group_state(b"g").unwrap(),
+        Some(b"state".to_vec())
+    );
     assert_eq!(c.provider.load_group_state(b"other").unwrap(), None);
     drop(c);
     for bad in [0, TREE_SCHEMA_VERSION + 1] {
         let path = dir.0.join(format!("v{bad}.db"));
         drop(Client::create(&path, "pw", "a").unwrap());
         set_version(&path, bad, false);
-        assert!(matches!(Client::open(&path, "pw"), Err(TreeError::Storage(_))), "version {bad}");
+        assert!(
+            matches!(Client::open(&path, "pw"), Err(TreeError::Storage(_))),
+            "version {bad}"
+        );
     }
 }

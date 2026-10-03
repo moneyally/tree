@@ -28,8 +28,8 @@ pub async fn list_devices(
 ) -> ApiResult<Json<GroupDevicesResp>> {
     // Group ids are returned as hex here so they are safe as URL path
     // components without padding or '/' characters.
-    let group_bytes = hex::decode(&group_id)
-        .map_err(|_| ApiError::bad_request("group_id must be hex"))?;
+    let group_bytes =
+        hex::decode(&group_id).map_err(|_| ApiError::bad_request("group_id must be hex"))?;
     if group_bytes.is_empty() || group_bytes.len() > 255 {
         return Err(ApiError::bad_request("group_id has a wrong length"));
     }
@@ -43,14 +43,12 @@ pub async fn list_devices(
         return Err(ApiError::not_found("no such group"));
     }
 
-    let member = sqlx::query(
-        "SELECT 1 FROM group_devices WHERE group_id = ? AND device_id = ?",
-    )
-    .bind(&group_bytes)
-    .bind(&req.device.device_id)
-    .fetch_optional(&state.db)
-    .await?
-    .is_some();
+    let member = sqlx::query("SELECT 1 FROM group_devices WHERE group_id = ? AND device_id = ?")
+        .bind(&group_bytes)
+        .bind(&req.device.device_id)
+        .fetch_optional(&state.db)
+        .await?
+        .is_some();
     if !member {
         return Err(ApiError::forbidden(
             "NOT_ELIGIBLE",
@@ -58,15 +56,14 @@ pub async fn list_devices(
         ));
     }
 
-    let devices: Vec<String> = sqlx::query(
-        "SELECT device_id FROM group_devices WHERE group_id = ? ORDER BY device_id",
-    )
-    .bind(&group_bytes)
-    .fetch_all(&state.db)
-    .await?
-    .iter()
-    .map(|r| r.try_get("device_id"))
-    .collect::<Result<Vec<_>, _>>()?;
+    let devices: Vec<String> =
+        sqlx::query("SELECT device_id FROM group_devices WHERE group_id = ? ORDER BY device_id")
+            .bind(&group_bytes)
+            .fetch_all(&state.db)
+            .await?
+            .iter()
+            .map(|r| r.try_get("device_id"))
+            .collect::<Result<Vec<_>, _>>()?;
 
     Ok(Json(GroupDevicesResp {
         group_id: group_id.to_lowercase(),

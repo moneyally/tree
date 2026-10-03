@@ -797,14 +797,13 @@ async fn receive(args: ReceiveArgs) -> Result<()> {
             .context("decode mailbox body")?;
 
         let event: Option<Incoming> = if raw.first() == Some(&0) {
-            let mut joined = client
+            let joined = client
                 .join(&raw)
                 .map_err(|e| anyhow!("join welcome: {e}"))?;
             println!("welcome: joined group_id={}", hex::encode(joined.id()));
             if joined.should_refresh_keys() {
                 println!("group: key refresh recommended after join");
             }
-            let _ = &mut joined;
             None
         } else {
             let group_id = envelope_group_id(&raw)?;
@@ -851,16 +850,6 @@ async fn receive(args: ReceiveArgs) -> Result<()> {
                 Incoming::HeldForRetry { epoch } => {
                     println!(
                         "held_for_retry group={} epoch={epoch}",
-                        hex::encode(group.id())
-                    );
-                }
-                Incoming::SettingsChanged {
-                    seq,
-                    title,
-                    disappearing_seconds,
-                } => {
-                    println!(
-                        "settings_changed group={} seq={seq} title={title:?} disappearing_seconds={disappearing_seconds}",
                         hex::encode(group.id())
                     );
                 }

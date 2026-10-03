@@ -314,6 +314,24 @@ mod tests {
     }
 
     #[test]
+    fn prune_future_is_bounded_and_expires() {
+        let mut s = GroupState {
+            future: (0..70)
+                .map(|i| PendingEnvelope {
+                    epoch: 8,
+                    received_at: 100 + i,
+                    bytes: vec![i as u8],
+                })
+                .collect(),
+            ..GroupState::default()
+        };
+        s.prune_future(100);
+        assert_eq!(s.future.len(), 64);
+        s.prune_future(7 * 86_400 + 101);
+        assert!(s.future.is_empty());
+    }
+
+    #[test]
     fn prune_drops_old_epochs() {
         let mut s = sample();
         s.prune(6);

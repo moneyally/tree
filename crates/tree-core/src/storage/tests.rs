@@ -142,6 +142,22 @@ fn files_on_disk_reveal_nothing() {
 
 #[cfg(unix)]
 #[test]
+fn create_rejects_preexisting_header_symlink() {
+    use std::os::unix::fs::symlink;
+
+    let dir = TempDir::new("header-symlink");
+    let path = dir.0.join("alice.db");
+    let target = dir.0.join("target");
+    fs::write(&target, b"must-not-change").unwrap();
+    symlink(&target, KeyHeader::path_for(&path)).unwrap();
+
+    assert!(Client::create(&path, "pw", "alice").is_err());
+    assert_eq!(fs::read(&target).unwrap(), b"must-not-change");
+    assert!(!path.exists());
+}
+
+#[cfg(unix)]
+#[test]
 fn files_are_owner_only() {
     use std::os::unix::fs::PermissionsExt;
     let dir = TempDir::new("perm");

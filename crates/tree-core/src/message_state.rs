@@ -89,8 +89,7 @@ impl MessageLedger {
     }
 
     pub fn encode(&self) -> Result<Vec<u8>, TreeError> {
-        if self.sender_seq.len() > u16::MAX as usize
-            || self.records.len() > u16::MAX as usize
+        if self.records.len() > u16::MAX as usize
             || self.pending.len() > u16::MAX as usize
         {
             return Err(TreeError::Storage("message ledger is too large".into()));
@@ -168,7 +167,7 @@ impl MessageLedger {
         let mut pending = Vec::with_capacity(pending_count);
         for _ in 0..pending_count {
             let from = MemberId(r.array()?);
-            let event = MessageEvent::decode(r.bytes(u32::MAX as usize)?)?;
+            let event = MessageEvent::decode(&r.bytes(u32::MAX as usize)?)?;
             if matches!(event, MessageEvent::New { .. }) {
                 return Err(damaged());
             }

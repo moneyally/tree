@@ -317,7 +317,7 @@ fn non_admin_cannot_add_or_remove_members() {
         a.receive(&alice, &p.commit).unwrap();
     }
 
-    assert_eq!(a.admin_id(), b.admin_id());
+    assert_eq!(a.admins(), b.admins());
 }
 
 #[test]

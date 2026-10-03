@@ -255,6 +255,11 @@ impl GroupState {
         } else {
             (None, 0, 0)
         };
+        let messages = if version >= 6 {
+            MessageLedger::decode(&r.bytes()?)?
+        } else {
+            MessageLedger::default()
+        };
         if !r.0.is_empty() {
             return Err(damaged());
         }

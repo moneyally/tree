@@ -305,6 +305,14 @@ impl Api {
         .await
     }
 
+    pub async fn get_bot(&self, path: &str, token: &str) -> (StatusCode, Value) {
+        let rb = self
+            .http
+            .get(self.url(path))
+            .header("Authorization", format!("Bot {token}"));
+        decode(rb.send().await.unwrap()).await
+    }
+
     pub async fn send_bot(&self, path: &str, token: &str) -> (StatusCode, Value) {
         self.send_bot_with_body(path, token, None).await
     }

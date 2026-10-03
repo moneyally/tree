@@ -380,6 +380,26 @@ fn structured_message_mutations_cannot_be_spoofed_by_another_member() {
 }
 
 #[test]
+fn structured_messages_can_arrive_out_of_order() {
+    let (alice, bob, mut a, mut b) = two_person_chat();
+    let (_, first) = a.send_message(&alice, b"first").unwrap();
+    let (_, second) = a.send_message(&alice, b"second").unwrap();
+
+    match b.receive(&bob, &second).unwrap() {
+        Incoming::StructuredMessages { events } => {
+            assert_eq!(events.len(), 1);
+        }
+        other => panic!("expected second structured message, got {other:?}"),
+    }
+    match b.receive(&bob, &first).unwrap() {
+        Incoming::StructuredMessages { events } => {
+            assert_eq!(events.len(), 1);
+        }
+        other => panic!("expected first structured message, got {other:?}"),
+    }
+}
+
+#[test]
 fn structured_message_replay_is_a_noop() {
     let (alice, bob, mut a, mut b) = two_person_chat();
     let (_, ciphertext) = a.send_message(&alice, b"once").unwrap();

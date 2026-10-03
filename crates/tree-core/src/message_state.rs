@@ -14,7 +14,7 @@ use crate::{
 const VERSION: u8 = 1;
 const MAX_RECORDS: usize = 4096;
 const MAX_PENDING: usize = 256;
-const MAX_SENDERS: usize = 256;
+const MAX_SENDERS: usize = 4096;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct MessageRecord {
@@ -36,9 +36,9 @@ pub(crate) struct PendingMutation {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct MessageLedger {
     pub next_seq: u64,
-    /// Highest accepted structured-message sequence per sender.
-    /// MLS sender-ratchet replay protection remains the primary transport
-    /// defence; this ledger protects Tree's structured-event semantics.
+    /// Recently seen structured-message sequence numbers per sender.
+    /// This is a replay/deduplication set, not a monotonic ordering rule:
+    /// MLS explicitly permits bounded out-of-order delivery.
     pub sender_seq: Vec<(MemberId, u64)>,
     pub records: Vec<MessageRecord>,
     pub pending: Vec<PendingMutation>,
@@ -54,20 +54,18 @@ impl MessageLedger {
     }
 
     pub fn accept_sender_seq(&mut self, sender: MemberId, seq: u64) -> bool {
-        match self.sender_seq.iter_mut().find(|(id, _)| *id == sender) {
-            Some((_, last)) if seq <= *last => false,
-            Some((_, last)) => {
-                *last = seq;
-                true
-            }
-            None => {
-                if self.sender_seq.len() >= MAX_SENDERS {
-                    self.sender_seq.remove(0);
-                }
-                self.sender_seq.push((sender, seq));
-                true
-            }
+        if self
+            .sender_seq
+            .iter()
+            .any(|(id, seen_seq)| *id == sender && *seen_seq == seq)
+        {
+            return false;
         }
+        if self.sender_seq.len() >= MAX_SENDERS {
+            self.sender_seq.remove(0);
+        }
+        self.sender_seq.push((sender, seq));
+        true
     }
 
     pub fn record_new(&mut self, record: MessageRecord) -> bool {
@@ -303,6 +301,16 @@ mod tests {
         let bytes = ledger.encode().unwrap();
         let decoded = MessageLedger::decode(&bytes).unwrap();
         assert_eq!(decoded, ledger);
+    }
+
+    #[test]
+    fn sender_sequence_allows_bounded_out_of_order_delivery() {
+        let sender = MemberId([9; 32]);
+        let mut ledger = MessageLedger::default();
+        assert!(ledger.accept_sender_seq(sender, 2));
+        assert!(ledger.accept_sender_seq(sender, 1));
+        assert!(!ledger.accept_sender_seq(sender, 2));
+        assert!(ledger.accept_sender_seq(sender, 3));
     }
 
     #[test]

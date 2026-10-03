@@ -4,7 +4,7 @@
 mod common;
 
 use common::{two_person_chat, Now};
-use tree_core::{Client, Incoming, TreeError};
+use tree_core::{Client, Incoming, MessageEvent, MessageId, TreeError};
 
 fn is_message(r: &Result<Incoming, TreeError>, body: &[u8]) -> bool {
     matches!(r, Ok(Incoming::Message { body: b, .. }) if b == body)
@@ -281,6 +281,113 @@ fn pending_removal_lists_removed() {
     assert_eq!(p.removed, vec![bob.member_id()]);
     assert!(p.added.is_empty());
     assert!(p.welcome.is_none());
+}
+
+#[test]
+fn structured_message_lifecycle_is_authenticated() {
+    let (alice, bob, mut a, mut b) = two_person_chat();
+
+    let (message_id, ciphertext) = a.send_message(&alice, b"hello").unwrap();
+    let incoming = b.receive(&bob, &ciphertext).unwrap();
+    match incoming {
+        Incoming::StructuredMessages { events } => {
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].0, alice.member_id());
+            match &events[0].1 {
+                MessageEvent::New {
+                    id,
+                    body,
+                    ttl_secs,
+                    view_once,
+                    ..
+                } => {
+                    assert_eq!(*id, message_id);
+                    assert_eq!(body, b"hello");
+                    assert_eq!(*ttl_secs, 0);
+                    assert!(!view_once);
+                }
+                other => panic!("unexpected event: {other:?}"),
+            }
+        }
+        other => panic!("unexpected incoming: {other:?}"),
+    }
+
+    let edited = a.edit_message(&alice, message_id, b"hello edited").unwrap();
+    match b.receive(&bob, &edited).unwrap() {
+        Incoming::StructuredMessages { events } => {
+            assert_eq!(events.len(), 1);
+            assert!(matches!(
+                events[0].1,
+                MessageEvent::Edit { target, ref body, .. } if target == message_id && body == b"hello edited"
+            ));
+        }
+        other => panic!("unexpected incoming: {other:?}"),
+    }
+
+    let reaction = b
+        .react_to_message(&bob, message_id, "👍", true)
+        .unwrap();
+    match a.receive(&alice, &reaction).unwrap() {
+        Incoming::StructuredMessages { events } => {
+            assert!(matches!(
+                events[0].1,
+                MessageEvent::Reaction { target, ref reaction, add, .. }
+                    if target == message_id && reaction == "👍" && add
+            ));
+        }
+        other => panic!("unexpected incoming: {other:?}"),
+    }
+
+    let receipt = b.send_read_receipt(&bob, message_id).unwrap();
+    match a.receive(&alice, &receipt).unwrap() {
+        Incoming::StructuredMessages { events } => {
+            assert!(matches!(events[0].1, MessageEvent::Read { target, .. } if target == message_id));
+        }
+        other => panic!("unexpected incoming: {other:?}"),
+    }
+
+    let typing = b.send_typing(&bob, true).unwrap();
+    match a.receive(&alice, &typing).unwrap() {
+        Incoming::StructuredMessages { events } => {
+            assert!(matches!(events[0].1, MessageEvent::Typing { active: true, .. }));
+        }
+        other => panic!("unexpected incoming: {other:?}"),
+    }
+
+    let deleted = a.delete_message(&alice, message_id).unwrap();
+    match b.receive(&bob, &deleted).unwrap() {
+        Incoming::StructuredMessages { events } => {
+            assert!(matches!(
+                events[0].1,
+                MessageEvent::Delete { target, .. } if target == message_id
+            ));
+        }
+        other => panic!("unexpected incoming: {other:?}"),
+    }
+}
+
+#[test]
+fn structured_message_mutations_cannot_be_spoofed_by_another_member() {
+    let (alice, bob, mut a, mut b) = two_person_chat();
+    let (message_id, ciphertext) = a.send_message(&alice, b"author only").unwrap();
+    b.receive(&bob, &ciphertext).unwrap();
+
+    let fake_id = MessageId::from_bytes([9; 16]);
+    assert_ne!(message_id, fake_id);
+    assert!(b.edit_message(&bob, message_id, b"spoof").is_err());
+    assert!(b.delete_message(&bob, message_id).is_err());
+    assert!(b.react_to_message(&bob, fake_id, "x", true).is_err());
+}
+
+#[test]
+fn structured_message_replay_is_a_noop() {
+    let (alice, bob, mut a, mut b) = two_person_chat();
+    let (_, ciphertext) = a.send_message(&alice, b"once").unwrap();
+    assert!(matches!(
+        b.receive(&bob, &ciphertext).unwrap(),
+        Incoming::StructuredMessages { .. }
+    ));
+    assert_eq!(b.receive(&bob, &ciphertext).unwrap(), Incoming::OwnEcho);
 }
 
 /// Only the deterministic group administrator can add/remove members.

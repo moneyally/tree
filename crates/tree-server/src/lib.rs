@@ -276,11 +276,33 @@ async fn log_requests(req: Request, next: Next) -> Response {
 /// Returns the number of bodies removed.
 pub async fn purge_expired(state: &AppState, now: i64) -> Result<u64, sqlx::Error> {
     let cutoff = now - state.cfg.message_ttl_secs as i64;
+
+    // Remove mailbox rows before their shared blob. Otherwise an expired
+    // message becomes invisible to fetch(), but its delivery row still counts
+    // toward the mailbox limit and can permanently fill the mailbox.
+    let expired_deliveries = sqlx::query(
+        "DELETE FROM deliveries
+         WHERE blob_id IN (SELECT id FROM blobs WHERE received_at < ?)",
+    )
+    .bind(cutoff)
+    .execute(&state.db)
+    .await?
+    .rows_affected();
+
     let expired = sqlx::query("DELETE FROM blobs WHERE received_at < ?")
         .bind(cutoff)
         .execute(&state.db)
         .await?
         .rows_affected();
+
+    // Heal any legacy/orphaned delivery rows left by older server versions.
+    let orphaned_deliveries = sqlx::query(
+        "DELETE FROM deliveries
+         WHERE NOT EXISTS (SELECT 1 FROM blobs b WHERE b.id = deliveries.blob_id)",
+    )
+    .execute(&state.db)
+    .await?
+    .rows_affected();
     let expired_files = sqlx::query("DELETE FROM files WHERE expires_at <= ?")
         .bind(now)
         .execute(&state.db)
@@ -304,7 +326,12 @@ pub async fn purge_expired(state: &AppState, now: i64) -> Result<u64, sqlx::Erro
     )
     .execute(&state.db)
     .await?;
-    Ok(expired + orphans + expired_files + expired_device_links)
+    Ok(expired
+        + expired_deliveries
+        + orphaned_deliveries
+        + orphans
+        + expired_files
+        + expired_device_links)
 }
 
 /// A running server.

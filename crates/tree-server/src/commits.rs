@@ -41,7 +41,10 @@ pub struct CommitReq {
     #[serde(default)]
     pub removed: Vec<String>,
 }
-json_body!(CommitReq, |cfg| (cfg.max_commit_bytes + cfg.max_welcome_bytes).div_ceil(3) * 4
+json_body!(CommitReq, |cfg| (cfg.max_commit_bytes
+    + cfg.max_welcome_bytes)
+    .div_ceil(3)
+    * 4
     + 3 * cfg.max_recipients * (ID_LEN + 4)
     + 4096);
 
@@ -73,16 +76,30 @@ fn unique_ids(ids: Vec<String>, what: &'static str) -> ApiResult<Vec<String>> {
 }
 
 /// `POST /v1/commits`
-pub async fn submit(State(state): State<AppState>, req: Signed<CommitReq>) -> ApiResult<Json<CommitResp>> {
+pub async fn submit(
+    State(state): State<AppState>,
+    req: Signed<CommitReq>,
+) -> ApiResult<Json<CommitResp>> {
     let cfg = &state.cfg;
     let sender = req.device.device_id.clone();
-    let CommitReq { group_id, epoch, recipients, body, added, welcome, removed } = req.body;
+    let CommitReq {
+        group_id,
+        epoch,
+        recipients,
+        body,
+        added,
+        welcome,
+        removed,
+    } = req.body;
 
     let recipients = unique_ids(recipients, "recipient")?;
     let added = unique_ids(added, "added device")?;
     let removed = unique_ids(removed, "removed device")?;
     if recipients.len() + added.len() > cfg.max_recipients || removed.len() > cfg.max_recipients {
-        return Err(ApiError::too_large(format!("at most {} devices", cfg.max_recipients)));
+        return Err(ApiError::too_large(format!(
+            "at most {} devices",
+            cfg.max_recipients
+        )));
     }
     let group_id = unb64(&group_id, "group_id")?;
     if group_id.is_empty() || group_id.len() > MAX_GROUP_ID {
@@ -97,12 +114,15 @@ pub async fn submit(State(state): State<AppState>, req: Signed<CommitReq>) -> Ap
     if body.len() > cfg.max_commit_bytes {
         return Err(ApiError::too_large("commit too large"));
     }
-    let header = wire::envelope_header(&body).map_err(|why| ApiError::bad_request(format!("body: {why}")))?;
+    let header = wire::envelope_header(&body)
+        .map_err(|why| ApiError::bad_request(format!("body: {why}")))?;
     if header.content_type != wire::COMMIT {
         return Err(ApiError::bad_request("body is not a commit"));
     }
     if header.group_id != group_id.as_slice() || header.epoch != epoch {
-        return Err(ApiError::bad_request("group_id or epoch differ from the commit header"));
+        return Err(ApiError::bad_request(
+            "group_id or epoch differ from the commit header",
+        ));
     }
 
     let welcome = match (welcome, added.is_empty()) {
@@ -136,11 +156,13 @@ pub async fn submit(State(state): State<AppState>, req: Signed<CommitReq>) -> Ap
 
     if let Some(last) = last {
         if epoch_db <= last {
-            let winner = sqlx::query("SELECT sha256, id FROM group_winners WHERE group_id = ? AND epoch = ?")
-                .bind(&group_id)
-                .bind(epoch_db)
-                .fetch_optional(&mut *tx)
-                .await?;
+            let winner = sqlx::query(
+                "SELECT sha256, id FROM group_winners WHERE group_id = ? AND epoch = ?",
+            )
+            .bind(&group_id)
+            .bind(epoch_db)
+            .fetch_optional(&mut *tx)
+            .await?;
             let winner: Option<(Vec<u8>, String)> = match winner {
                 Some(r) => Some((r.try_get("sha256")?, r.try_get("id")?)),
                 None => None,
@@ -154,22 +176,34 @@ pub async fn submit(State(state): State<AppState>, req: Signed<CommitReq>) -> Ap
                     unknown_devices: vec![],
                     full_devices: vec![],
                 })),
-                other => Err(ApiError::conflict("COMMIT_CONFLICT", "another commit won this epoch")
-                    .with("winner_sha256", other.map_or(json!(null), |(h, _)| json!(hex::encode(h))))),
+                other => Err(ApiError::conflict(
+                    "COMMIT_CONFLICT",
+                    "another commit won this epoch",
+                )
+                .with(
+                    "winner_sha256",
+                    other.map_or(json!(null), |(h, _)| json!(hex::encode(h))),
+                )),
             };
         }
-        let eligible = sqlx::query("SELECT 1 FROM group_devices WHERE group_id = ? AND device_id = ?")
-            .bind(&group_id)
-            .bind(&sender)
-            .fetch_optional(&mut *tx)
-            .await?
-            .is_some();
+        let eligible =
+            sqlx::query("SELECT 1 FROM group_devices WHERE group_id = ? AND device_id = ?")
+                .bind(&group_id)
+                .bind(&sender)
+                .fetch_optional(&mut *tx)
+                .await?
+                .is_some();
         if !eligible {
-            return Err(ApiError::forbidden("NOT_ELIGIBLE", "this device is not a member the server knows"));
+            return Err(ApiError::forbidden(
+                "NOT_ELIGIBLE",
+                "this device is not a member the server knows",
+            ));
         }
         if epoch_db != last + 1 {
-            return Err(ApiError::conflict("EPOCH_MISMATCH", "epoch is ahead of the group")
-                .with("last_epoch", json!(last)));
+            return Err(
+                ApiError::conflict("EPOCH_MISMATCH", "epoch is ahead of the group")
+                    .with("last_epoch", json!(last)),
+            );
         }
     }
 

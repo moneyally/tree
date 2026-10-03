@@ -11,6 +11,7 @@
 //! Wire formats are plain bytes so that any transport (server mailbox,
 //! file, QR code) can carry them.
 
+pub mod bot_lane;
 pub mod client;
 pub mod crypto_profile;
 pub mod error;
@@ -26,6 +27,7 @@ pub mod recovery;
 pub mod storage;
 pub mod user_features;
 
+pub use bot_lane::{BotLaneDescriptor, BotLaneEvent, BotLaneMode};
 pub use client::Client;
 pub use crypto_profile::{combine_secrets, negotiate as negotiate_crypto_profile, CryptoProfile, KemAlgorithm, SignatureAlgorithm};
 pub use error::TreeError;

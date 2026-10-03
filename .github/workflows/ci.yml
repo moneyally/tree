@@ -28,9 +28,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git fetch origin main --depth=1
-          base="$(git merge-base HEAD origin/main)"
-          files="$(git diff --name-only "$base...HEAD" -- '*.rs')"
+          files="$(git diff-tree --no-commit-id --name-only -r HEAD -- '*.rs')"
           if [[ -z "$files" ]]; then
             echo "No changed Rust files."
             exit 0

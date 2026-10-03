@@ -56,6 +56,9 @@ pub struct Config {
     /// `SIGNUP_PER_HOUR` / `SIGNUP_BURST`: per-IP (IPv6: per /64) signup bucket, memory only.
     pub signup_per_hour: f64,
     pub signup_burst: f64,
+    /// `BOT_TOKEN_HMAC_SECRET`: 256-bit secret used to authenticate bot gateway tokens.
+    /// Unset disables bot-token issuance and gateway authentication.
+    pub bot_token_hmac_secret: Option<[u8; 32]>,
     /// `TRUST_FORWARDED_FOR`: take the client address from the last
     /// `X-Forwarded-For` entry (set only behind a reverse proxy that overwrites it).
     pub trust_forwarded_for: bool,

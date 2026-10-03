@@ -242,6 +242,14 @@ impl StoredProvider {
             .ok_or_else(|| TreeError::Storage(format!("identity record {key:?} missing")))
     }
 
+    pub(crate) fn meta_optional(&self, key: &str) -> Result<Option<Vec<u8>>, TreeError> {
+        self.storage
+            .conn
+            .query_row("SELECT value FROM tree_meta WHERE key = ?1", params![key], |r| r.get(0))
+            .optional()
+            .map_err(storage_err)
+    }
+
     pub(crate) fn group_ids(&self) -> Result<Vec<Vec<u8>>, TreeError> {
         let mut stmt = self
             .storage

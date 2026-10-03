@@ -88,6 +88,7 @@ impl Default for Config {
             rate_burst: 200.0,
             signup_per_hour: 20.0,
             signup_burst: 10.0,
+            bot_token_hmac_secret: None,
             trust_forwarded_for: false,
         }
     }
@@ -129,10 +130,17 @@ impl Config {
             })?),
             _ => None,
         };
+        let bot_token_hmac_secret = match std::env::var("BOT_TOKEN_HMAC_SECRET") {
+            Ok(v) if !v.trim().is_empty() => Some(parse_sha256_hex(&v).ok_or_else(|| {
+                ConfigError("BOT_TOKEN_HMAC_SECRET must be 64 hex characters".into())
+            })?),
+            _ => None,
+        };
         let cfg = Self {
             database_url: env_parse("DATABASE_URL", d.database_url)?,
             bind_addr: env_parse("BIND_ADDR", d.bind_addr)?,
             admin_token_sha256,
+            bot_token_hmac_secret,
             pow_bits: env_parse("POW_BITS", d.pow_bits)?,
             message_ttl_secs: env_parse("MESSAGE_TTL_SECS", d.message_ttl_secs)?,
             purge_interval_secs: env_parse("PURGE_INTERVAL_SECS", d.purge_interval_secs)?,

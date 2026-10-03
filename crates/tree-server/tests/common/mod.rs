@@ -48,6 +48,7 @@ pub async fn boot(tweak: impl FnOnce(&mut Config)) -> TestServer {
         rate_burst: 10_000.0,
         signup_per_hour: 1_000_000.0,
         signup_burst: 10_000.0,
+        bot_token_hmac_secret: Some([7u8; 32]),
         ..Config::default()
     };
     tweak(&mut cfg);

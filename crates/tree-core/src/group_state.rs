@@ -353,7 +353,6 @@ mod tests {
             last_control_seq: 12,
             messages: MessageLedger {
                 next_seq: 4,
-                sender_seq: vec![(MemberId([8; 32]), 9)],
                 records: vec![crate::message_state::MessageRecord {
                     id: MessageId([4; 16]),
                     author: MemberId([8; 32]),

@@ -37,7 +37,7 @@ async fn encrypted_file_capability_controls_download() {
     assert_eq!(v["sha256"].as_str(), Some(hex::encode(digest).as_str()));
 
     let file_id = v["file_id"].as_str().unwrap().to_string();
-    let cap = v["capability"].as_str().unwrap().to_string();
+    let _cap = v["capability"].as_str().unwrap().to_string();
 
     let path = format!("/v1/files/{file_id}");
     let mut headers = HeaderMap::new();
@@ -95,7 +95,6 @@ async fn encrypted_file_expires_and_server_purge_removes_it() {
         .await;
     assert_eq!(st, StatusCode::OK, "{v}");
     let file_id = v["file_id"].as_str().unwrap();
-    let cap = v["capability"].as_str().unwrap();
     let path = format!("/v1/files/{file_id}");
 
     sqlx::query("UPDATE files SET expires_at = 0 WHERE id = ?")

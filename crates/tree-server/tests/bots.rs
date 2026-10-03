@@ -2,20 +2,10 @@
 
 mod common;
 
-use base64::Engine;
 use common::*;
 use ed25519_dalek::SigningKey;
-use reqwest::{header::HeaderValue, Method, StatusCode};
+use reqwest::{Method, StatusCode};
 use serde_json::json;
-
-fn bot_headers(token: &str) -> reqwest::header::HeaderMap {
-    let mut h = reqwest::header::HeaderMap::new();
-    h.insert(
-        reqwest::header::AUTHORIZATION,
-        HeaderValue::from_str(&format!("Bot {token}")).unwrap(),
-    );
-    h
-}
 
 #[tokio::test]
 async fn bot_token_lifecycle_and_gateway_device_are_isolated() {

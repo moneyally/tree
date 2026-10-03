@@ -380,6 +380,12 @@ async fn messages_endpoint_refuses_commits_proposals_welcomes() {
     let ts = boot(|_| {}).await;
     let api = &ts.api;
     let (a, b) = (api.signup().await, api.signup().await);
+    // Establish the server-side roster before testing application-message routing.
+    assert_eq!(submit(api, &a, req(0, b"setup", &[&b])).await.0, StatusCode::OK);
+    let setup = api.fetch(&b, 0).await;
+    assert_eq!(setup.len(), 1);
+    api.ack(&b, &[setup[0]["id"].as_str().unwrap()]).await;
+
     for (body, why) in [
         (commit(&G, 0, b"c"), "commits must be sent to /v1/commits"),
         (envelope(&G, 0, 2, b"p"), "proposals are not accepted"),
@@ -399,6 +405,10 @@ async fn messages_endpoint_refuses_commits_proposals_welcomes() {
         api.send_raw(&a, &[&b.device_id], &app(b"ok")).await.0,
         StatusCode::OK
     );
+    let outsider = api.signup().await;
+    let (st, v) = api.send_raw(&a, &[&outsider.device_id], &app(b"cross-group")).await;
+    assert_eq!((st, code(&v)), (StatusCode::FORBIDDEN, "NOT_ELIGIBLE"));
+    assert!(api.fetch(&outsider, 0).await.is_empty());
     ts.stop().await;
 }
 

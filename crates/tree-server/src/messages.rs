@@ -93,10 +93,15 @@ pub async fn send(
         Err(why) => return Err(ApiError::bad_request(format!("body: {why}"))),
     };
 
+    // Fan-out and membership authorization happen in the same write
+    // transaction. Otherwise a concurrent device removal could race the
+    // membership check and still receive one last unauthorized delivery.
+    state.rate_device(&req.device.device_id, (unique.len() / 100) as f64)?;
+    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
+
     // The server cannot decrypt the MLS message, but it can enforce that the
     // authenticated sender and every recipient belong to the same current
-    // server-side group roster. This blocks an authenticated device from using
-    // arbitrary Tree envelopes to spam unrelated device mailboxes.
+    // server-side group roster. This blocks cross-group mailbox injection.
     let group_id = header.group_id.to_vec();
     let sender = &req.device.device_id;
     let sender_member = sqlx::query(
@@ -104,7 +109,7 @@ pub async fn send(
     )
     .bind(&group_id)
     .bind(sender)
-    .fetch_optional(&state.db)
+    .fetch_optional(&mut *tx)
     .await?
     .is_some();
     if !sender_member {
@@ -113,32 +118,23 @@ pub async fn send(
             "sender is not a member of this group",
         ));
     }
-    let mut invalid_recipient = false;
     for recipient in &unique {
         let member = sqlx::query(
             "SELECT 1 FROM group_devices WHERE group_id = ? AND device_id = ?",
         )
         .bind(&group_id)
         .bind(recipient)
-        .fetch_optional(&state.db)
+        .fetch_optional(&mut *tx)
         .await?
         .is_some();
         if !member {
-            invalid_recipient = true;
-            break;
+            return Err(ApiError::forbidden(
+                "NOT_ELIGIBLE",
+                "one or more recipients are not members of this group",
+            ));
         }
     }
-    if invalid_recipient {
-        return Err(ApiError::forbidden(
-            "NOT_ELIGIBLE",
-            "one or more recipients are not members of this group",
-        ));
-    }
 
-    // Fan-out to many mailboxes costs more.
-    state.rate_device(&req.device.device_id, (unique.len() / 100) as f64)?;
-
-    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
     let d = deliver(&mut tx, cfg, &bytes, unique).await?;
     tx.commit().await?;
 

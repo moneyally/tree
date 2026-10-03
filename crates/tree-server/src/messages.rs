@@ -79,8 +79,8 @@ pub async fn send(
     }
     // Only application messages travel here: commits go through
     // /v1/commits, welcomes only with their commit, proposals not at all.
-    match wire::envelope_header(&bytes) {
-        Ok(h) if h.content_type == wire::APPLICATION => {}
+    let header = match wire::envelope_header(&bytes) {
+        Ok(h) if h.content_type == wire::APPLICATION => h,
         Ok(h) if h.content_type == wire::COMMIT => {
             return Err(ApiError::bad_request("commits must be sent to /v1/commits"))
         }
@@ -91,7 +91,50 @@ pub async fn send(
             ))
         }
         Err(why) => return Err(ApiError::bad_request(format!("body: {why}"))),
+    };
+
+    // The server cannot decrypt the MLS message, but it can enforce that the
+    // authenticated sender and every recipient belong to the same current
+    // server-side group roster. This blocks an authenticated device from using
+    // arbitrary Tree envelopes to spam unrelated device mailboxes.
+    let group_id = header.group_id.to_vec();
+    let sender = &req.device.device_id;
+    let sender_member = sqlx::query(
+        "SELECT 1 FROM group_devices WHERE group_id = ? AND device_id = ?",
+    )
+    .bind(&group_id)
+    .bind(sender)
+    .fetch_optional(&state.db)
+    .await?
+    .is_some();
+    if !sender_member {
+        return Err(ApiError::forbidden(
+            "NOT_ELIGIBLE",
+            "sender is not a member of this group",
+        ));
     }
+    let mut invalid_recipient = false;
+    for recipient in &unique {
+        let member = sqlx::query(
+            "SELECT 1 FROM group_devices WHERE group_id = ? AND device_id = ?",
+        )
+        .bind(&group_id)
+        .bind(recipient)
+        .fetch_optional(&state.db)
+        .await?
+        .is_some();
+        if !member {
+            invalid_recipient = true;
+            break;
+        }
+    }
+    if invalid_recipient {
+        return Err(ApiError::forbidden(
+            "NOT_ELIGIBLE",
+            "one or more recipients are not members of this group",
+        ));
+    }
+
     // Fan-out to many mailboxes costs more.
     state.rate_device(&req.device.device_id, (unique.len() / 100) as f64)?;
 

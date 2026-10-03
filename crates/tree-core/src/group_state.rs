@@ -323,7 +323,7 @@ impl Reader<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::message::{MessageEvent, MessageId};
+    use crate::message::MessageId;
 
     fn sample() -> GroupState {
         GroupState {

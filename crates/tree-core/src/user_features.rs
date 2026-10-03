@@ -163,7 +163,7 @@ pub fn release<P: TreeProvider>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Client, Passphrase};
+    use crate::Client;
 
     #[test]
     fn memory_provider_round_trip_is_noop() {

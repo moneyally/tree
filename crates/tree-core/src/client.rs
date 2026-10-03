@@ -254,7 +254,11 @@ impl<P: TreeProvider> Client<P> {
             .crypto()
             .supports(ciphersuite)
             .map_err(|_| TreeError::UnsupportedCiphersuite)?;
-        if !provider.crypto().supported_ciphersuites().contains(&ciphersuite) {
+        if !provider
+            .crypto()
+            .supported_ciphersuites()
+            .contains(&ciphersuite)
+        {
             return Err(TreeError::UnsupportedCiphersuite);
         }
 

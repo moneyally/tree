@@ -19,6 +19,7 @@ pub mod commits;
 pub mod config;
 pub mod error;
 pub mod features;
+pub mod files;
 pub mod groups;
 pub mod keypackages;
 pub mod social;
@@ -196,6 +197,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/blocks", get(social::list_blocks))
         .route("/v1/blocks/{account_id}", post(social::block_account).delete(social::unblock_account))
         .route("/v1/reports", post(social::report))
+        .route("/v1/files", post(files::upload))
+        .route("/v1/files/{file_id}", get(files::download))
         .route("/v1/recovery/setup", post(recovery::setup))
         .route("/v1/recovery", post(recovery::recover))
         .route("/v1/keypackages/claim", post(keypackages::claim))
@@ -259,6 +262,12 @@ pub async fn purge_expired(state: &AppState, now: i64) -> Result<u64, sqlx::Erro
         .execute(&state.db)
         .await?
         .rows_affected();
+    let file_cutoff = now - state.cfg.file_ttl_secs as i64;
+    let expired_files = sqlx::query("DELETE FROM files WHERE expires_at <= ?")
+        .bind(file_cutoff)
+        .execute(&state.db)
+        .await?
+        .rows_affected();
     let orphans = sqlx::query(
         "DELETE FROM blobs WHERE NOT EXISTS (SELECT 1 FROM deliveries d WHERE d.blob_id = blobs.id)",
     )
@@ -270,7 +279,7 @@ pub async fn purge_expired(state: &AppState, now: i64) -> Result<u64, sqlx::Erro
     )
     .execute(&state.db)
     .await?;
-    Ok(expired + orphans)
+    Ok(expired + orphans + expired_files)
 }
 
 /// A running server.

@@ -580,18 +580,20 @@ impl Group {
             body: body.to_vec(),
             preview,
         };
-        let envelope = self.send_structured(me, &event)?;
         let now = unix_now();
-        self.state.messages.record_new(MessageRecord {
-            id,
-            author: me.member_id(),
-            created_at: now,
-            ttl_secs,
-            view_once,
-            deleted: false,
-            last_edit_seq: seq,
-        });
-        self.save(me)?;
+        let author = me.member_id();
+        let envelope = self.send_structured_with_update(me, &event, move |group| {
+            group.state.messages.record_new(MessageRecord {
+                id,
+                author,
+                created_at: now,
+                ttl_secs,
+                view_once,
+                deleted: false,
+                last_edit_seq: seq,
+            });
+            Ok(())
+        })?;
         Ok((id, envelope))
     }
 
@@ -622,12 +624,12 @@ impl Group {
             edited_at: unix_now(),
             body: body.to_vec(),
         };
-        let envelope = self.send_structured(me, &event)?;
-        if let Some(record) = self.state.messages.record_mut(target) {
-            record.last_edit_seq = seq;
-        }
-        self.save(me)?;
-        Ok(envelope)
+        self.send_structured_with_update(me, &event, |group| {
+            if let Some(record) = group.state.messages.record_mut(target) {
+                record.last_edit_seq = seq;
+            }
+            Ok(())
+        })
     }
 
     pub fn delete_message<P: TreeProvider>(
@@ -649,13 +651,13 @@ impl Group {
             seq,
             deleted_at: unix_now(),
         };
-        let envelope = self.send_structured(me, &event)?;
-        if let Some(record) = self.state.messages.record_mut(target) {
-            record.deleted = true;
-            record.last_edit_seq = seq;
-        }
-        self.save(me)?;
-        Ok(envelope)
+        self.send_structured_with_update(me, &event, |group| {
+            if let Some(record) = group.state.messages.record_mut(target) {
+                record.deleted = true;
+                record.last_edit_seq = seq;
+            }
+            Ok(())
+        })
     }
 
     pub fn react_to_message<P: TreeProvider>(
@@ -675,7 +677,7 @@ impl Group {
             reaction: reaction.to_string(),
             add,
         };
-        self.send_structured(me, &event)
+        self.send_structured_with_update(me, &event, |_group| Ok(()))
     }
 
     pub fn send_read_receipt<P: TreeProvider>(
@@ -687,13 +689,14 @@ impl Group {
             return Err(TreeError::Group("message is not present in local ledger".into()));
         }
         let seq = self.state.messages.next_outgoing_seq()?;
-        self.send_structured(
+        self.send_structured_with_update(
             me,
             &MessageEvent::Read {
                 target,
                 seq,
                 read_at: unix_now(),
             },
+            |_group| Ok(()),
         )
     }
 
@@ -703,21 +706,45 @@ impl Group {
         active: bool,
     ) -> Result<Vec<u8>, TreeError> {
         let seq = self.state.messages.next_outgoing_seq()?;
-        self.send_structured(me, &MessageEvent::Typing { seq, active })
+        self.send_structured_with_update(
+            me,
+            &MessageEvent::Typing { seq, active },
+            |_group| Ok(()),
+        )
     }
 
-    fn send_structured<P: TreeProvider>(
+    fn send_structured<P, F>(
         &mut self,
         me: &Client<P>,
         event: &MessageEvent,
-    ) -> Result<Vec<u8>, TreeError> {
+    ) -> Result<Vec<u8>, TreeError>
+    where
+        P: TreeProvider,
+        F: FnOnce(&mut Self) -> Result<(), TreeError>,
+    {
+        self.send_structured_with_update(me, event, |_| Ok(()))
+    }
+
+    fn send_structured_with_update<P, F>(
+        &mut self,
+        me: &Client<P>,
+        event: &MessageEvent,
+        update: F,
+    ) -> Result<Vec<u8>, TreeError>
+    where
+        P: TreeProvider,
+        F: FnOnce(&mut Self) -> Result<(), TreeError>,
+    {
         let body = event.encode()?;
         me.provider.atomically(|| {
             let out = self
                 .mls
                 .create_message(&me.provider, &me.signer, &body)
                 .map_err(group_err)?;
-            self.seal(me, &out.to_bytes().map_err(group_err)?)
+            let envelope = self.seal(me, &out.to_bytes().map_err(group_err)?)?;
+            update(self)?;
+            self.save(me)?;
+            Ok(envelope)
         })
     }
 

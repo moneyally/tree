@@ -22,12 +22,13 @@ const VERSION: u8 = 1;
 const ALG_AES_256_GCM: u8 = 1;
 const NONCE_LEN: usize = 12;
 const KEY_LEN: usize = 32;
+const CAP_BYTES: usize = 32;
 const COMMIT_LEN: usize = 32;
 const MAX_AAD: usize = 4096;
 
 const KEY_COMMIT_LABEL: &[u8] = b"tree/file-key-commit/v1";
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct FileKey(Zeroizing<[u8; KEY_LEN]>);
 
 impl FileKey {

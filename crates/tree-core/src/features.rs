@@ -343,11 +343,7 @@ impl Registry {
     /// (e.g. no read receipts in this chat). Members then see it released
     /// and locked (`LOCKED_BY_CHAT`). Only plain user preferences can be
     /// locked this way, never security, moderation or billing features.
-    pub fn release_for_chat(
-        &mut self,
-        key: &str,
-        who: Caller,
-    ) -> Result<Status, FeatureError> {
+    pub fn release_for_chat(&mut self, key: &str, who: Caller) -> Result<Status, FeatureError> {
         let f = self.chat_lockable(key, who)?;
         self.state
             .insert((Scope::Chat, f.key), (State::Released, None));

@@ -173,7 +173,11 @@ impl GroupState {
                     1 => Some(r.bytes()?),
                     _ => return Err(damaged()),
                 };
-                Some(Pending { epoch, commit, welcome })
+                Some(Pending {
+                    epoch,
+                    commit,
+                    welcome,
+                })
             }
             _ => return Err(damaged()),
         };
@@ -212,7 +216,11 @@ impl GroupState {
             for _ in 0..n {
                 members.push((r.u32()?, MemberId(r.array()?)));
             }
-            past.push(PastEpoch { epoch, envelope_key, members });
+            past.push(PastEpoch {
+                epoch,
+                envelope_key,
+                members,
+            });
         }
         let mut sent = Vec::new();
         for _ in 0..r.u16()? {
@@ -228,7 +236,11 @@ impl GroupState {
                 let epoch = r.u64()?;
                 let received_at = i64::from_be_bytes(r.array()?);
                 let bytes = r.bytes()?;
-                future.push(PendingEnvelope { epoch, received_at, bytes });
+                future.push(PendingEnvelope {
+                    epoch,
+                    received_at,
+                    bytes,
+                });
             }
         }
         let (title, disappearing_seconds, last_control_seq) = if version >= 4 {
@@ -385,9 +397,8 @@ mod tests {
         let v6 = sample().encode().unwrap();
         let msg_len = v6.len();
         let mut v5 = v6;
-        let ledger_len = u32::from_be_bytes(
-            v5[msg_len - 4 - 0..msg_len].try_into().expect("fixture"),
-        ) as usize;
+        let ledger_len =
+            u32::from_be_bytes(v5[msg_len - 4 - 0..msg_len].try_into().expect("fixture")) as usize;
         let _ = ledger_len;
         // Build a clean v5 fixture from the prefix before the version-6
         // message-ledger length/data suffix.

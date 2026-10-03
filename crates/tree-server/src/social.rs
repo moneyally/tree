@@ -372,7 +372,7 @@ pub async fn list_blocks(
     Ok(Json(BlocksResp { accounts }))
 }
 
-async fn is_blocked_pair(state: &AppState, a: &str, b: &str) -> Result<bool, sqlx::Error> {
+pub(crate) async fn is_blocked_pair(state: &AppState, a: &str, b: &str) -> Result<bool, sqlx::Error> {
     let exists = sqlx::query(
         "SELECT 1 FROM blocks
          WHERE (blocker_account_id = ? AND blocked_account_id = ?)

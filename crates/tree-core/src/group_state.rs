@@ -6,7 +6,7 @@
 //! * envelope keys and member ids of the retained past epochs (F-002);
 //! * hashes of this device's own confirmed commits (echo recognition, F-004).
 //!
-//! Encoding (version 2; decoder accepts version 1), integers big-endian, `bytes` = u32 length + data:
+//! Encoding (version 3; decoder accepts versions 1 and 2), integers big-endian, `bytes` = u32 length + data:
 //!
 //! ```text
 //! 0x01
@@ -20,7 +20,7 @@ use zeroize::Zeroizing;
 
 use crate::{error::TreeError, group::MemberId};
 
-const VERSION: u8 = 2;
+const VERSION: u8 = 3;
 
 /// A commit this device created that the server has not accepted yet.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -50,6 +50,9 @@ pub(crate) struct PendingEnvelope {
 #[derive(Default)]
 pub(crate) struct GroupState {
     pub pending: Option<Pending>,
+    /// Single deterministic administrator in v1. The value is a member id;
+    /// if absent in a legacy state it is initialized by Group::new.
+    pub admin: Option<MemberId>,
     /// Set on join: the device should send one key refresh soon, so the key
     /// from its one-time key package (which sat on the server) is replaced.
     pub should_refresh: bool,
@@ -101,6 +104,13 @@ impl GroupState {
             }
         }
         out.push(self.should_refresh as u8);
+        match self.admin {
+            None => out.push(0),
+            Some(id) => {
+                out.push(1);
+                out.extend_from_slice(id.as_bytes());
+            }
+        }
         out.push(self.past.len() as u8);
         for p in &self.past {
             out.extend_from_slice(&p.epoch.to_be_bytes());
@@ -155,6 +165,15 @@ impl GroupState {
             1 => true,
             _ => return Err(damaged()),
         };
+        let admin = if version >= 3 {
+            match r.u8()? {
+                0 => None,
+                1 => Some(MemberId(r.array()?)),
+                _ => return Err(damaged()),
+            }
+        } else {
+            None
+        };
         let mut past = Vec::new();
         for _ in 0..r.u8()? {
             let epoch = r.u64()?;
@@ -186,7 +205,7 @@ impl GroupState {
         if !r.0.is_empty() {
             return Err(damaged());
         }
-        Ok(Self { pending, should_refresh, past, sent, processed, future })
+        Ok(Self { pending, admin, should_refresh, past, sent, processed, future })
     }
 }
 
@@ -238,6 +257,7 @@ mod tests {
     fn sample() -> GroupState {
         GroupState {
             pending: Some(Pending { epoch: 7, commit: vec![1, 2, 3], welcome: Some(vec![0, 9]) }),
+            admin: Some(MemberId([3; 32])),
             should_refresh: true,
             past: vec![
                 PastEpoch {
@@ -255,6 +275,7 @@ mod tests {
 
     fn same(a: &GroupState, b: &GroupState) -> bool {
         a.pending == b.pending
+            && a.admin == b.admin
             && a.should_refresh == b.should_refresh
             && a.sent == b.sent
             && a.processed == b.processed
@@ -287,7 +308,7 @@ mod tests {
         long.push(0);
         assert!(GroupState::decode(&long).is_err(), "trailing byte");
         let mut v = enc.clone();
-        v[0] = 3;
+        v[0] = 4;
         assert!(GroupState::decode(&v).is_err(), "version");
         let mut p = enc.clone();
         p[1] = 2;
@@ -300,6 +321,21 @@ mod tests {
         let mut w = enc.clone();
         w[1 + 1 + 8 + 4 + 3] = 2;
         assert!(GroupState::decode(&w).is_err(), "welcome flag");
+    }
+
+    #[test]
+    fn decodes_version_two_state_without_admin() {
+        let v3 = GroupState::default().encode();
+        // v3 default adds one admin flag byte before n_past. Remove that byte
+        // and use version 2 so the legacy decoder layout is restored.
+        let admin_pos = 1 + 1 + 1;
+        let mut v2 = v3.clone();
+        v2[0] = 2;
+        v2.remove(admin_pos);
+        let decoded = GroupState::decode(&v2).unwrap();
+        assert!(decoded.admin.is_none());
+        assert!(decoded.processed.is_empty());
+        assert!(decoded.future.is_empty());
     }
 
     #[test]

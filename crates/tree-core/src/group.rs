@@ -21,6 +21,8 @@ use crate::{
     client::Client,
     error::{group_err, TreeError},
     group_state::{GroupState, PastEpoch, Pending, PendingEnvelope},
+    message::{MessageEvent, MessageId, DEFAULT_EDIT_WINDOW_SECS},
+    message_state::{MessageRecord, PendingMutation},
     provider::TreeProvider,
 };
 
@@ -119,6 +121,13 @@ pub enum Incoming {
         title: Option<String>,
         disappearing_seconds: u32,
     },
+    /// One or more authenticated structured message events were received.
+    StructuredMessages {
+        events: Vec<(MemberId, MessageEvent)>,
+    },
+    /// A valid encrypted event caused no visible state change (duplicate or
+    /// an out-of-order mutation waiting for its target message).
+    NoOp,
     /// Our own message or already merged commit echoed back; nothing to do.
     OwnEcho,
 }
@@ -528,6 +537,190 @@ impl Group {
         result
     }
 
+    /// Sends a structured text message using the group's current disappearing
+    /// timer. The returned id is stable across edits/deletes.
+    pub fn send_message<P: TreeProvider>(
+        &mut self,
+        me: &Client<P>,
+        body: &[u8],
+    ) -> Result<(MessageId, Vec<u8>), TreeError> {
+        self.send_new_message(me, body, self.state.disappearing_seconds, false, None)
+    }
+
+    pub fn send_message_with_options<P: TreeProvider>(
+        &mut self,
+        me: &Client<P>,
+        body: &[u8],
+        ttl_secs: u32,
+        view_once: bool,
+        preview: Option<Vec<u8>>,
+    ) -> Result<(MessageId, Vec<u8>), TreeError> {
+        if ttl_secs > 30 * 86_400 {
+            return Err(TreeError::Group("disappearing timer is limited to 30 days".into()));
+        }
+        self.send_new_message(me, body, ttl_secs, view_once, preview)
+    }
+
+    fn send_new_message<P: TreeProvider>(
+        &mut self,
+        me: &Client<P>,
+        body: &[u8],
+        ttl_secs: u32,
+        view_once: bool,
+        preview: Option<Vec<u8>>,
+    ) -> Result<(MessageId, Vec<u8>), TreeError> {
+        let id = MessageId::generate()?;
+        let seq = self.state.messages.next_outgoing_seq()?;
+        let event = MessageEvent::New {
+            id,
+            seq,
+            sent_at: unix_now(),
+            ttl_secs,
+            view_once,
+            body: body.to_vec(),
+            preview,
+        };
+        let envelope = self.send_structured(me, &event)?;
+        let now = unix_now();
+        self.state.messages.record_new(MessageRecord {
+            id,
+            author: me.member_id(),
+            created_at: now,
+            ttl_secs,
+            view_once,
+            deleted: false,
+            last_edit_seq: seq,
+        });
+        self.save(me)?;
+        Ok((id, envelope))
+    }
+
+    pub fn edit_message<P: TreeProvider>(
+        &mut self,
+        me: &Client<P>,
+        target: MessageId,
+        body: &[u8],
+    ) -> Result<Vec<u8>, TreeError> {
+        let record = self
+            .state
+            .messages
+            .record(target)
+            .ok_or_else(|| TreeError::UnknownMember(target.to_hex()))?;
+        if record.author != me.member_id() {
+            return Err(TreeError::Rejected("only the message author may edit it".into()));
+        }
+        if record.deleted {
+            return Err(TreeError::Rejected("deleted message cannot be edited".into()));
+        }
+        if unix_now().saturating_sub(record.created_at) as u64 > DEFAULT_EDIT_WINDOW_SECS {
+            return Err(TreeError::Rejected("message edit window has expired".into()));
+        }
+        let seq = self.state.messages.next_outgoing_seq()?;
+        let event = MessageEvent::Edit {
+            target,
+            seq,
+            edited_at: unix_now(),
+            body: body.to_vec(),
+        };
+        let envelope = self.send_structured(me, &event)?;
+        if let Some(record) = self.state.messages.record_mut(target) {
+            record.last_edit_seq = seq;
+        }
+        self.save(me)?;
+        Ok(envelope)
+    }
+
+    pub fn delete_message<P: TreeProvider>(
+        &mut self,
+        me: &Client<P>,
+        target: MessageId,
+    ) -> Result<Vec<u8>, TreeError> {
+        let record = self
+            .state
+            .messages
+            .record(target)
+            .ok_or_else(|| TreeError::Group("message is not present in local ledger".into()))?;
+        if record.author != me.member_id() {
+            return Err(TreeError::Rejected("only the message author may delete it".into()));
+        }
+        let seq = self.state.messages.next_outgoing_seq()?;
+        let event = MessageEvent::Delete {
+            target,
+            seq,
+            deleted_at: unix_now(),
+        };
+        let envelope = self.send_structured(me, &event)?;
+        if let Some(record) = self.state.messages.record_mut(target) {
+            record.deleted = true;
+            record.last_edit_seq = seq;
+        }
+        self.save(me)?;
+        Ok(envelope)
+    }
+
+    pub fn react_to_message<P: TreeProvider>(
+        &mut self,
+        me: &Client<P>,
+        target: MessageId,
+        reaction: &str,
+        add: bool,
+    ) -> Result<Vec<u8>, TreeError> {
+        if self.state.messages.record(target).is_none() {
+            return Err(TreeError::Group("message is not present in local ledger".into()));
+        }
+        let seq = self.state.messages.next_outgoing_seq()?;
+        let event = MessageEvent::Reaction {
+            target,
+            seq,
+            reaction: reaction.to_string(),
+            add,
+        };
+        self.send_structured(me, &event)
+    }
+
+    pub fn send_read_receipt<P: TreeProvider>(
+        &mut self,
+        me: &Client<P>,
+        target: MessageId,
+    ) -> Result<Vec<u8>, TreeError> {
+        if self.state.messages.record(target).is_none() {
+            return Err(TreeError::Group("message is not present in local ledger".into()));
+        }
+        let seq = self.state.messages.next_outgoing_seq()?;
+        self.send_structured(
+            me,
+            &MessageEvent::Read {
+                target,
+                seq,
+                read_at: unix_now(),
+            },
+        )
+    }
+
+    pub fn send_typing<P: TreeProvider>(
+        &mut self,
+        me: &Client<P>,
+        active: bool,
+    ) -> Result<Vec<u8>, TreeError> {
+        let seq = self.state.messages.next_outgoing_seq()?;
+        self.send_structured(me, &MessageEvent::Typing { seq, active })
+    }
+
+    fn send_structured<P: TreeProvider>(
+        &mut self,
+        me: &Client<P>,
+        event: &MessageEvent,
+    ) -> Result<Vec<u8>, TreeError> {
+        let body = event.encode()?;
+        me.provider.atomically(|| {
+            let out = self
+                .mls
+                .create_message(&me.provider, &me.signer, &body)
+                .map_err(group_err)?;
+            self.seal(me, &out.to_bytes().map_err(group_err)?)
+        })
+    }
+
     /// Encrypts a chat message for everyone in the group (in the current
     /// epoch; also while a commit of ours is pending).
     pub fn send<P: TreeProvider>(&mut self, me: &Client<P>, body: &[u8]) -> Result<Vec<u8>, TreeError> {
@@ -638,6 +831,18 @@ impl Group {
                 }
                 let from = self.sender_id(epoch, &sender)?;
                 let body = m.into_bytes();
+                if body.starts_with(crate::message::MESSAGE_MAGIC) {
+                    let event = MessageEvent::decode(&body)?;
+                    let events = self.apply_message_event(from, event)?;
+                    self.mark_processed(epoch, hash);
+                    self.state.future.retain(|p| sha256(&p.bytes) != hash);
+                    self.save(me)?;
+                    return Ok(if events.is_empty() {
+                        Incoming::NoOp
+                    } else {
+                        Incoming::StructuredMessages { events }
+                    });
+                }
                 if body.starts_with(CONTROL_MAGIC) {
                     if epoch != self.epoch() {
                         return Err(TreeError::Rejected(
@@ -778,6 +983,121 @@ impl Group {
         }
         self.state.admins.sort_unstable();
         self.state.admins.dedup();
+    }
+
+    fn apply_message_event(
+        &mut self,
+        from: MemberId,
+        event: MessageEvent,
+    ) -> Result<Vec<(MemberId, MessageEvent)>, TreeError> {
+        let now = unix_now();
+        match &event {
+            MessageEvent::New {
+                id,
+                sent_at: _,
+                ttl_secs,
+                view_once,
+                ..
+            } => {
+                if self.state.messages.record(*id).is_some() {
+                    return Ok(Vec::new());
+                }
+                if *ttl_secs > 30 * 86_400 {
+                    return Err(TreeError::Group("message TTL exceeds 30 days".into()));
+                }
+                let record = MessageRecord {
+                    id: *id,
+                    author: from,
+                    created_at: now,
+                    ttl_secs: *ttl_secs,
+                    view_once: *view_once,
+                    deleted: false,
+                    last_edit_seq: event.seq(),
+                };
+                self.state.messages.record_new(record);
+                let mut output = vec![(from, event)];
+                let mut pending = self.state.messages.take_pending_for(*id);
+                pending.sort_by_key(|mutation| mutation.event.seq());
+                for mutation in pending {
+                    if self.apply_pending_mutation(now, mutation.from, mutation.event.clone())? {
+                        output.push((mutation.from, mutation.event));
+                    }
+                }
+                Ok(output)
+            }
+            MessageEvent::Edit { target, .. } | MessageEvent::Delete { target, .. } => {
+                if self.state.messages.record(*target).is_none() {
+                    self.state.messages.queue_pending(PendingMutation {
+                        from,
+                        event,
+                    });
+                    return Ok(Vec::new());
+                }
+                if self.apply_pending_mutation(now, from, event.clone())? {
+                    Ok(vec![(from, event)])
+                } else {
+                    Ok(Vec::new())
+                }
+            }
+            MessageEvent::Reaction { target, .. } | MessageEvent::Read { target, .. } => {
+                if self.state.messages.record(*target).is_none() {
+                    self.state.messages.queue_pending(PendingMutation {
+                        from,
+                        event,
+                    });
+                    return Ok(Vec::new());
+                }
+                Ok(vec![(from, event)])
+            }
+            MessageEvent::Typing { .. } => Ok(vec![(from, event)]),
+        }
+    }
+
+    fn apply_pending_mutation(
+        &mut self,
+        now: i64,
+        from: MemberId,
+        event: MessageEvent,
+    ) -> Result<bool, TreeError> {
+        let target = event
+            .target()
+            .ok_or_else(|| TreeError::Malformed("mutation has no target".into()))?;
+        let record = self
+            .state
+            .messages
+            .record_mut(target)
+            .ok_or_else(|| TreeError::Storage("message record disappeared".into()))?;
+
+        match &event {
+            MessageEvent::Edit { seq, .. } | MessageEvent::Delete { seq, .. } => {
+                if record.author != from {
+                    return Err(TreeError::Rejected(
+                        "message mutation sender is not the original author".into(),
+                    ));
+                }
+                if record.deleted {
+                    return Ok(false);
+                }
+                if now.saturating_sub(record.created_at) as u64 > DEFAULT_EDIT_WINDOW_SECS {
+                    return Ok(false);
+                }
+                if *seq <= record.last_edit_seq {
+                    return Ok(false);
+                }
+                if matches!(event, MessageEvent::Delete { .. }) {
+                    record.deleted = true;
+                }
+                record.last_edit_seq = *seq;
+                Ok(true)
+            }
+            MessageEvent::Reaction { .. } | MessageEvent::Read { .. } => {
+                if record.deleted {
+                    return Ok(false);
+                }
+                Ok(true)
+            }
+            MessageEvent::New { .. } | MessageEvent::Typing { .. } => Ok(false),
+        }
     }
 
     fn mark_processed(&mut self, epoch: u64, hash: [u8; 32]) {

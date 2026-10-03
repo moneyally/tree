@@ -480,8 +480,7 @@ mod tests {
         let msg_len = encoded.len();
         let mut v5 = encoded;
         // Strip the v7/v8 control-author/tag/message-ledger suffix.
-        let suffix_len =
-            1 + 32 + // v7 global control author
+        let suffix_len = 1 + 32 + // v7 global control author
             1 + 8 + 32 + // v8 title tag
             1 + 8 + 32 + // v8 disappearing tag
             2 + (32 + 8 + 32) + // v8 one admin tag

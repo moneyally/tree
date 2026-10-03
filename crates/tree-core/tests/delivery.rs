@@ -498,7 +498,7 @@ fn non_admin_cannot_add_or_remove_members() {
 fn admin_settings_are_authenticated_and_sequence_ordered() {
     let (alice, bob, mut a, mut b) = two_person_chat();
 
-    let (mut admin_group, admin_client, mut other_group, other_client) = if a.is_admin(&alice) {
+    let (admin_group, admin_client, other_group, other_client) = if a.is_admin(&alice) {
         (&mut a, &alice, &mut b, &bob)
     } else {
         (&mut b, &bob, &mut a, &alice)

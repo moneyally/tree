@@ -95,7 +95,7 @@ pub async fn recover(
     State(state): State<AppState>,
     req: Request,
 ) -> ApiResult<(StatusCode, Json<RecoverResp>)> {
-    let (_parts, bytes) = read_body(req, 4096).await?
+    let (_parts, bytes) = read_body(req, 4096).await?;
     let body: RecoverReq = parse_json(&bytes)?;
 
     check_id(&body.account_id, "account_id")?;

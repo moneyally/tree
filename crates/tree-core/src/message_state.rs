@@ -205,7 +205,8 @@ impl MessageLedger {
         let mut pending = Vec::with_capacity(pending_count);
         for _ in 0..pending_count {
             let from = MemberId(r.array()?);
-            let event = MessageEvent::decode(r.bytes(u32::MAX as usize)?)?;
+            let bytes = r.bytes(u32::MAX as usize)?;
+            let event = MessageEvent::decode(&bytes)?;
             if matches!(event, MessageEvent::New { .. }) {
                 return Err(damaged());
             }
@@ -297,6 +298,7 @@ mod tests {
         };
         let ledger = MessageLedger {
             next_seq: 8,
+            sender_seq: Vec::new(),
             records: vec![MessageRecord {
                 id,
                 author: sender,

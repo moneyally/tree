@@ -864,6 +864,26 @@ async fn receive(args: ReceiveArgs) -> Result<()> {
                         hex::encode(group.id())
                     );
                 }
+                Incoming::SettingsChanged {
+                    seq,
+                    title,
+                    disappearing_seconds,
+                } => {
+                    println!(
+                        "settings_changed group={} seq={seq} title={title:?} disappearing_seconds={disappearing_seconds}",
+                        hex::encode(group.id())
+                    );
+                }
+                Incoming::StructuredMessages { events } => {
+                    println!(
+                        "structured_messages group={} events={}",
+                        hex::encode(group.id()),
+                        events.len()
+                    );
+                }
+                Incoming::NoOp => {
+                    println!("noop group={}", hex::encode(group.id()));
+                }
                 Incoming::OwnEcho => {
                     println!("own_echo group={}", hex::encode(group.id()));
                 }

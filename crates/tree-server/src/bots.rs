@@ -487,12 +487,13 @@ pub async fn register_gateway_device(
     }
 
     let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
-    if let Some(existing): Option<String> = sqlx::query_scalar(
+    let existing: Option<String> = sqlx::query_scalar(
         "SELECT gateway_device_id FROM bot_identities WHERE bot_id = ?",
     )
     .bind(&identity.id)
     .fetch_one(&mut *tx)
-    .await? {
+    .await?;
+    if let Some(existing) = existing {
         return Ok((
             StatusCode::OK,
             Json(GatewayDeviceResp {

@@ -148,6 +148,22 @@ impl TreeProvider for StoredProvider {
             .map_err(storage_err)
     }
 
+    fn load_group_state(&self, group_id: &[u8]) -> Result<Option<Vec<u8>>, TreeError> {
+        self.storage
+            .conn
+            .query_row(
+                "SELECT state FROM tree_group_state WHERE group_id = ?1",
+                params![group_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(storage_err)
+    }
+
+    fn reload_group_after_error(&self) -> bool {
+        true
+    }
+
     fn put_meta(&self, key: &str, value: &[u8]) -> Result<(), TreeError> {
         self.storage
             .conn

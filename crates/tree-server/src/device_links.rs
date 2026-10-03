@@ -381,6 +381,24 @@ pub async fn confirm_join(
 async fn finalize_if_ready(state: &AppState, link_id: &str) -> ApiResult<(bool, String)> {
     let (initiator, _challenge, joiner, init_ok, join_ok, _expires_at) =
         load_session(state, link_id).await?;
+    let used: i64 = sqlx::query("SELECT used FROM device_link_sessions WHERE id = ?")
+        .bind(link_id)
+        .fetch_one(&state.db)
+        .await?
+        .try_get("used")?;
+    if used != 0 {
+        let joiner = joiner.ok_or_else(|| ApiError::conflict(
+            "JOINER_MISSING",
+            "used device-link session has no joiner",
+        ))?;
+        let existing: Option<String> = sqlx::query("SELECT id FROM devices WHERE auth_pub = ?")
+            .bind(&joiner[..])
+            .fetch_optional(&state.db)
+            .await?
+            .map(|row| row.try_get("id"))
+            .transpose()?;
+        return Ok((false, existing.unwrap_or_default()));
+    }
     if !init_ok || !join_ok {
         return Ok((false, String::new()));
     }

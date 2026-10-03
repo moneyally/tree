@@ -15,7 +15,7 @@ use sqlx::Row;
 
 use crate::auth::{parse_json, parse_public_key, read_body, Signed};
 use crate::error::{ApiError, ApiResult};
-use crate::util::{b64, new_id, now_secs, unb64, random_bytes};
+use crate::util::{b64, new_id, now_secs, random_bytes, unb64};
 use crate::{json_body, AppState};
 
 const LINK_TTL_SECS: i64 = 5 * 60;
@@ -249,7 +249,9 @@ fn confirm_message(link_id: &str, code: &str) -> Vec<u8> {
 
 fn validate_code(code: &str) -> ApiResult<()> {
     if code.len() != 6 || !code.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(ApiError::bad_request("verification code must be six digits"));
+        return Err(ApiError::bad_request(
+            "verification code must be six digits",
+        ));
     }
     Ok(())
 }
@@ -269,10 +271,9 @@ pub async fn confirm_initiator(
             "only the initiating device may confirm",
         ));
     }
-    let joiner = joiner.ok_or_else(|| ApiError::conflict(
-        "JOINER_MISSING",
-        "no second device has joined the link",
-    ))?;
+    let joiner = joiner.ok_or_else(|| {
+        ApiError::conflict("JOINER_MISSING", "no second device has joined the link")
+    })?;
     let init_pub = initiator_public_key(&state, &initiator).await?;
     let expected = verification_code(&challenge, &init_pub, &joiner);
     if req.body.code != expected {
@@ -294,7 +295,9 @@ pub async fn confirm_initiator(
         link_id,
         challenge: b64(&challenge),
         joiner_auth_pub: joiner.as_deref().map(b64),
-        verification_code: joiner.as_deref().map(|j| verification_code(&challenge, &init_pub, j)),
+        verification_code: joiner
+            .as_deref()
+            .map(|j| verification_code(&challenge, &init_pub, j)),
         initiator_confirmed: init_ok,
         joiner_confirmed: join_ok,
         expires_at,
@@ -365,12 +368,18 @@ pub async fn confirm_join(
     let (created, _device_id) = finalize_if_ready(&state, &link_id).await?;
     let (_, _, joiner, init_ok, join_ok, expires_at) = load_session(&state, &link_id).await?;
     Ok((
-        if created { StatusCode::CREATED } else { StatusCode::OK },
+        if created {
+            StatusCode::CREATED
+        } else {
+            StatusCode::OK
+        },
         Json(LinkStatusResp {
             link_id,
             challenge: b64(&challenge),
             joiner_auth_pub: joiner.as_deref().map(b64),
-            verification_code: joiner.as_deref().map(|j| verification_code(&challenge, &init_pub, j)),
+            verification_code: joiner
+            .as_deref()
+            .map(|j| verification_code(&challenge, &init_pub, j)),
             initiator_confirmed: init_ok,
             joiner_confirmed: join_ok,
             expires_at,
@@ -387,10 +396,9 @@ async fn finalize_if_ready(state: &AppState, link_id: &str) -> ApiResult<(bool, 
         .await?
         .try_get("used")?;
     if used != 0 {
-        let joiner = joiner.ok_or_else(|| ApiError::conflict(
-            "JOINER_MISSING",
-            "used device-link session has no joiner",
-        ))?;
+        let joiner = joiner.ok_or_else(|| {
+            ApiError::conflict("JOINER_MISSING", "used device-link session has no joiner")
+        })?;
         let existing: Option<String> = sqlx::query("SELECT id FROM devices WHERE auth_pub = ?")
             .bind(&joiner[..])
             .fetch_optional(&state.db)
@@ -402,10 +410,9 @@ async fn finalize_if_ready(state: &AppState, link_id: &str) -> ApiResult<(bool, 
     if !init_ok || !join_ok {
         return Ok((false, String::new()));
     }
-    let joiner = joiner.ok_or_else(|| ApiError::conflict(
-        "JOINER_MISSING",
-        "joiner disappeared before confirmation",
-    ))?;
+    let joiner = joiner.ok_or_else(|| {
+        ApiError::conflict("JOINER_MISSING", "joiner disappeared before confirmation")
+    })?;
 
     let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
 
@@ -418,14 +425,12 @@ async fn finalize_if_ready(state: &AppState, link_id: &str) -> ApiResult<(bool, 
         .await?
         .try_get("used")?;
     if used_now != 0 {
-        let existing: Option<String> = sqlx::query(
-            "SELECT id FROM devices WHERE auth_pub = ?",
-        )
-        .bind(&joiner[..])
-        .fetch_optional(&mut *tx)
-        .await?
-        .map(|row| row.try_get("id"))
-        .transpose()?;
+        let existing: Option<String> = sqlx::query("SELECT id FROM devices WHERE auth_pub = ?")
+            .bind(&joiner[..])
+            .fetch_optional(&mut *tx)
+            .await?
+            .map(|row| row.try_get("id"))
+            .transpose()?;
         return Ok((false, existing.unwrap_or_default()));
     }
 
@@ -476,12 +481,10 @@ async fn finalize_if_ready(state: &AppState, link_id: &str) -> ApiResult<(bool, 
     .execute(&mut *tx)
     .await?;
 
-    sqlx::query(
-        "UPDATE device_link_sessions SET used = 1 WHERE id = ?",
-    )
-    .bind(link_id)
-    .execute(&mut *tx)
-    .await?;
+    sqlx::query("UPDATE device_link_sessions SET used = 1 WHERE id = ?")
+        .bind(link_id)
+        .execute(&mut *tx)
+        .await?;
 
     tx.commit().await?;
     Ok((true, device_id))

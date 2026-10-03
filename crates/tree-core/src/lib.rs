@@ -18,6 +18,7 @@ pub mod group;
 pub mod identity;
 mod group_state;
 pub mod provider;
+pub mod recovery;
 pub mod storage;
 
 pub use client::Client;
@@ -25,6 +26,7 @@ pub use error::TreeError;
 pub use group::{Group, Incoming, Member, MemberId, PendingCommit};
 pub use identity::{fingerprint_hex, normalize_username, safety_fingerprint, username_hash};
 pub use provider::TreeProvider;
+pub use recovery::RecoveryPhrase;
 pub use storage::{KdfParams, KeySource, Passphrase, StoredProvider};
 
 use openmls::prelude::Ciphersuite;

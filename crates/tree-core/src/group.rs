@@ -510,7 +510,8 @@ impl Group {
                 self.mls.merge_staged_commit(&me.provider, *staged).map_err(group_err)?;
                 self.state.pending = None;
                 self.entered_new_epoch(past);
-                self.state.future.retain(|p| p.epoch > self.epoch());
+                let current_epoch = self.epoch();
+                self.state.future.retain(|p| p.epoch > current_epoch);
                 self.reconcile_admin();
                 self.mark_processed(epoch, hash);
                 self.save(me)?;

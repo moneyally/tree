@@ -27,7 +27,20 @@ pub trait TreeProvider: OpenMlsProvider {
     fn save_group_state(&self, _group_id: &[u8], _state: &[u8]) -> Result<(), TreeError> {
         Ok(())
     }
-}
+
+    /// Stores small device-local metadata. StoredProvider encrypts it with
+    /// SQLCipher; in-memory providers intentionally discard it.
+    fn put_meta(&self, _key: &str, _value: &[u8]) -> Result<(), TreeError> {
+        Ok(())
+    }
+
+    fn meta_optional(&self, _key: &str) -> Result<Option<Vec<u8>>, TreeError> {
+        Ok(None)
+    }
+
+    fn delete_meta(&self, _key: &str) -> Result<(), TreeError> {
+        Ok(())
+    }
 
 impl TreeProvider for DefaultProvider {}
 impl TreeProvider for LibcruxProvider {}

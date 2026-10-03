@@ -305,6 +305,37 @@ impl Api {
         .await
     }
 
+    pub async fn send_bot(&self, path: &str, token: &str) -> (StatusCode, Value) {
+        self.send_bot_with_body(path, token, None).await
+    }
+
+    pub async fn send_bot_json(
+        &self,
+        path: &str,
+        token: &str,
+        body: &Value,
+    ) -> (StatusCode, Value) {
+        self.send_bot_with_body(path, token, Some(body)).await
+    }
+
+    async fn send_bot_with_body(
+        &self,
+        path: &str,
+        token: &str,
+        body: Option<&Value>,
+    ) -> (StatusCode, Value) {
+        let mut rb = self
+            .http
+            .post(self.url(path))
+            .header("Authorization", format!("Bot {token}"));
+        if let Some(body) = body {
+            rb = rb
+                .header("Content-Type", "application/json")
+                .json(body);
+        }
+        decode(rb.send().await.unwrap()).await
+    }
+
     pub async fn admin(&self, token: Option<&str>, key: &str, action: &str) -> (StatusCode, Value) {
         let mut rb = self
             .http

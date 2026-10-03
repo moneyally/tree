@@ -18,10 +18,10 @@ pub mod error;
 pub mod features;
 pub mod file;
 pub mod group;
+mod group_state;
 pub mod identity;
 pub mod message;
 pub mod message_state;
-mod group_state;
 pub mod provider;
 pub mod recovery;
 pub mod storage;
@@ -29,14 +29,17 @@ pub mod user_features;
 
 pub use bot_lane::{BotLaneDescriptor, BotLaneEvent, BotLaneMode};
 pub use client::Client;
-pub use crypto_profile::{combine_secrets, negotiate as negotiate_crypto_profile, CryptoProfile, KemAlgorithm, SignatureAlgorithm};
+pub use crypto_profile::{
+    combine_secrets, negotiate as negotiate_crypto_profile, CryptoProfile, KemAlgorithm,
+    SignatureAlgorithm,
+};
 pub use error::TreeError;
+pub use file::{decrypt as decrypt_file, encrypt as encrypt_file, EncryptedFile, FileKey};
 pub use group::{Group, Incoming, Member, MemberId, PendingCommit};
-pub use message::{MessageEvent, MessageId, MessageKind, DEFAULT_EDIT_WINDOW_SECS};
 pub use identity::{fingerprint_hex, normalize_username, safety_fingerprint, username_hash};
+pub use message::{MessageEvent, MessageId, MessageKind, DEFAULT_EDIT_WINDOW_SECS};
 pub use provider::TreeProvider;
 pub use recovery::RecoveryPhrase;
-pub use file::{decrypt as decrypt_file, encrypt as encrypt_file, EncryptedFile, FileKey};
 pub use storage::{KdfParams, KeySource, Passphrase, StoredProvider};
 
 use openmls::prelude::Ciphersuite;

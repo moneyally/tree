@@ -16,6 +16,7 @@
 pub mod accounts;
 pub mod auth;
 pub mod commits;
+pub mod device_links;
 pub mod config;
 pub mod error;
 pub mod features;
@@ -188,6 +189,11 @@ pub fn router(state: AppState) -> Router {
             post(accounts::add_device).get(accounts::list_devices),
         )
         .route("/v1/devices/{device_id}", delete(accounts::remove_device))
+        .route("/v1/device-links", post(device_links::initiate))
+        .route("/v1/device-links/{link_id}", get(device_links::status))
+        .route("/v1/device-links/{link_id}/join", post(device_links::join))
+        .route("/v1/device-links/{link_id}/confirm", post(device_links::confirm_initiator))
+        .route("/v1/device-links/{link_id}/confirm-join", post(device_links::confirm_join))
         .route("/v1/keypackages", post(keypackages::upload))
         .route("/v1/groups/{group_id}/devices", get(groups::list_devices))
         .route("/v1/username", put(social::set_username).delete(social::delete_username))

@@ -18,6 +18,7 @@ pub mod auth;
 pub mod commits;
 pub mod device_links;
 pub mod config;
+pub mod bots;
 pub mod error;
 pub mod features;
 pub mod files;
@@ -42,7 +43,7 @@ use axum::extract::{MatchedPath, Request, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::Response;
-use axum::routing::{delete, get, post, put};
+use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use serde_json::json;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
@@ -214,6 +215,12 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/messages", post(messages::send).get(messages::fetch))
         .route("/v1/messages/ack", post(messages::ack))
         .route("/v1/commits", post(commits::submit))
+        .route("/v1/bots", post(bots::create).get(bots::list))
+        .route("/v1/bots/{bot_id}/token", post(bots::issue_token))
+        .route("/v1/bots/{bot_id}/revoke", post(bots::revoke_token))
+        .route("/v1/bots/{bot_id}", patch(bots::update_metadata).delete(bots::delete))
+        .route("/v1/bots/{bot_id}/features/{feature}", post(bots::feature))
+        .route("/v1/bots/{bot_id}/commands", put(bots::set_commands).get(bots::get_commands))
         .route("/v1/features", get(features::list))
         .route("/v1/features/{key}/apply", post(features::apply))
         .route("/v1/features/{key}/release", post(features::release))

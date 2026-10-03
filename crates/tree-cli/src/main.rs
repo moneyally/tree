@@ -857,7 +857,12 @@ async fn receive(args: ReceiveArgs) -> Result<()> {
             Ok(())
         };
 
-        result?;
+        let incoming = result?;
+        if matches!(incoming, Incoming::HeldForRetry { .. }) {
+            // Keep the server mailbox entry. The corresponding commit may
+            // arrive later and this same ciphertext must remain retryable.
+            continue;
+        }
         let (ack_status, ack_body) = api
             .signed(
                 &client,

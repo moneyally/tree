@@ -28,10 +28,16 @@ async fn recovery_adds_a_new_device_and_rejects_replay() {
     let new_auth = new_key();
     let timestamp = now();
     let nonce = fresh_nonce();
-    let mut proof_message =
-        format!("tree-recovery-v1\n{}\n{}\n{}\n", alice.account_id, timestamp, nonce).into_bytes();
+    let mut proof_message = format!(
+        "tree-recovery-v1\n{}\n{}\n{}\n",
+        alice.account_id, timestamp, nonce
+    )
+    .into_bytes();
     proof_message.extend_from_slice(new_auth.verifying_key().as_bytes());
-    let proof = phrase.recovery_signing_key().sign(&proof_message).to_bytes();
+    let proof = phrase
+        .recovery_signing_key()
+        .sign(&proof_message)
+        .to_bytes();
 
     let request = json!({
         "account_id": alice.account_id,
@@ -72,9 +78,7 @@ async fn recovery_adds_a_new_device_and_rejects_replay() {
     let new_device_id = v["device_id"].as_str().unwrap_or_default();
     assert_ne!(new_device_id, alice.device_id);
 
-    let devices = api
-        .call(&alice, Method::GET, "/v1/devices", None)
-        .await;
+    let devices = api.call(&alice, Method::GET, "/v1/devices", None).await;
     assert_eq!(devices.0, reqwest::StatusCode::OK, "{:?}", devices.1);
     assert_eq!(devices.1["devices"].as_array().unwrap().len(), 2);
 

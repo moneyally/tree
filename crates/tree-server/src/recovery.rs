@@ -63,8 +63,7 @@ fn recovery_message(
     nonce: &str,
     new_auth_pub: &[u8; 32],
 ) -> Vec<u8> {
-    let mut msg =
-        format!("{RECOVERY_CONTEXT}\n{account_id}\n{timestamp}\n{nonce}\n").into_bytes();
+    let mut msg = format!("{RECOVERY_CONTEXT}\n{account_id}\n{timestamp}\n{nonce}\n").into_bytes();
     msg.extend_from_slice(new_auth_pub);
     msg
 }
@@ -99,8 +98,12 @@ pub async fn recover(
     let body: RecoverReq = parse_json(&bytes)?;
 
     check_id(&body.account_id, "account_id")?;
-    if body.nonce.len() < 16 || body.nonce.len() > 64
-        || !body.nonce.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    if body.nonce.len() < 16
+        || body.nonce.len() > 64
+        || !body
+            .nonce
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
     {
         return Err(ApiError::bad_request("invalid recovery nonce"));
     }
@@ -108,7 +111,9 @@ pub async fn recover(
     let now = now_secs();
     let skew = state.cfg.clock_skew_secs as i64;
     if (body.timestamp - now).abs() > skew {
-        return Err(ApiError::unauthorized("recovery timestamp outside allowed skew"));
+        return Err(ApiError::unauthorized(
+            "recovery timestamp outside allowed skew",
+        ));
     }
 
     let recovery_pub = unb64(&body.recovery_pub, "recovery_pub")?;
@@ -142,8 +147,7 @@ pub async fn recover(
         return Err(ApiError::unauthorized("recovery authentication failed"));
     }
 
-    let key = VerifyingKey::from_bytes(&recovery_pub)
-        .map_err(|_| ApiError::internal())?;
+    let key = VerifyingKey::from_bytes(&recovery_pub).map_err(|_| ApiError::internal())?;
     key.verify_strict(
         &recovery_message(&body.account_id, body.timestamp, &body.nonce, &new_auth_pub),
         &Signature::from_bytes(&proof),
@@ -176,15 +180,15 @@ pub async fn recover(
     }
 
     let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
-    let count: i64 = sqlx::query(
-        "SELECT COUNT(*) AS n FROM devices WHERE account_id = ?",
-    )
-    .bind(&body.account_id)
-    .fetch_one(&mut *tx)
-    .await?
-    .try_get("n")?;
+    let count: i64 = sqlx::query("SELECT COUNT(*) AS n FROM devices WHERE account_id = ?")
+        .bind(&body.account_id)
+        .fetch_one(&mut *tx)
+        .await?
+        .try_get("n")?;
     if count >= state.cfg.max_devices_per_account as i64 {
-        return Err(ApiError::limit_exceeded("device limit reached for this account"));
+        return Err(ApiError::limit_exceeded(
+            "device limit reached for this account",
+        ));
     }
 
     let device_id = new_id();

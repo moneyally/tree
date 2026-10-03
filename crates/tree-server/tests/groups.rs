@@ -40,12 +40,23 @@ async fn group_roster_is_visible_only_to_known_members() {
     assert_eq!(st, StatusCode::OK, "{v}");
     let devices = v["devices"].as_array().unwrap();
     assert_eq!(devices.len(), 2);
-    assert!(devices\n        .iter()\n        .any(|d| d.as_str() == Some(alice.device_id.as_str())));
-    assert!(devices\n        .iter()\n        .any(|d| d.as_str() == Some(bob.device_id.as_str())));
+    assert!(
+        devices
+            .iter()
+            .any(|d| d.as_str() == Some(alice.device_id.as_str()))
+    );
+    assert!(
+        devices
+            .iter()
+            .any(|d| d.as_str() == Some(bob.device_id.as_str()))
+    );
 
     let (st, v) = roster(api, &bob).await;
     assert_eq!(st, StatusCode::OK, "{v}");
-    assert_eq!(v["group_id"].as_str(), Some(hex::encode(GROUP).as_str()));
+    assert_eq!(
+        v["group_id"].as_str(),
+        Some(hex::encode(GROUP).as_str())
+    );
 
     let (st, v) = roster(api, &outsider).await;
     assert_eq!(st, StatusCode::FORBIDDEN, "{v}");

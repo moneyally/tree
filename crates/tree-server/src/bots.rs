@@ -644,14 +644,19 @@ pub async fn authenticate_token(
         .strip_prefix("Bot ")
         .ok_or_else(|| ApiError::unauthorized("bot authorization must use Bot scheme"))?;
     let secret = require_bot_secret(state)?;
-    let prefix = token.strip_prefix(TOKEN_PREFIX).ok_or_else(|| {
-        ApiError::unauthorized("invalid bot token")
-    })?;
-    let bot_id = prefix
+    let prefix = token
+        .strip_prefix(TOKEN_PREFIX)
+        .ok_or_else(|| ApiError::unauthorized("invalid bot token"))?;
+    let (bot_id, suffix) = prefix
         .split_once('_')
-        .map(|(id, _)| id)
         .ok_or_else(|| ApiError::unauthorized("invalid bot token"))?;
     check_id(bot_id, "bot id")?;
+    let raw_suffix = URL_SAFE_NO_PAD
+        .decode(suffix)
+        .map_err(|_| ApiError::unauthorized("invalid bot token"))?;
+    if raw_suffix.len() != 32 {
+        return Err(ApiError::unauthorized("invalid bot token"));
+    }
     let row = sqlx::query(
         "SELECT b.token_hmac, bi.account_id, bi.gateway_device_id
          FROM bots b JOIN bot_identities bi ON bi.bot_id = b.id

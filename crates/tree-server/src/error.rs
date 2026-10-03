@@ -42,7 +42,9 @@ impl ApiError {
 
     /// Adds a field to the JSON body.
     pub fn with(mut self, key: &str, value: serde_json::Value) -> Self {
-        self.details.get_or_insert_with(Default::default).insert(key.to_owned(), value);
+        self.details
+            .get_or_insert_with(Default::default)
+            .insert(key.to_owned(), value);
         self
     }
 

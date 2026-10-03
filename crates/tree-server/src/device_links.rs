@@ -216,7 +216,7 @@ pub async fn join(
     let init_pub = initiator_public_key(&state, &initiator).await?;
     let code = verification_code(&challenge, &init_pub, &new_pub);
 
-    sqlx::query(
+    let result = sqlx::query(
         "UPDATE device_link_sessions
          SET joiner_auth_pub = ?
          WHERE id = ? AND joiner_auth_pub IS NULL",
@@ -225,6 +225,26 @@ pub async fn join(
     .bind(&link_id)
     .execute(&state.db)
     .await?;
+
+    if result.rows_affected() == 0 {
+        let (_, _, actual_joiner, init_ok, join_ok, expires_at) =
+            load_session(&state, &link_id).await?;
+        if actual_joiner.as_deref() != Some(&new_pub[..]) {
+            return Err(ApiError::conflict(
+                "ALREADY_EXISTS",
+                "this device link already has a different joiner",
+            ));
+        }
+        return Ok(Json(LinkStatusResp {
+            link_id,
+            challenge: b64(&challenge),
+            joiner_auth_pub: Some(b64(&new_pub)),
+            verification_code: Some(code),
+            initiator_confirmed: init_ok,
+            joiner_confirmed: join_ok,
+            expires_at,
+        }));
+    }
 
     Ok(Json(LinkStatusResp {
         link_id,

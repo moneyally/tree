@@ -135,6 +135,22 @@ impl TreeProvider for StoredProvider {
             .map(|_| ())
             .map_err(storage_err)
     }
+
+    fn put_meta(&self, key: &str, value: &[u8]) -> Result<(), TreeError> {
+        self.put_meta(key, value)
+    }
+
+    fn meta_optional(&self, key: &str) -> Result<Option<Vec<u8>>, TreeError> {
+        self.meta_optional(key)
+    }
+
+    fn delete_meta(&self, key: &str) -> Result<(), TreeError> {
+        self.storage
+            .conn
+            .execute("DELETE FROM tree_meta WHERE key = ?1", params![key])
+            .map(|_| ())
+            .map_err(storage_err)
+    }
 }
 
 impl StoredProvider {

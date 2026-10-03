@@ -337,9 +337,7 @@ impl Api {
             .post(self.url(path))
             .header("Authorization", format!("Bot {token}"));
         if let Some(body) = body {
-            rb = rb
-                .header("Content-Type", "application/json")
-                .json(body);
+            rb = rb.header("Content-Type", "application/json").json(body);
         }
         decode(rb.send().await.unwrap()).await
     }
@@ -391,12 +389,21 @@ impl Api {
         recipients: &[&str],
         payload: &[u8],
     ) -> (StatusCode, Value) {
-        let body = if payload.is_empty() { vec![] } else { app(payload) };
+        let body = if payload.is_empty() {
+            vec![]
+        } else {
+            app(payload)
+        };
         self.send_raw(dev, recipients, &body).await
     }
 
     /// Sends exactly `body`.
-    pub async fn send_raw(&self, dev: &Device, recipients: &[&str], body: &[u8]) -> (StatusCode, Value) {
+    pub async fn send_raw(
+        &self,
+        dev: &Device,
+        recipients: &[&str],
+        body: &[u8],
+    ) -> (StatusCode, Value) {
         self.call(
             dev,
             Method::POST,

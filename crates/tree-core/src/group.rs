@@ -1565,7 +1565,10 @@ fn apply_control_state(
             if !newer {
                 return Ok(());
             }
-            if !state.admins.contains(target) && matches!(control, Control::AddAdmin(_)) && state.admins.len() >= 64 {
+            if !state.admins.contains(target)
+                && matches!(control, Control::AddAdmin(_))
+                && state.admins.len() >= 64
+            {
                 return Err(TreeError::Group("administrator limit reached".into()));
             }
             state.admin_tags.retain(|(id, _, _)| id != target);

@@ -20,7 +20,8 @@ const USERNAME_HASH_LEN: usize = 32;
 const REPORT_MAX_BYTES: usize = 256 * 1024;
 
 fn decode_username_hash(value: &str) -> ApiResult<Vec<u8>> {
-    let bytes = hex::decode(value).map_err(|_| ApiError::bad_request("username hash must be hex"))?;
+    let bytes =
+        hex::decode(value).map_err(|_| ApiError::bad_request("username hash must be hex"))?;
     if bytes.len() != USERNAME_HASH_LEN {
         return Err(ApiError::bad_request("username hash must be 32 bytes"));
     }
@@ -55,13 +56,12 @@ pub async fn set_username(
     let hash = decode_username_hash(&req.body.username_hash)?;
     let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
 
-    let existing = sqlx::query(
-        "SELECT account_id FROM usernames WHERE username_hash = ? AND account_id <> ?",
-    )
-    .bind(&hash)
-    .bind(&req.device.account_id)
-    .fetch_optional(&mut *tx)
-    .await?;
+    let existing =
+        sqlx::query("SELECT account_id FROM usernames WHERE username_hash = ? AND account_id <> ?")
+            .bind(&hash)
+            .bind(&req.device.account_id)
+            .fetch_optional(&mut *tx)
+            .await?;
     if existing.is_some() {
         return Err(ApiError::conflict(
             "ALREADY_EXISTS",
@@ -93,14 +93,13 @@ pub async fn lookup_username(
     let hash = decode_username_hash(&username_hash)?;
     state.rate_device(&req.device.device_id, 1.0)?;
 
-    let account: Option<String> = sqlx::query(
-        "SELECT account_id FROM usernames WHERE username_hash = ?",
-    )
-    .bind(hash)
-    .fetch_optional(&state.db)
-    .await?
-    .map(|r| r.try_get("account_id"))
-    .transpose()?;
+    let account: Option<String> =
+        sqlx::query("SELECT account_id FROM usernames WHERE username_hash = ?")
+            .bind(hash)
+            .fetch_optional(&state.db)
+            .await?
+            .map(|r| r.try_get("account_id"))
+            .transpose()?;
 
     let account = account.ok_or_else(|| ApiError::not_found("no account for this username"))?;
     Ok(Json(HashMap::from([("account_id", account)])))
@@ -345,13 +344,11 @@ pub async fn unblock_account(
     req: Signed<NoBody>,
 ) -> ApiResult<Json<serde_json::Value>> {
     check_id(&target, "account_id")?;
-    sqlx::query(
-        "DELETE FROM blocks WHERE blocker_account_id = ? AND blocked_account_id = ?",
-    )
-    .bind(&req.device.account_id)
-    .bind(&target)
-    .execute(&state.db)
-    .await?;
+    sqlx::query("DELETE FROM blocks WHERE blocker_account_id = ? AND blocked_account_id = ?")
+        .bind(&req.device.account_id)
+        .bind(&target)
+        .execute(&state.db)
+        .await?;
     Ok(Json(serde_json::json!({"unblocked": target})))
 }
 
@@ -375,11 +372,7 @@ pub async fn list_blocks(
     Ok(Json(BlocksResp { accounts }))
 }
 
-async fn is_blocked_pair(
-    state: &AppState,
-    a: &str,
-    b: &str,
-) -> Result<bool, sqlx::Error> {
+async fn is_blocked_pair(state: &AppState, a: &str, b: &str) -> Result<bool, sqlx::Error> {
     let exists = sqlx::query(
         "SELECT 1 FROM blocks
          WHERE (blocker_account_id = ? AND blocked_account_id = ?)

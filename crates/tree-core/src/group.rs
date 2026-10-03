@@ -1144,24 +1144,24 @@ impl Group {
                 view_once,
                 ..
             } => {
-                if self.state.messages.record(*id).is_some() {
+                if self.state.messages.record(id).is_some() {
                     return Ok(Vec::new());
                 }
-                if *ttl_secs > 30 * 86_400 {
+                if ttl_secs > 30 * 86_400 {
                     return Err(TreeError::Group("message TTL exceeds 30 days".into()));
                 }
                 let record = MessageRecord {
-                    id: *id,
+                    id,
                     author: from,
                     created_at: now,
-                    ttl_secs: *ttl_secs,
-                    view_once: *view_once,
+                    ttl_secs,
+                    view_once,
                     deleted: false,
                     last_edit_seq: event.seq(),
                 };
                 self.state.messages.record_new(record);
                 let mut output = vec![(from, event)];
-                let mut pending = self.state.messages.take_pending_for(*id);
+                let mut pending = self.state.messages.take_pending_for(id);
                 pending.sort_by_key(|mutation| mutation.event.seq());
                 for mutation in pending {
                     if self.apply_pending_mutation(now, mutation.from, mutation.event.clone())? {
@@ -1171,7 +1171,7 @@ impl Group {
                 Ok(output)
             }
             MessageEvent::Edit { target, .. } | MessageEvent::Delete { target, .. } => {
-                if self.state.messages.record(*target).is_none() {
+                if self.state.messages.record(target).is_none() {
                     self.state
                         .messages
                         .queue_pending(PendingMutation { from, event });

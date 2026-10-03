@@ -1,6 +1,6 @@
 # Recovery threat model
 
-Status: draft, 2026-10-01. **No recovery mechanism is implemented yet.** The
+Status: draft, 2026-10-03. Recovery v1 is implemented on the pre-app branch; external review and UI protections remain release requirements. The
 only secret a user handles today is the local passphrase that unlocks the
 device database. This document fixes the threat model and the requirements
 before any recovery code is written, because recovery is where an attacker
@@ -53,17 +53,23 @@ high-entropy passphrase (for example 6 or more random words) resists offline
 guessing. **A PIN must never be the passphrase** unless the key is wrapped by
 a hardware keystore that enforces attempt limits (`KeySource` hook, planned).
 
-### 2.2 Recovery phrase (planned, stage 1 sign-up)
+### 2.2 Recovery phrase (implemented, stage 1 pre-app)
 
-- Generated on the device by the system random generator, never chosen by
-  the user. At least 128 bits of entropy (12 words from a 2048-word list);
-  24 words (256 bits) recommended.
-- Never sent to the server. Shown once, confirmed by the user, then held only
-  in the user's records.
-- Keys are derived from it with HKDF (RFC 5869) and fixed labels; a slow KDF
-  adds nothing at this entropy. Exact labels and encoding: to be specified
-  with the backup format.
-- Losing it means losing recovery (stated on the sign-up screen).
+- Generated on the device from 256 bits of system randomness and encoded as
+  a 24-word English BIP-39 mnemonic. BIP-39 is used only as the human-readable
+  encoding; the optional BIP-39 passphrase is not used.
+- The phrase is never sent to the server. The current CLI stores the entropy
+  inside the SQLCipher profile and asks for the phrase through a hidden prompt
+  during recovery; the future app must display/confirm it without clipboard
+  or screenshot exposure.
+- A deterministic recovery authentication key is derived with HKDF-SHA-256,
+  info label "tree/recovery-auth/ed25519/v1", and used as the seed of a
+  separate Ed25519 key. The server stores only the resulting public key.
+- Recovery is a signed request under that recovery public key plus a fresh new
+  device authentication key. Timestamp skew and replay protection apply.
+  Recovery creates a new device; it never reconstructs MLS epoch secrets or
+  old group membership.
+- Losing the phrase means losing this recovery path.
 
 ### 2.3 PIN with server-side guess limiting (planned, stage 4)
 
@@ -114,13 +120,13 @@ Needs its own section before implementation.
 | Attack | Applies to | Required defense | Status |
 | --- | --- | --- | --- |
 | Offline guessing from stolen device files | local passphrase | high-entropy passphrase or hardware-wrapped key with attempt limits; Argon2id cost 64 MiB / 3 passes minimum, bounded header | Argon2id: done; strength check: **not done**; hardware wrapping: **planned** |
-| Offline guessing of the phrase | recovery phrase | >= 128 bits from the system random generator | not implemented |
+| Offline guessing of the phrase | recovery phrase | 256 bits from the system random generator; no server copy | implemented |
 | Offline guessing after one realm is compromised | PIN | threshold across independent realms; one realm alone learns nothing testable | not implemented |
 | Realm collusion (threshold reached) | PIN | threshold >= 2 of >= 3 independent operators; waiting period and notification to existing devices; contacts see key change | not implemented |
 | Counter reset / rollback by an operator | PIN | attested isolated execution, counters in rollback-protected storage | not implemented |
 | Online guessing against realms | PIN | per-account counter, share deleted when exhausted; then only the phrase recovers | not implemented |
 | Lock-out by an attacker burning the counter | PIN | accepted trade-off; phrase remains as fallback; notify the user | not implemented |
-| Phishing (fake recovery screen, "support" asking for the phrase, fake site) | phrase, PIN, passkey | the app never asks for the phrase except in the local recovery flow; the phrase is never typed into a web page; the server never asks for it; clear wording on the screen; passkeys are origin-bound | wording: not done |
+| Phishing (fake recovery screen, "support" asking for the phrase, fake site) | phrase, PIN, passkey | the app never asks for the phrase except in the local recovery flow; the phrase is never typed into a web page; the server never asks for it; clear wording on the screen; passkeys are origin-bound | CLI prompt path done; app wording/screenshot protections: not done |
 | Device-link phishing (QR code relayed by an attacker) | device linking | confirmation code on both devices (`user.device_link_code`, always on) | feature locked on; flow not implemented |
 | Coercion (forced to reveal PIN or phrase, or to unlock) | all | duress PIN (stage 3) that must be indistinguishable in timing and storage; waiting period gives a window to cancel | not implemented |
 | Malicious server registers a device for the account | server account | adding a device requires a signature by an existing device (`POST /v1/devices`); contacts see a key change; key transparency (stage 4) | signature: done; key transparency: planned |

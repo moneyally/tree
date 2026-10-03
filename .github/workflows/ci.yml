@@ -15,14 +15,30 @@ permissions:
 
 jobs:
   fmt:
-    name: rustfmt
+    name: rustfmt (changed Rust files)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - run: cargo fmt --all -- --check
+      - name: Check changed Rust files only
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main --depth=1
+          base="$(git merge-base HEAD origin/main)"
+          files="$(git diff --name-only "$base...HEAD" -- '*.rs')"
+          if [[ -z "$files" ]]; then
+            echo "No changed Rust files."
+            exit 0
+          fi
+          while IFS= read -r file; do
+            [[ -z "$file" ]] && continue
+            rustfmt --check --edition 2021 "$file"
+          done <<< "$files"
 
   test:
     name: cargo test

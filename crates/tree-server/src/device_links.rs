@@ -8,7 +8,7 @@
 use axum::extract::{Path, Request, State};
 use axum::http::StatusCode;
 use axum::Json;
-use ed25519_dalek::{Signature, VerifyingKey};
+use ed25519_dalek::Signature;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
@@ -261,7 +261,7 @@ pub async fn confirm_initiator(
     req: Signed<InitiatorConfirmReq>,
 ) -> ApiResult<Json<LinkStatusResp>> {
     validate_code(&req.body.code)?;
-    let (initiator, challenge, joiner, _init_ok, join_ok, expires_at) =
+    let (initiator, challenge, joiner, _init_ok, _join_ok, _expires_at) =
         load_session(&state, &link_id).await?;
     if initiator != req.device.device_id {
         return Err(ApiError::forbidden(
@@ -336,7 +336,7 @@ pub async fn confirm_join(
         .try_into()
         .map_err(|_| ApiError::bad_request("proof must be 64 bytes"))?;
 
-    let (initiator, challenge, joiner, init_ok, _join_ok, expires_at) =
+    let (initiator, challenge, joiner, _init_ok, _join_ok, _expires_at) =
         load_session(&state, &link_id).await?;
     if joiner.as_deref() != Some(&new_pub[..]) {
         return Err(ApiError::unauthorized("device-link joiner key mismatch"));
@@ -362,7 +362,7 @@ pub async fn confirm_join(
     .execute(&state.db)
     .await?;
 
-    let (created, device_id) = finalize_if_ready(&state, &link_id).await?;
+    let (created, _device_id) = finalize_if_ready(&state, &link_id).await;
     let (_, _, joiner, init_ok, join_ok, expires_at) = load_session(&state, &link_id).await?;
     Ok((
         if created { StatusCode::CREATED } else { StatusCode::OK },

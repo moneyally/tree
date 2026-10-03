@@ -24,6 +24,7 @@ mod group_state;
 pub mod provider;
 pub mod recovery;
 pub mod storage;
+pub mod user_features;
 
 pub use client::Client;
 pub use crypto_profile::{combine_secrets, negotiate as negotiate_crypto_profile, CryptoProfile, KemAlgorithm, SignatureAlgorithm};

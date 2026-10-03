@@ -22,6 +22,7 @@ pub mod features;
 pub mod groups;
 pub mod keypackages;
 pub mod social;
+pub mod recovery;
 pub mod limits;
 pub mod messages;
 pub mod util;
@@ -63,6 +64,7 @@ pub struct Inner {
     pub replay: ReplayCache,
     pub device_limiter: RateLimiter<String>,
     pub signup_limiter: RateLimiter<[u8; 16]>,
+    pub recovery_limiter: RateLimiter<String>,
     pub waiters: Waiters,
 }
 
@@ -78,6 +80,7 @@ impl AppState {
         Self(Arc::new(Inner {
             device_limiter: RateLimiter::new(cfg.rate_per_sec, cfg.rate_burst),
             signup_limiter: RateLimiter::new(cfg.signup_per_hour / 3600.0, cfg.signup_burst),
+            recovery_limiter: RateLimiter::new(cfg.signup_per_hour / 3600.0, cfg.signup_burst),
             replay: ReplayCache::new(),
             waiters: Waiters::default(),
             db,
@@ -193,6 +196,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/blocks", get(social::list_blocks))
         .route("/v1/blocks/{account_id}", post(social::block_account).delete(social::unblock_account))
         .route("/v1/reports", post(social::report))
+        .route("/v1/recovery/setup", post(recovery::setup))
+        .route("/v1/recovery", post(recovery::recover))
         .route("/v1/keypackages/claim", post(keypackages::claim))
         .route("/v1/keypackages/count", get(keypackages::count))
         .route("/v1/messages", post(messages::send).get(messages::fetch))
@@ -309,6 +314,7 @@ pub async fn start(cfg: Config) -> Result<Server, BoxError> {
                 state.replay.prune(util::now_secs());
                 state.device_limiter.prune();
                 state.signup_limiter.prune();
+                state.recovery_limiter.prune();
             }
         }));
     }

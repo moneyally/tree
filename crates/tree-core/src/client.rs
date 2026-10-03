@@ -46,6 +46,7 @@ const META_CREDENTIAL: &str = "credential";
 const META_SERVER_AUTH_SEED: &str = "server_auth_seed";
 const META_SERVER_ACCOUNT: &str = "server_account_id";
 const META_SERVER_DEVICE: &str = "server_device_id";
+const META_RECOVERY_ENTROPY: &str = "recovery_entropy";
 
 impl Client<StoredProvider> {
     /// Creates a new device identity in a new encrypted database at `path`
@@ -139,6 +140,26 @@ impl Client<StoredProvider> {
         self.provider
             .meta_optional(META_SERVER_AUTH_SEED)?
             .map(|v| v.try_into().map_err(|_| TreeError::Storage("server auth seed is damaged".into())))
+            .transpose()
+    }
+
+    pub fn set_recovery_phrase(&self, phrase: &crate::recovery::RecoveryPhrase) -> Result<(), TreeError> {
+        self.provider.atomically(|| {
+            self.provider
+                .put_meta(META_RECOVERY_ENTROPY, &phrase.entropy_bytes())?;
+            Ok(())
+        })
+    }
+
+    pub fn recovery_phrase(&self) -> Result<Option<crate::recovery::RecoveryPhrase>, TreeError> {
+        self.provider
+            .meta_optional(META_RECOVERY_ENTROPY)?
+            .map(|v| {
+                let entropy: [u8; 32] = v
+                    .try_into()
+                    .map_err(|_| TreeError::Storage("recovery entropy is damaged".into()))?;
+                crate::recovery::RecoveryPhrase::from_entropy_bytes(entropy)
+            })
             .transpose()
     }
 

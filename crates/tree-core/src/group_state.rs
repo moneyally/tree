@@ -6,7 +6,7 @@
 //! * envelope keys and member ids of the retained past epochs (F-002);
 //! * hashes of this device's own confirmed commits (echo recognition, F-004).
 //!
-//! Encoding (version 3; decoder accepts versions 1 and 2), integers big-endian, `bytes` = u32 length + data:
+//! Encoding (version 4; decoder accepts versions 1 through 3), integers big-endian, `bytes` = u32 length + data:
 //!
 //! ```text
 //! 0x01
@@ -20,7 +20,7 @@ use zeroize::Zeroizing;
 
 use crate::{error::TreeError, group::MemberId};
 
-const VERSION: u8 = 3;
+const VERSION: u8 = 4;
 
 /// A commit this device created that the server has not accepted yet.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -65,6 +65,11 @@ pub(crate) struct GroupState {
     pub processed: Vec<(u64, [u8; 32])>,
     /// Future-epoch envelopes held locally until the corresponding commit is merged.
     pub future: Vec<PendingEnvelope>,
+    /// Server-independent group settings carried inside authenticated MLS
+    /// application messages. Only the deterministic admin may change them.
+    pub title: Option<String>,
+    pub disappearing_seconds: u32,
+    pub last_control_seq: u64,
 }
 
 impl GroupState {
@@ -137,6 +142,14 @@ impl GroupState {
             out.extend_from_slice(&p.received_at.to_be_bytes());
             put_bytes(&mut out, &p.bytes);
         }
+        if let Some(title) = &self.title {
+            out.push(1);
+            put_bytes(&mut out, title.as_bytes());
+        } else {
+            out.push(0);
+        }
+        out.extend_from_slice(&self.disappearing_seconds.to_be_bytes());
+        out.extend_from_slice(&self.last_control_seq.to_be_bytes());
         out
     }
 
@@ -202,10 +215,33 @@ impl GroupState {
                 future.push(PendingEnvelope { epoch, received_at, bytes });
             }
         }
+        let (title, disappearing_seconds, last_control_seq) = if version >= 4 {
+            let title = match r.u8()? {
+                0 => None,
+                1 => Some(String::from_utf8(r.bytes()?).map_err(|_| damaged())?),
+                _ => return Err(damaged()),
+            };
+            let disappearing_seconds = r.u32()?;
+            let last_control_seq = r.u64()?;
+            (title, disappearing_seconds, last_control_seq)
+        } else {
+            (None, 0, 0)
+        };
         if !r.0.is_empty() {
             return Err(damaged());
         }
-        Ok(Self { pending, admin, should_refresh, past, sent, processed, future })
+        Ok(Self {
+            pending,
+            admin,
+            should_refresh,
+            past,
+            sent,
+            processed,
+            future,
+            title,
+            disappearing_seconds,
+            last_control_seq,
+        })
     }
 }
 
@@ -270,6 +306,9 @@ mod tests {
             sent: vec![(6, [0xaa; 32]), (5, [0xbb; 32])],
             processed: vec![(6, [0xcc; 32])],
             future: vec![PendingEnvelope { epoch: 8, received_at: 100, bytes: vec![9, 9] }],
+            title: Some("Test Group".into()),
+            disappearing_seconds: 86400,
+            last_control_seq: 12,
         }
     }
 
@@ -281,6 +320,9 @@ mod tests {
             && a.processed == b.processed
             && a.future.iter().map(|p| (p.epoch, p.received_at, &p.bytes)).collect::<Vec<_>>()
                 == b.future.iter().map(|p| (p.epoch, p.received_at, &p.bytes)).collect::<Vec<_>>()
+            && a.title == b.title
+            && a.disappearing_seconds == b.disappearing_seconds
+            && a.last_control_seq == b.last_control_seq
             && a.past.len() == b.past.len()
             && a.past.iter().zip(&b.past).all(|(x, y)| {
                 x.epoch == y.epoch && *x.envelope_key == *y.envelope_key && x.members == y.members
@@ -336,6 +378,9 @@ mod tests {
         assert!(decoded.admin.is_none());
         assert!(decoded.processed.is_empty());
         assert!(decoded.future.is_empty());
+        assert!(decoded.title.is_none());
+        assert_eq!(decoded.disappearing_seconds, 0);
+        assert_eq!(decoded.last_control_seq, 0);
     }
 
     #[test]

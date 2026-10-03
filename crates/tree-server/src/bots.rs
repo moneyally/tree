@@ -661,26 +661,10 @@ pub async fn get_commands(
 }
 
 fn parse_bot_token_parts(token: &str) -> ApiResult<(&str, &str)> {
-    let (bot_id, suffix) = parse_bot_token_parts(token)?;
-    let raw_suffix = URL_SAFE_NO_PAD.decode(suffix).map_err(|_| ApiError::unauthorized("invalid bot token"))?;
-    Ok((bot_id, suffix))
-}
-
-/// Authenticate a bot gateway request. Tokens are accepted only via
-/// Authorization: Bot <token>; URL paths must never contain token material.
-pub async fn authenticate_token(state: &AppState, headers: &HeaderMap) -> ApiResult<BotIdentity> {
-    let auth = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| ApiError::unauthorized("bot token required"))?;
-    let token = auth
-        .strip_prefix("Bot ")
-        .ok_or_else(|| ApiError::unauthorized("bot authorization must use Bot scheme"))?;
-    let secret = require_bot_secret(state)?;
     let prefix = token
         .strip_prefix(TOKEN_PREFIX)
         .ok_or_else(|| ApiError::unauthorized("invalid bot token"))?;
-    const TOKEN_SUFFIX_LEN: usize = 43; // 32 random bytes, base64url without padding.
+    const TOKEN_SUFFIX_LEN: usize = 43;
     if prefix.len() != crate::util::ID_LEN + 1 + TOKEN_SUFFIX_LEN
         || prefix.as_bytes().get(crate::util::ID_LEN) != Some(&b'_')
     {
@@ -695,6 +679,21 @@ pub async fn authenticate_token(state: &AppState, headers: &HeaderMap) -> ApiRes
     if raw_suffix.len() != 32 {
         return Err(ApiError::unauthorized("invalid bot token"));
     }
+    Ok((bot_id, suffix))
+}
+
+/// Authenticate a bot gateway request. Tokens are accepted only via
+/// Authorization: Bot <token>; URL paths must never contain token material.
+pub async fn authenticate_token(state: &AppState, headers: &HeaderMap) -> ApiResult<BotIdentity> {
+    let auth = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| ApiError::unauthorized("bot token required"))?;
+    let token = auth
+        .strip_prefix("Bot ")
+        .ok_or_else(|| ApiError::unauthorized("bot authorization must use Bot scheme"))?;
+    let secret = require_bot_secret(state)?;
+    let (bot_id, suffix) = parse_bot_token_parts(token)?;
     let row = sqlx::query(
         "SELECT b.token_hmac, bi.account_id, bi.gateway_device_id
          FROM bots b JOIN bot_identities bi ON bi.bot_id = b.id

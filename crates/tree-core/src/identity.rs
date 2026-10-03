@@ -69,7 +69,7 @@ pub fn safety_fingerprint(signature_public_key: &[u8]) -> [u8; 32] {
 
 /// Lowercase hex representation used by the non-UI CLI and future QR payloads.
 pub fn fingerprint_hex(fp: &[u8; 32]) -> String {
-    hex::encode(fp)
+    fp.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 #[cfg(test)]
@@ -89,6 +89,7 @@ mod tests {
     fn safety_fingerprint_is_domain_separated() {
         let fp = safety_fingerprint(&[7u8; 32]);
         assert_eq!(fp.len(), 32);
-        assert_ne!(fp, Sha256::digest([7u8; 32]).into());
+        let raw: [u8; 32] = Sha256::digest([7u8; 32]).into();
+        assert_ne!(fp, raw);
     }
 }

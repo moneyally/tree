@@ -6,7 +6,7 @@
 //! * envelope keys and member ids of the retained past epochs (F-002);
 //! * hashes of this device's own confirmed commits (echo recognition, F-004).
 //!
-//! Encoding (version 4; decoder accepts versions 1 through 3), integers big-endian, `bytes` = u32 length + data:
+//! Encoding is version 6; decoders accept versions 1 through 5. Integers are big-endian and `bytes` is u32 length + data:
 //!
 //! ```text
 //! 0x01
@@ -68,7 +68,7 @@ pub(crate) struct GroupState {
     /// Future-epoch envelopes held locally until the corresponding commit is merged.
     pub future: Vec<PendingEnvelope>,
     /// Server-independent group settings carried inside authenticated MLS
-    /// application messages. Only the deterministic admin may change them.
+    /// application messages. Only a group administrator may change them.
     pub title: Option<String>,
     pub disappearing_seconds: u32,
     pub last_control_seq: u64,

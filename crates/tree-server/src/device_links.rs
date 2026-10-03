@@ -259,7 +259,7 @@ pub async fn confirm_initiator(
     req: Signed<InitiatorConfirmReq>,
 ) -> ApiResult<Json<LinkStatusResp>> {
     validate_code(&req.body.code)?;
-    let (initiator, challenge, joiner, _init_ok, _join_ok, _expires_at) =
+    let (initiator, challenge, joiner, init_ok, _join_ok, expires_at) =
         load_session(&state, &link_id).await?;
     if initiator != req.device.device_id {
         return Err(ApiError::forbidden(
@@ -285,18 +285,18 @@ pub async fn confirm_initiator(
     .execute(&state.db)
     .await?;
 
+    // Do not reload the session here: the purge task may delete a used
+    // session immediately after finalization. The state needed for this
+    // response is already known from the authenticated request.
     finalize_if_ready(&state, &link_id).await?;
-    let (_, _, joiner, init_ok, join_ok, expires_at) = load_session(&state, &link_id).await?;
     Ok(Json(LinkStatusResp {
         link_id,
         challenge: b64(&challenge),
-        joiner_auth_pub: joiner.as_deref().map(b64),
-        verification_code: joiner
-            .as_deref()
-            .map(|j| verification_code(&challenge, &init_pub, j)),
-        initiator_confirmed: init_ok,
-        joiner_confirmed: join_ok,
-        expires_at,
+        joiner_auth_pub: Some(b64(&joiner)),
+        verification_code: Some(verification_code(&challenge, &init_pub, &joiner)),
+        initiator_confirmed: true,
+        joiner_confirmed: _join_ok,
+        expires_at: _expires_at,
     }))
 }
 
@@ -361,8 +361,8 @@ pub async fn confirm_join(
     .execute(&state.db)
     .await?;
 
+    // As above, avoid a second session read after finalization.
     let (created, _device_id) = finalize_if_ready(&state, &link_id).await?;
-    let (_, _, joiner, init_ok, join_ok, expires_at) = load_session(&state, &link_id).await?;
     Ok((
         if created {
             StatusCode::CREATED
@@ -372,12 +372,10 @@ pub async fn confirm_join(
         Json(LinkStatusResp {
             link_id,
             challenge: b64(&challenge),
-            joiner_auth_pub: joiner.as_deref().map(b64),
-            verification_code: joiner
-                .as_deref()
-                .map(|j| verification_code(&challenge, &init_pub, j)),
+            joiner_auth_pub: Some(b64(&new_pub)),
+            verification_code: Some(verification_code(&challenge, &init_pub, &new_pub)),
             initiator_confirmed: init_ok,
-            joiner_confirmed: join_ok,
+            joiner_confirmed: true,
             expires_at,
         }),
     ))

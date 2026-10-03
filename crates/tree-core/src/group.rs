@@ -137,12 +137,17 @@ impl Group {
     const TAG_LEN: usize = 32;
 
     pub(crate) fn new(mls: MlsGroup, mut state: GroupState) -> Self {
-        if state.admin.is_none() {
-            state.admin = mls
+        if state.admins.is_empty() {
+            if let Some(id) = mls
                 .members()
+                .min_by_key(|m| m.index)
                 .map(|m| MemberId::of(&m.signature_key))
-                .min();
+            {
+                state.admins.push(id);
+            }
         }
+        state.admins.sort_unstable();
+        state.admins.dedup();
         Self { mls, state }
     }
 
@@ -172,7 +177,7 @@ impl Group {
         self.state.disappearing_seconds
     }
 
-    /// Encrypt a group-settings control message. Only the deterministic v1
+    /// Encrypt a group-settings control message. Only the v1
     /// administrator may create settings controls.
     pub fn set_title<P: TreeProvider>(
         &mut self,
@@ -181,7 +186,7 @@ impl Group {
     ) -> Result<Vec<u8>, TreeError> {
         if !self.is_admin(me) {
             return Err(TreeError::Rejected(
-                "only the group administrator may change settings".into(),
+                "only a group administrator may change settings".into(),
             ));
         }
         let title = title.map(str::trim).filter(|s| !s.is_empty());
@@ -219,6 +224,45 @@ impl Group {
         self.send_control(me, Control::SetDisappearingSeconds(seconds))
     }
 
+    /// Grant administrator role to a current member.
+    pub fn add_admin<P: TreeProvider>(
+        &mut self,
+        me: &Client<P>,
+        target: MemberId,
+    ) -> Result<Vec<u8>, TreeError> {
+        if !self.is_admin(me) {
+            return Err(TreeError::Rejected(
+                "only a group administrator may change administrators".into(),
+            ));
+        }
+        if !self.members().iter().any(|member| member.id == target) {
+            return Err(TreeError::UnknownMember(target.to_hex()));
+        }
+        self.send_control(me, Control::AddAdmin(target))
+    }
+
+    /// Remove administrator role. At least one administrator must remain.
+    pub fn remove_admin<P: TreeProvider>(
+        &mut self,
+        me: &Client<P>,
+        target: MemberId,
+    ) -> Result<Vec<u8>, TreeError> {
+        if !self.is_admin(me) {
+            return Err(TreeError::Rejected(
+                "only a group administrator may change administrators".into(),
+            ));
+        }
+        if self.state.admins.contains(&target) && self.state.admins.len() == 1 {
+            return Err(TreeError::Group(
+                "a group must always retain at least one administrator".into(),
+            ));
+        }
+        if !self.members().iter().any(|member| member.id == target) {
+            return Err(TreeError::UnknownMember(target.to_hex()));
+        }
+        self.send_control(me, Control::RemoveAdmin(target))
+    }
+
     /// Current members in leaf order.
     pub fn members(&self) -> Vec<Member> {
         let list: Vec<(MemberId, String)> = self
@@ -250,14 +294,13 @@ impl Group {
 
     // ----- two-phase commits -------------------------------------------------
 
-    /// Returns the current deterministic v1 administrator, if any.
-    pub fn admin_id(&self) -> Option<MemberId> {
-        self.state.admin
+    /// Returns the encrypted group administrator list.
+    pub fn admins(&self) -> Vec<MemberId> {
+        self.state.admins.clone()
     }
 
-    /// Returns true only for the current deterministic v1 administrator.
     pub fn is_admin(&self, me: &Client<impl TreeProvider>) -> bool {
-        self.state.admin == Some(me.member_id())
+        self.state.admins.contains(&me.member_id())
     }
 
     /// Adds devices by their key packages, in one commit. Adding a person
@@ -272,8 +315,10 @@ impl Group {
         if key_packages.is_empty() {
             return Err(TreeError::Group("nothing to add".into()));
         }
-        if self.state.admin != Some(me.member_id()) {
-            return Err(TreeError::Rejected("only the group administrator may add members".into()));
+        if !self.is_admin(me) {
+            return Err(TreeError::Rejected(
+                "only a group administrator may add members".into(),
+            ));
         }
         let kps = key_packages
             .iter()
@@ -306,8 +351,10 @@ impl Group {
         if members.is_empty() {
             return Err(TreeError::Group("nothing to remove".into()));
         }
-        if self.state.admin != Some(me.member_id()) {
-            return Err(TreeError::Rejected("only the group administrator may remove members".into()));
+        if !self.is_admin(me) {
+            return Err(TreeError::Rejected(
+                "only a group administrator may remove members".into(),
+            ));
         }
         let own = me.member_id();
         let mut leaves = Vec::new();
@@ -315,6 +362,13 @@ impl Group {
             if *id == own {
                 return Err(TreeError::Group(
                     "a device cannot remove itself; send a leave request instead".into(),
+                ));
+            }
+            if self.state.admins.contains(id)
+                && self.state.admins.iter().filter(|admin| *admin != id).count() == 0
+            {
+                return Err(TreeError::Group(
+                    "the last administrator must be transferred before removal".into(),
                 ));
             }
             let index = self
@@ -458,7 +512,12 @@ impl Group {
                 .create_message(&me.provider, &me.signer, &bytes)
                 .map_err(group_err)?;
             let envelope = self.seal(me, &out.to_bytes().map_err(group_err)?)?;
-            apply_control_state(&mut self.state, &control);
+            let members = self
+                .mls
+                .members()
+                .map(|m| MemberId::of(&m.signature_key))
+                .collect::<Vec<_>>();
+            apply_control_state(&mut self.state, &control, &members)?;
             self.state.last_control_seq = seq;
             self.save(me)?;
             Ok(envelope)
@@ -585,12 +644,9 @@ impl Group {
                             "settings controls from past epochs are not accepted".into(),
                         ));
                     }
-                    let admin = self.admin_id().ok_or_else(|| {
-                        TreeError::Rejected("group has no administrator".into())
-                    })?;
-                    if from != admin {
+                    if !self.state.admins.contains(&from) {
                         return Err(TreeError::Rejected(
-                            "settings control sender is not the administrator".into(),
+                            "settings control sender is not an administrator".into(),
                         ));
                     }
                     let control = decode_control(&body)?;
@@ -599,7 +655,12 @@ impl Group {
                         self.save(me)?;
                         return Ok(Incoming::OwnEcho);
                     }
-                    apply_control_state(&mut self.state, &control.control);
+                    let members = self
+                        .mls
+                        .members()
+                        .map(|m| MemberId::of(&m.signature_key))
+                        .collect::<Vec<_>>();
+                    apply_control_state(&mut self.state, &control.control, &members)?;
                     self.state.last_control_seq = control.seq;
                     self.mark_processed(epoch, hash);
                     self.state.future.retain(|p| sha256(&p.bytes) != hash);
@@ -642,7 +703,7 @@ impl Group {
                 self.entered_new_epoch(past);
                 let current_epoch = self.epoch();
                 self.state.future.retain(|p| p.epoch > current_epoch);
-                self.reconcile_admin();
+                self.reconcile_admins();
                 self.mark_processed(epoch, hash);
                 self.save(me)?;
                 if !self.mls.is_active() {
@@ -698,16 +759,25 @@ impl Group {
         me.provider.save_group_state(self.mls.group_id().as_slice(), &self.state.encode())
     }
 
-    fn reconcile_admin(&mut self) {
+    fn reconcile_admins(&mut self) {
         let current: Vec<MemberId> = self
             .mls
             .members()
             .map(|m| MemberId::of(&m.signature_key))
             .collect();
-        if match self.admin_id() { Some(admin) => current.contains(&admin), None => true } {
-            return;
+        self.state.admins.retain(|admin| current.contains(admin));
+        if self.state.admins.is_empty() {
+            if let Some(id) = self
+                .mls
+                .members()
+                .min_by_key(|m| m.index)
+                .map(|m| MemberId::of(&m.signature_key))
+            {
+                self.state.admins.push(id);
+            }
         }
-        self.state.admin = current.into_iter().min();
+        self.state.admins.sort_unstable();
+        self.state.admins.dedup();
     }
 
     fn mark_processed(&mut self, epoch: u64, hash: [u8; 32]) {
@@ -814,12 +884,16 @@ fn sha256(data: &[u8]) -> [u8; 32] {
 const CONTROL_MAGIC: &[u8] = b"TREECTRL\x01";
 const CONTROL_TITLE: u8 = 1;
 const CONTROL_DISAPPEARING: u8 = 2;
+const CONTROL_ADD_ADMIN: u8 = 3;
+const CONTROL_REMOVE_ADMIN: u8 = 4;
 const MAX_TITLE_BYTES: usize = 128;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Control {
     SetTitle(Option<String>),
     SetDisappearingSeconds(u32),
+    AddAdmin(MemberId),
+    RemoveAdmin(MemberId),
 }
 
 
@@ -850,6 +924,14 @@ fn encode_control(seq: u64, control: &Control) -> Result<Vec<u8>, TreeError> {
             }
             out.push(CONTROL_DISAPPEARING);
             out.extend_from_slice(&seconds.to_be_bytes());
+        }
+        Control::AddAdmin(target) => {
+            out.push(CONTROL_ADD_ADMIN);
+            out.extend_from_slice(target.as_bytes());
+        }
+        Control::RemoveAdmin(target) => {
+            out.push(CONTROL_REMOVE_ADMIN);
+            out.extend_from_slice(target.as_bytes());
         }
     }
     Ok(out)
@@ -889,6 +971,8 @@ fn decode_control(bytes: &[u8]) -> Result<DecodedControl, TreeError> {
             }
             Control::SetDisappearingSeconds(seconds)
         }
+        CONTROL_ADD_ADMIN => Control::AddAdmin(MemberId(r.array()?)),
+        CONTROL_REMOVE_ADMIN => Control::RemoveAdmin(MemberId(r.array()?)),
         _ => return Err(TreeError::Malformed("unknown Tree control type".into())),
     };
     if !r.0.is_empty() {
@@ -899,11 +983,32 @@ fn decode_control(bytes: &[u8]) -> Result<DecodedControl, TreeError> {
     Ok(DecodedControl { seq, control })
 }
 
-fn apply_control_state(state: &mut GroupState, control: &Control) {
+fn apply_control_state(
+    state: &mut GroupState,
+    control: &Control,
+    current_members: &[MemberId],
+) -> Result<(), TreeError> {
     match control {
         Control::SetTitle(title) => state.title = title.clone(),
         Control::SetDisappearingSeconds(seconds) => state.disappearing_seconds = *seconds,
+        Control::AddAdmin(target) => {
+            if !current_members.contains(target) {
+                return Err(TreeError::UnknownMember(target.to_hex()));
+            }
+            state.admins.push(*target);
+            state.admins.sort_unstable();
+            state.admins.dedup();
+        }
+        Control::RemoveAdmin(target) => {
+            if state.admins.contains(target) && state.admins.len() == 1 {
+                return Err(TreeError::Group(
+                    "cannot remove the last administrator".into(),
+                ));
+            }
+            state.admins.retain(|admin| admin != target);
+        }
     }
+    Ok(())
 }
 
 struct ControlReader<'a>(&'a [u8]);

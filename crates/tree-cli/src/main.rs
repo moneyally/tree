@@ -91,7 +91,6 @@ struct InitArgs {
     passphrase: Option<String>,
 }
 
-
 #[derive(Args, Debug)]
 struct RecoverArgs {
     #[arg(long)]
@@ -231,15 +230,12 @@ impl Api {
             .header("X-Tree-Nonce", &nonce)
             .header("X-Tree-Signature", sig);
         if !bytes.is_empty() {
-            req = req
-                .header("Content-Type", "application/json")
-                .body(bytes);
+            req = req.header("Content-Type", "application/json").body(bytes);
         }
 
         let resp = req.send().await.context("send HTTP request")?;
         decode(resp).await
     }
-
 
     async fn group_devices(
         &self,
@@ -262,7 +258,6 @@ impl Api {
                     .collect()
             })
     }
-
 
     async fn recover(
         &self,
@@ -532,14 +527,16 @@ async fn upload_keys(args: UploadKeysArgs) -> Result<()> {
     Ok(())
 }
 
-
 async fn recovery_generate(args: ProfileArgs) -> Result<()> {
     let client = open_profile(&args.profile, &args.passphrase)?;
     if client.recovery_phrase()?.is_some() {
         bail!("profile already has a recovery phrase");
     }
-    let phrase = RecoveryPhrase::generate().map_err(|e| anyhow!("generate recovery phrase: {e}"))?;
-    client.set_recovery_phrase(&phrase).map_err(|e| anyhow!("store recovery phrase: {e}"))?;
+    let phrase =
+        RecoveryPhrase::generate().map_err(|e| anyhow!("generate recovery phrase: {e}"))?;
+    client
+        .set_recovery_phrase(&phrase)
+        .map_err(|e| anyhow!("store recovery phrase: {e}"))?;
     println!("recovery_phrase={}", phrase.phrase());
     println!("warning=store this phrase offline; it is not sent to the server");
     Ok(())
@@ -564,7 +561,10 @@ async fn recovery_setup(args: NetworkArgs) -> Result<()> {
     if !status.is_success() {
         bail!("recovery setup failed ({status}): {body}");
     }
-    println!("recovery_pub={}", body["recovery_pub"].as_str().unwrap_or_default());
+    println!(
+        "recovery_pub={}",
+        body["recovery_pub"].as_str().unwrap_or_default()
+    );
     Ok(())
 }
 
@@ -598,7 +598,11 @@ async fn recovery(args: RecoverArgs) -> Result<()> {
 }
 
 fn check_account_id(id: &str) -> Result<()> {
-    if id.len() != 22 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+    if id.len() != 22
+        || !id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
         bail!("account id is not a valid 16-byte base64url identifier");
     }
     Ok(())
@@ -629,7 +633,6 @@ async fn create_group(args: ProfileArgs) -> Result<()> {
     println!("epoch={}", group.epoch());
     Ok(())
 }
-
 
 fn group_member_device_id(client: &Client<StoredProvider>) -> String {
     client

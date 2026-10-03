@@ -205,6 +205,7 @@ Merge to main
 A failed regression blocks the next feature. This keeps the backend contract stable before the app UI is designed.
 
 > CI is expected to be green before this branch is merged to `main`.
+> Last backend code gate: strict fmt/test/clippy cycle.
 
 ## Local verification
 

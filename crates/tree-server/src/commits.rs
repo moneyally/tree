@@ -155,6 +155,59 @@ pub async fn submit(
         .transpose()?;
 
     if let Some(last) = last {
+        // For an existing group, the caller must describe the current roster
+        // faithfully. The server cannot decrypt the MLS commit, but it can
+        // prevent a malicious member from silently dropping devices from
+        // server-side routing metadata.
+        let current_members: HashSet<String> = sqlx::query(
+            "SELECT device_id FROM group_devices WHERE group_id = ? ORDER BY device_id",
+        )
+        .bind(&group_id)
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .map(|r| r.try_get("device_id"))
+        .collect::<Result<HashSet<_>, _>>()?;
+        if !current_members.contains(&sender) {
+            return Err(ApiError::forbidden(
+                "NOT_ELIGIBLE",
+                "this device is not a member the server knows",
+            ));
+        }
+
+        let removed_set: HashSet<&String> = removed.iter().collect();
+        if removed.iter().any(|d| d == &sender) || !removed.iter().all(|d| current_members.contains(d)) {
+            return Err(ApiError::bad_request(
+                "removed devices must be current group members and cannot remove the sender",
+            ));
+        }
+        if added.iter().any(|d| current_members.contains(d)) {
+            return Err(ApiError::bad_request(
+                "added devices must not already be group members",
+            ));
+        }
+        if recipients.iter().any(|d| !current_members.contains(d)) {
+            return Err(ApiError::bad_request(
+                "recipients must be current group members",
+            ));
+        }
+        if added.iter().any(|d| recipients.contains(d)) {
+            return Err(ApiError::bad_request(
+                "added devices cannot also be recipients",
+            ));
+        }
+
+        let required_recipients = current_members
+            .iter()
+            .filter(|d| *d != &sender && !removed_set.contains(*d))
+            .cloned()
+            .collect::<HashSet<_>>();
+        if !required_recipients.is_subset(&recipients.iter().cloned().collect()) {
+            return Err(ApiError::bad_request(
+                "recipients must include every current member not being removed",
+            ));
+        }
+
         if epoch_db <= last {
             let winner = sqlx::query(
                 "SELECT sha256, id FROM group_winners WHERE group_id = ? AND epoch = ?",

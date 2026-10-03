@@ -181,7 +181,7 @@ impl KeyHeader {
     /// Writes the header file (owner-only permissions on Unix) and syncs it.
     pub(crate) fn write(&self, db: &Path) -> Result<(), TreeError> {
         let path = Self::path_for(db);
-        let mut f = super::private_file(&path, true)?;
+        let mut f = super::private_file(&path, false)?;
         f.write_all(&self.to_bytes())
             .and_then(|_| f.sync_all())
             .map_err(|e| TreeError::Storage(format!("cannot write key header: {e}")))

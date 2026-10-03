@@ -1221,7 +1221,7 @@ impl Group {
                     return Ok(Vec::new());
                 }
                 Ok(vec![(from, event)])
-            },
+            }
         }
     }
 
@@ -1265,8 +1265,11 @@ impl Group {
                 record.last_edit_seq = *seq;
                 Ok(true)
             }
-            MessageEvent::Reaction { .. } | MessageEvent::Read { .. } => {
+            MessageEvent::Reaction { seq, .. } | MessageEvent::Read { seq, .. } => {
                 if record.deleted {
+                    return Ok(false);
+                }
+                if !self.state.messages.accept_sender_seq(from, *seq) {
                     return Ok(false);
                 }
                 Ok(true)

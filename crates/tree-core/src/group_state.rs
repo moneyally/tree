@@ -401,9 +401,6 @@ mod tests {
         let v6 = sample().encode().unwrap();
         let msg_len = v6.len();
         let mut v5 = v6;
-        let ledger_len =
-            u32::from_be_bytes(v5[msg_len - 4 - 0..msg_len].try_into().expect("fixture")) as usize;
-        let _ = ledger_len;
         // Build a clean v5 fixture from the prefix before the version-6
         // message-ledger length/data suffix.
         let suffix_len = 4 + sample().messages.encode().unwrap().len();

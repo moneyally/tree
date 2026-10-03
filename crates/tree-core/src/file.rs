@@ -215,10 +215,10 @@ pub struct FileShare {
 impl FileShare {
     pub fn encode(&self) -> Result<Vec<u8>, TreeError> {
         validate_file_id(&self.file_id)?;
-        if self.filename.as_bytes().len() > MAX_FILENAME {
+        if self.filename.len() > MAX_FILENAME {
             return Err(TreeError::FileCrypto("filename is too long".into()));
         }
-        if self.mime.as_bytes().len() > MAX_MIME || !self.mime.is_ascii() {
+        if self.mime.len() > MAX_MIME || !self.mime.is_ascii() {
             return Err(TreeError::FileCrypto("mime type is invalid".into()));
         }
         let mut out = Vec::with_capacity(256);
@@ -251,11 +251,11 @@ impl FileShare {
             .map_err(|_| TreeError::Malformed("bad file hash".into()))?;
         let plaintext_size = r.u64()?;
         let filename = r.string()?;
-        if filename.as_bytes().len() > MAX_FILENAME {
+        if filename.len() > MAX_FILENAME {
             return Err(TreeError::Malformed("filename is too long".into()));
         }
         let mime = r.string()?;
-        if mime.as_bytes().len() > MAX_MIME || !mime.is_ascii() {
+        if mime.len() > MAX_MIME || !mime.is_ascii() {
             return Err(TreeError::Malformed("mime type is invalid".into()));
         }
         if !r.0.is_empty() {

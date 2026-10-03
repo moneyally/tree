@@ -53,7 +53,7 @@ fn parse_fingerprint(s: &str) -> Result<[u8; 32], TreeError> {
         ));
     }
     let mut out = [0u8; 32];
-    for (i, pair) in s.as_bytes().chunks_exact(2).enumerate() {
+    for (i, pair) in s.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         let hi = hex_nibble(pair[0]).ok_or_else(|| {
             TreeError::Storage("stored safety fingerprint is damaged".into())
         })?;

@@ -61,7 +61,7 @@ pub async fn upload(
         )
     })?;
     let capability = b64(&capability_raw);
-    let capability_hash: [u8; 32] = Sha256::digest(&capability_raw).into();
+    let capability_hash: [u8; 32] = Sha256::digest(capability_raw).into();
     let body_hash: [u8; 32] = Sha256::digest(&body).into();
     let size_bytes = body.len();
     let now = now_secs();

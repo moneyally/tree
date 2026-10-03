@@ -61,7 +61,9 @@ fn state_from_u8(v: u8) -> Result<State, TreeError> {
     }
 }
 
-fn load<P: TreeProvider>(provider: &P) -> Result<BTreeMap<String, (State, Option<String>)>, TreeError> {
+fn load<P: TreeProvider>(
+    provider: &P,
+) -> Result<BTreeMap<String, (State, Option<String>)>, TreeError> {
     let Some(bytes) = provider.meta_optional(META_USER_FEATURES)? else {
         return Ok(BTreeMap::new());
     };
@@ -109,16 +111,11 @@ pub fn registry<P: TreeProvider>(provider: &P) -> Result<Registry, UserFeatureEr
     Ok(registry)
 }
 
-pub fn list<P: TreeProvider>(
-    provider: &P,
-) -> Result<Vec<Status>, UserFeatureError> {
+pub fn list<P: TreeProvider>(provider: &P) -> Result<Vec<Status>, UserFeatureError> {
     Ok(registry(provider)?.list(Scope::User))
 }
 
-pub fn status<P: TreeProvider>(
-    provider: &P,
-    key: &str,
-) -> Result<Status, UserFeatureError> {
+pub fn status<P: TreeProvider>(provider: &P, key: &str) -> Result<Status, UserFeatureError> {
     Ok(registry(provider)?.status(key)?)
 }
 
@@ -181,10 +178,7 @@ mod tests {
 
     #[test]
     fn encrypted_profile_persists_user_feature_state() {
-        let dir = std::env::temp_dir().join(format!(
-            "tree-user-features-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("tree-user-features-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("alice.db");
@@ -201,11 +195,7 @@ mod tests {
             drop(client);
         }
         let client = Client::open(&path, "feature-pass").unwrap();
-        let status = status(
-            &client.provider,
-            "user.notification_content",
-        )
-        .unwrap();
+        let status = status(&client.provider, "user.notification_content").unwrap();
         assert_eq!(status.option.as_deref(), Some("name_only"));
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -214,11 +204,7 @@ mod tests {
     fn permanent_security_locks_still_apply() {
         let client = Client::new("alice").unwrap();
         assert!(matches!(
-            release(
-                &client.provider,
-                "chat.e2e",
-                crate::features::Plan::Free
-            ),
+            release(&client.provider, "chat.e2e", crate::features::Plan::Free),
             Err(UserFeatureError::Feature(FeatureError::LockedAlways(_)))
         ));
         assert!(matches!(

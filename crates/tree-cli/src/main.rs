@@ -9,7 +9,7 @@ use ed25519_dalek::{Signer, SigningKey};
 use reqwest::{Method, StatusCode};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use tree_core::{Client, Incoming, StoredProvider};
+use tree_core::{Client, Incoming, RecoveryPhrase, StoredProvider};
 
 const AUTH_CONTEXT: &str = "tree-auth-v1";
 
@@ -30,6 +30,12 @@ enum Command {
     UploadKeys(UploadKeysArgs),
     /// Print local/server identity information.
     Info(ProfileArgs),
+    /// Generate and persist a 24-word recovery phrase locally.
+    RecoveryGenerate(ProfileArgs),
+    /// Register the stored recovery public key with the server.
+    RecoverySetup(NetworkArgs),
+    /// Recover an account into a fresh local profile.
+    Recovery(RecoverArgs),
     /// Create a new local MLS group.
     CreateGroup(ProfileArgs),
     /// Add every available device of an account to a group.
@@ -66,6 +72,23 @@ struct NetworkArgs {
 
 #[derive(Args, Debug)]
 struct InitArgs {
+    #[arg(long)]
+    profile: PathBuf,
+    #[arg(long)]
+    name: String,
+    #[arg(long)]
+    passphrase: Option<String>,
+}
+
+
+#[derive(Args, Debug)]
+struct RecoverArgs {
+    #[arg(long)]
+    server: String,
+    #[arg(long)]
+    account: String,
+    #[arg(long)]
+    phrase: String,
     #[arg(long)]
     profile: PathBuf,
     #[arg(long)]
@@ -226,6 +249,51 @@ impl Api {
                     .map(ToOwned::to_owned)
                     .collect()
             })
+    }
+
+
+    async fn recover(
+        &self,
+        account_id: &str,
+        phrase: &RecoveryPhrase,
+        new_auth_seed: [u8; 32],
+    ) -> Result<(String, String)> {
+        let auth_key = SigningKey::from_bytes(&new_auth_seed);
+        let recovery_key = phrase.recovery_signing_key();
+        let timestamp = now_secs();
+        let nonce = random_hex::<16>();
+        let new_auth_pub = auth_key.verifying_key().to_bytes();
+        let proof_msg = format!(
+            "tree-recovery-v1\n{account_id}\n{timestamp}\n{nonce}\n"
+        );
+        let mut proof_msg = proof_msg.into_bytes();
+        proof_msg.extend_from_slice(&new_auth_pub);
+
+        let body = json!({
+            "account_id": account_id,
+            "recovery_pub": STANDARD.encode(recovery_key.verifying_key().to_bytes()),
+            "new_auth_pub": STANDARD.encode(new_auth_pub),
+            "timestamp": timestamp,
+            "nonce": nonce,
+            "proof": STANDARD.encode(recovery_key.sign(&proof_msg).to_bytes())
+        });
+        let bytes = serde_json::to_vec(&body)?;
+        let resp = self
+            .http
+            .post(self.url("/v1/recovery"))
+            .header("Content-Type", "application/json")
+            .body(bytes)
+            .send()
+            .await
+            .context("recovery request")?;
+        let (status, v) = decode(resp).await?;
+        if status != StatusCode::CREATED {
+            bail!("recovery failed ({status}): {v}");
+        }
+        Ok((
+            required_string(&v, "account_id")?,
+            required_string(&v, "device_id")?,
+        ))
     }
 
     async fn signup(&self, seed: [u8; 32], pow_bits: u32) -> Result<(String, String)> {
@@ -449,6 +517,74 @@ async fn upload_keys(args: UploadKeysArgs) -> Result<()> {
         body.get("stored").and_then(Value::as_u64).unwrap_or(0),
         body.get("count").and_then(Value::as_i64).unwrap_or(-1)
     );
+    Ok(())
+}
+
+
+async fn recovery_generate(args: ProfileArgs) -> Result<()> {
+    let client = open_profile(&args.profile, &args.passphrase)?;
+    if client.recovery_phrase()?.is_some() {
+        bail!("profile already has a recovery phrase");
+    }
+    let phrase = RecoveryPhrase::generate().map_err(|e| anyhow!("generate recovery phrase: {e}"))?;
+    client.set_recovery_phrase(&phrase).map_err(|e| anyhow!("store recovery phrase: {e}"))?;
+    println!("recovery_phrase={}", phrase.phrase());
+    println!("warning=store this phrase offline; it is not sent to the server");
+    Ok(())
+}
+
+async fn recovery_setup(args: NetworkArgs) -> Result<()> {
+    let client = open_profile(&args.profile, &args.passphrase)?;
+    let phrase = client
+        .recovery_phrase()?
+        .ok_or_else(|| anyhow!("profile has no recovery phrase; run recovery-generate first"))?;
+    let api = Api::new(&args.server)?;
+    let (status, body) = api
+        .signed(
+            &client,
+            Method::POST,
+            "/v1/recovery/setup",
+            Some(json!({
+                "recovery_pub": STANDARD.encode(phrase.recovery_public_key())
+            })),
+        )
+        .await?;
+    if !status.is_success() {
+        bail!("recovery setup failed ({status}): {body}");
+    }
+    println!("recovery_pub={}", body["recovery_pub"].as_str().unwrap_or_default());
+    Ok(())
+}
+
+async fn recovery(args: RecoverArgs) -> Result<()> {
+    check_account_id(&args.account)?;
+    let phrase = RecoveryPhrase::from_phrase(&args.phrase)
+        .map_err(|e| anyhow!("invalid recovery phrase: {e}"))?;
+    let password = passphrase(&args.passphrase)?;
+    let client = Client::create(&args.profile, &password, &args.name)
+        .map_err(|e| anyhow!("create recovered profile: {e}"))?;
+    client
+        .set_recovery_phrase(&phrase)
+        .map_err(|e| anyhow!("store recovery phrase: {e}"))?;
+    let mut seed = [0u8; 32];
+    getrandom::getrandom(&mut seed).context("generate new authentication key")?;
+    let api = Api::new(&args.server)?;
+    let (account_id, device_id) = api.recover(&args.account, &phrase, seed).await?;
+    if account_id != args.account {
+        bail!("server returned a different account");
+    }
+    client.set_server_auth_seed(&seed)?;
+    client.set_server_account(&account_id, &device_id)?;
+    println!("account_id={account_id}");
+    println!("device_id={device_id}");
+    println!("warning=new device created; existing MLS groups must be re-added");
+    Ok(())
+}
+
+fn check_account_id(id: &str) -> Result<()> {
+    if id.len() != 22 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+        bail!("account id is not a valid 16-byte base64url identifier");
+    }
     Ok(())
 }
 
@@ -726,6 +862,9 @@ async fn main() -> Result<()> {
         Command::Signup(args) => signup(args).await,
         Command::UploadKeys(args) => upload_keys(args).await,
         Command::Info(args) => info(args).await,
+        Command::RecoveryGenerate(args) => recovery_generate(args).await,
+        Command::RecoverySetup(args) => recovery_setup(args).await,
+        Command::Recovery(args) => recovery(args).await,
         Command::CreateGroup(args) => create_group(args).await,
         Command::Invite(args) => invite(args).await,
         Command::Send(args) => send(args).await,

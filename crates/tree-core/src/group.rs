@@ -130,7 +130,13 @@ impl Group {
     const ENVELOPE_V1: u8 = 1;
     const TAG_LEN: usize = 32;
 
-    pub(crate) fn new(mls: MlsGroup, state: GroupState) -> Self {
+    pub(crate) fn new(mls: MlsGroup, mut state: GroupState) -> Self {
+        if state.admin.is_none() {
+            state.admin = mls
+                .members()
+                .map(|m| MemberId::of(&m.signature_key))
+                .min();
+        }
         Self { mls, state }
     }
 
@@ -182,6 +188,16 @@ impl Group {
 
     // ----- two-phase commits -------------------------------------------------
 
+    /// Returns the current deterministic v1 administrator, if any.
+    pub fn admin_id(&self) -> Option<MemberId> {
+        self.state.admin
+    }
+
+    /// Returns true only for the current deterministic v1 administrator.
+    pub fn is_admin(&self, me: &Client<impl TreeProvider>) -> bool {
+        self.state.admin == Some(me.member_id())
+    }
+
     /// Adds devices by their key packages, in one commit. Adding a person
     /// means adding all of their devices at once. The commit carries no
     /// update path (much smaller in large groups); the adder's own key is
@@ -193,6 +209,9 @@ impl Group {
     ) -> Result<PendingCommit, TreeError> {
         if key_packages.is_empty() {
             return Err(TreeError::Group("nothing to add".into()));
+        }
+        if self.state.admin != Some(me.member_id()) {
+            return Err(TreeError::Rejected("only the group administrator may add members".into()));
         }
         let kps = key_packages
             .iter()
@@ -224,6 +243,9 @@ impl Group {
     ) -> Result<PendingCommit, TreeError> {
         if members.is_empty() {
             return Err(TreeError::Group("nothing to remove".into()));
+        }
+        if self.state.admin != Some(me.member_id()) {
+            return Err(TreeError::Rejected("only the group administrator may remove members".into()));
         }
         let own = me.member_id();
         let mut leaves = Vec::new();
@@ -488,8 +510,9 @@ impl Group {
                 self.mls.merge_staged_commit(&me.provider, *staged).map_err(group_err)?;
                 self.state.pending = None;
                 self.entered_new_epoch(past);
-                self.mark_processed(epoch, hash);
                 self.state.future.retain(|p| p.epoch > self.epoch());
+                self.reconcile_admin();
+                self.mark_processed(epoch, hash);
                 self.save(me)?;
                 if !self.mls.is_active() {
                     return Ok(Incoming::RemovedFromGroup);
@@ -542,6 +565,18 @@ impl Group {
 
     fn save<P: TreeProvider>(&self, me: &Client<P>) -> Result<(), TreeError> {
         me.provider.save_group_state(self.mls.group_id().as_slice(), &self.state.encode())
+    }
+
+    fn reconcile_admin(&mut self) {
+        let current: Vec<MemberId> = self
+            .mls
+            .members()
+            .map(|m| MemberId::of(&m.signature_key))
+            .collect();
+        if self.admin_id().is_none_or(|admin| current.contains(&admin)) {
+            return;
+        }
+        self.state.admin = current.into_iter().min();
     }
 
     fn mark_processed(&mut self, epoch: u64, hash: [u8; 32]) {

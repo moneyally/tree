@@ -12,6 +12,7 @@
 //! file, QR code) can carry them.
 
 pub mod client;
+pub mod crypto_profile;
 pub mod error;
 pub mod features;
 pub mod file;
@@ -23,6 +24,7 @@ pub mod recovery;
 pub mod storage;
 
 pub use client::Client;
+pub use crypto_profile::{combine_secrets, negotiate as negotiate_crypto_profile, CryptoProfile, KemAlgorithm, SignatureAlgorithm};
 pub use error::TreeError;
 pub use group::{Group, Incoming, Member, MemberId, PendingCommit};
 pub use identity::{fingerprint_hex, normalize_username, safety_fingerprint, username_hash};

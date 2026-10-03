@@ -191,10 +191,16 @@ pub async fn create(
     state.rate_device(&req.device.device_id, 3.0)?;
 
     let id = new_id();
+    let bot_account_id = new_id();
     let (token, token_hmac) = new_token(&id, &secret)?;
     let now = now_secs();
 
     let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
+    sqlx::query("INSERT INTO accounts (id, created_day) VALUES (?, ?)")
+        .bind(&bot_account_id)
+        .bind(crate::util::today())
+        .execute(&mut *tx)
+        .await?;
     sqlx::query(
         "INSERT INTO bots
          (id, owner_account_id, name, description, token_hmac, token_issued_at, created_at)
@@ -206,6 +212,15 @@ pub async fn create(
     .bind(req.body.description.trim())
     .bind(&token_hmac[..])
     .bind(now)
+    .bind(now)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO bot_identities (bot_id, account_id, created_at)
+         VALUES (?, ?, ?)",
+    )
+    .bind(&id)
+    .bind(&bot_account_id)
     .bind(now)
     .execute(&mut *tx)
     .await?;
@@ -308,11 +323,25 @@ pub async fn delete(
     req: Signed<crate::auth::NoBody>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let _ = owner_bot(&state, &req.device.account_id, &bot_id).await?;
+    let bot_account_id: String = sqlx::query(
+        "SELECT account_id FROM bot_identities WHERE bot_id = ?",
+    )
+    .bind(&bot_id)
+    .fetch_one(&state.db)
+    .await?
+    .try_get("account_id")?;
+
+    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
     sqlx::query("DELETE FROM bots WHERE id = ? AND owner_account_id = ?")
         .bind(&bot_id)
         .bind(&req.device.account_id)
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await?;
+    sqlx::query("DELETE FROM accounts WHERE id = ?")
+        .bind(&bot_account_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
     Ok(Json(serde_json::json!({"deleted": true, "bot_id": bot_id})))
 }
 
@@ -410,6 +439,114 @@ async fn set_feature(
         feature: feature.to_owned(),
         state: value,
     }))
+}
+
+#[derive(Deserialize)]
+pub struct GatewayDeviceReq {
+    pub auth_pub: String,
+}
+json_body!(GatewayDeviceReq, |_cfg| 1024);
+
+#[derive(Serialize)]
+pub struct GatewayDeviceResp {
+    pub bot_id: String,
+    pub account_id: String,
+    pub device_id: String,
+}
+
+/// POST /v1/bot/register-device
+///
+/// The bot token authenticates the gateway. A fresh Ed25519 public key becomes
+/// the bot's gateway device; the private key remains only with the developer's
+/// gateway.
+pub async fn register_gateway_device(
+    State(state): State<AppState>,
+    req: axum::extract::Request,
+) -> ApiResult<(StatusCode, Json<GatewayDeviceResp>)> {
+    let headers = req.headers().clone();
+    let identity = authenticate_token(&state, &headers).await?;
+    let bytes = crate::auth::read_body(req, 2048).await?.1;
+    let body: GatewayDeviceReq = crate::auth::parse_json(&bytes)?;
+    let (_key, raw) = crate::auth::parse_public_key(&body.auth_pub)?;
+
+    if let Some(existing) = &identity.gateway_device_id {
+        return Ok((
+            StatusCode::OK,
+            Json(GatewayDeviceResp {
+                bot_id: identity.id,
+                account_id: identity.account_id,
+                device_id: existing.clone(),
+            }),
+        ));
+    }
+
+    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
+    let account = identity.account_id.clone();
+    let device_id = crate::util::new_id();
+    sqlx::query(
+        "INSERT INTO devices (id, account_id, auth_pub, created_day)
+         VALUES (?, ?, ?, ?)",
+    )
+    .bind(&device_id)
+    .bind(&account)
+    .bind(&raw[..])
+    .bind(crate::util::today())
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "UPDATE bot_identities SET gateway_device_id = ? WHERE bot_id = ?",
+    )
+    .bind(&device_id)
+    .bind(&identity.id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(GatewayDeviceResp {
+            bot_id: identity.id,
+            account_id: account,
+            device_id,
+        }),
+    ))
+}
+
+/// POST /v1/bot/getMe
+pub async fn get_me(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> ApiResult<Json<BotSummary>> {
+    let identity = authenticate_token(&state, &headers).await?;
+    let row = sqlx::query(
+        "SELECT id, owner_account_id, name, description, privacy_mode, join_groups,
+                inline_mode, directory_listed, directory_review, created_at
+         FROM bots WHERE id = ?",
+    )
+    .bind(&identity.id)
+    .fetch_one(&state.db)
+    .await?;
+    Ok(Json(row_to_summary(&row)?))
+}
+
+/// GET /v1/bot/commands
+pub async fn bot_commands(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> ApiResult<Json<CommandsResp>> {
+    let identity = authenticate_token(&state, &headers).await?;
+    let row = sqlx::query("SELECT commands_json FROM bot_commands WHERE bot_id = ?")
+        .bind(&identity.id)
+        .fetch_optional(&state.db)
+        .await?;
+    let commands = match row {
+        None => Vec::new(),
+        Some(row) => {
+            let encoded: String = row.try_get("commands_json")?;
+            serde_json::from_str(&encoded).map_err(|_| ApiError::internal())?
+        }
+    };
+    Ok(Json(CommandsResp { commands }))
 }
 
 /// POST /v1/bots/{bot_id}/features/{feature}/apply
@@ -515,21 +652,34 @@ pub async fn authenticate_token(
         .map(|(id, _)| id)
         .ok_or_else(|| ApiError::unauthorized("invalid bot token"))?;
     check_id(bot_id, "bot id")?;
-    let stored: Option<Vec<u8>> = sqlx::query("SELECT token_hmac FROM bots WHERE id = ?")
-        .bind(bot_id)
-        .fetch_optional(&state.db)
-        .await?
-        .map(|row| row.try_get("token_hmac"))
-        .transpose()?;
+    let row = sqlx::query(
+        "SELECT b.token_hmac, bi.account_id, bi.gateway_device_id
+         FROM bots b JOIN bot_identities bi ON bi.bot_id = b.id
+         WHERE b.id = ?",
+    )
+    .bind(bot_id)
+    .fetch_optional(&state.db)
+    .await?;
+    let row = row.ok_or_else(|| ApiError::unauthorized("invalid bot token"))?;
+    let stored: Vec<u8> = row.try_get("token_hmac")?
+        .ok_or_else(|| ApiError::unauthorized("invalid bot token"))?;
+    let account_id: String = row.try_get("account_id")?;
+    let gateway_device_id: Option<String> = row.try_get("gateway_device_id")?;
     let stored = stored.ok_or_else(|| ApiError::unauthorized("invalid bot token"))?;
     let expected = token_hmac(&secret, token.as_bytes())?;
     if expected.len() != stored.len() || subtle::ConstantTimeEq::ct_eq(expected.as_slice(), stored.as_slice()).unwrap_u8() != 1 {
         return Err(ApiError::unauthorized("invalid bot token"));
     }
-    Ok(BotIdentity { id: bot_id.to_owned() })
+    Ok(BotIdentity {
+        id: bot_id.to_owned(),
+        account_id,
+        gateway_device_id,
+    })
 }
 
 #[derive(Clone, Debug)]
 pub struct BotIdentity {
     pub id: String,
+    pub account_id: String,
+    pub gateway_device_id: Option<String>,
 }

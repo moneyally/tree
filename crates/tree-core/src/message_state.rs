@@ -14,6 +14,7 @@ use crate::{
 const VERSION: u8 = 1;
 const MAX_RECORDS: usize = 4096;
 const MAX_PENDING: usize = 256;
+const MAX_PENDING_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SENDERS: usize = 4096;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -87,11 +88,27 @@ impl MessageLedger {
         self.records.iter_mut().find(|r| r.id == id)
     }
 
-    pub fn queue_pending(&mut self, mutation: PendingMutation) {
-        if self.pending.len() >= MAX_PENDING {
+    pub fn queue_pending(&mut self, mutation: PendingMutation) -> Result<(), TreeError> {
+        let encoded_len = mutation.event.encode()?.len() + 32;
+        if encoded_len > MAX_PENDING_BYTES {
+            return Err(TreeError::Group("pending message operation is too large".into()));
+        }
+        let mut pending_bytes = self
+            .pending
+            .iter()
+            .filter_map(|m| m.event.encode().ok().map(|b| b.len() + 32))
+            .sum::<usize>();
+        while self.pending.len() >= MAX_PENDING || pending_bytes.saturating_add(encoded_len) > MAX_PENDING_BYTES
+        {
+            if let Some(old) = self.pending.first() {
+                pending_bytes = pending_bytes.saturating_sub(
+                    old.event.encode().map(|b| b.len() + 32).unwrap_or(MAX_PENDING_BYTES)
+                );
+            }
             self.pending.remove(0);
         }
         self.pending.push(mutation);
+        Ok(())
     }
 
     pub fn take_pending_for(&mut self, target: MessageId) -> Vec<PendingMutation> {

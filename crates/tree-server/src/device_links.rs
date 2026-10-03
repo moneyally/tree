@@ -437,13 +437,11 @@ async fn finalize_if_ready(state: &AppState, link_id: &str) -> ApiResult<(bool, 
     .await?
     .map(|row| row.try_get("id"))
     .transpose()?;
-    if let Some(existing) = exists {
-        sqlx::query("UPDATE device_link_sessions SET used = 1 WHERE id = ?")
-            .bind(link_id)
-            .execute(&mut *tx)
-            .await?;
-        tx.commit().await?;
-        return Ok((false, existing));
+    if exists.is_some() {
+        return Err(ApiError::conflict(
+            "ALREADY_EXISTS",
+            "this authentication key is already registered",
+        ));
     }
 
     let count: i64 = sqlx::query(

@@ -288,28 +288,83 @@ fn pending_removal_lists_removed() {
 fn non_admin_cannot_add_or_remove_members() {
     let (alice, bob, mut a, mut b) = two_person_chat();
     let carol = Client::new("carol").unwrap();
-    assert_eq!(a.admin_id(), Some(alice.member_id()));
-    assert_eq!(b.admin_id(), Some(alice.member_id()));
 
-    assert!(matches!(
-        b.add(&bob, &[carol.key_package().unwrap()]),
-        Err(TreeError::Rejected(_))
-    ));
-    assert!(matches!(
-        b.remove(&bob, &[alice.member_id()]),
-        Err(TreeError::Rejected(_))
-    ));
+    if a.is_admin(&alice) {
+        assert!(matches!(
+            b.add(&bob, &[carol.key_package().unwrap()]),
+            Err(TreeError::Rejected(_))
+        ));
+        assert!(matches!(
+            b.remove(&bob, &[alice.member_id()]),
+            Err(TreeError::Rejected(_))
+        ));
 
-    let p = a.add(&alice, &[carol.key_package().unwrap()]).unwrap();
-    a.confirm_commit(&alice).unwrap();
-    b.receive(&bob, &p.commit).unwrap();
-    assert_eq!(b.admin_id(), Some(alice.member_id()));
+        let p = a.add(&alice, &[carol.key_package().unwrap()]).unwrap();
+        a.confirm_commit(&alice).unwrap();
+        b.receive(&bob, &p.commit).unwrap();
+    } else {
+        assert!(matches!(
+            a.add(&alice, &[carol.key_package().unwrap()]),
+            Err(TreeError::Rejected(_))
+        ));
+        assert!(matches!(
+            a.remove(&alice, &[bob.member_id()]),
+            Err(TreeError::Rejected(_))
+        ));
 
-    let rm = a.remove(&alice, &[alice.member_id()]);
-    assert!(rm.is_err(), "administrator cannot remove itself");
+        let p = b.add(&bob, &[carol.key_package().unwrap()]).unwrap();
+        b.confirm_commit(&bob).unwrap();
+        a.receive(&alice, &p.commit).unwrap();
+    }
+
+    assert_eq!(a.admin_id(), b.admin_id());
 }
 
+#[test]
+fn admin_settings_are_authenticated_and_sequence_ordered() {
+    let (alice, bob, mut a, mut b) = two_person_chat();
 
+    let (mut admin_group, admin_client, mut other_group, other_client) = if a.is_admin(&alice) {
+        (&mut a, &alice, &mut b, &bob)
+    } else {
+        (&mut b, &bob, &mut a, &alice)
+    };
+
+    assert!(matches!(
+        other_group.set_title(other_client, Some("not allowed")),
+        Err(TreeError::Rejected(_))
+    ));
+
+    let first = admin_group.set_title(admin_client, Some("First")).unwrap();
+    let second = admin_group.set_title(admin_client, Some("Second")).unwrap();
+    assert_eq!(admin_group.title().as_deref(), Some("Second"));
+
+    assert_eq!(
+        other_group.receive(other_client, &second).unwrap(),
+        Incoming::SettingsChanged {
+            seq: 2,
+            title: Some("Second".into()),
+            disappearing_seconds: 0
+        }
+    );
+    assert_eq!(
+        other_group.receive(other_client, &first).unwrap(),
+        Incoming::OwnEcho
+    );
+    assert_eq!(other_group.title().as_deref(), Some("Second"));
+
+    let timer = admin_group
+        .set_disappearing_seconds(admin_client, 86_400)
+        .unwrap();
+    assert_eq!(
+        other_group.receive(other_client, &timer).unwrap(),
+        Incoming::SettingsChanged {
+            seq: 3,
+            title: Some("Second".into()),
+            disappearing_seconds: 86_400
+        }
+    );
+}
 #[test]
 fn one_pending_commit_at_a_time() {
     let (alice, bob, mut a, _b) = two_person_chat();

@@ -7,7 +7,7 @@
 use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::Json;
-use base64::engine::general_purpose::{URL_SAFE_NO_PAD, STANDARD};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
@@ -362,15 +362,16 @@ fn feature_column(feature: &str) -> Option<&'static str> {
     }
 }
 
-/// POST /v1/bots/{bot_id}/features/{feature}/apply
-/// POST /v1/bots/{bot_id}/features/{feature}/release
-pub async fn feature(
-    State(state): State<AppState>,
-    Path((bot_id, feature)): Path<(String, String)>,
-    req: Signed<FeatureReq>,
+/// Common bot feature state mutation.
+async fn set_feature(
+    state: &AppState,
+    account_id: &str,
+    bot_id: &str,
+    feature: &str,
+    value: bool,
 ) -> ApiResult<Json<FeatureResp>> {
-    let _ = owner_bot(&state, &req.device.account_id, &bot_id).await?;
-    let column = match feature_column(&feature) {
+    let _ = owner_bot(state, account_id, bot_id).await?;
+    let column = match feature_column(feature) {
         Some(c) => c,
         None if feature == "bot.payments" || feature == "bot.tips" => {
             return Err(ApiError::new(
@@ -382,9 +383,9 @@ pub async fn feature(
         None => return Err(ApiError::not_found("unknown bot feature")),
     };
 
-    if feature == "bot.directory" && req.body.state {
+    if feature == "bot.directory" && value {
         let reviewed: String = sqlx::query("SELECT directory_review FROM bots WHERE id = ?")
-            .bind(&bot_id)
+            .bind(bot_id)
             .fetch_one(&state.db)
             .await?
             .try_get("directory_review")?;
@@ -396,22 +397,37 @@ pub async fn feature(
         }
     }
 
-    let value = i64::from(req.body.state);
-    let query = format!(
-        "UPDATE bots SET {column} = ? WHERE id = ? AND owner_account_id = ?"
-    );
-    sqlx::query(&query)
-        .bind(value)
-        .bind(&bot_id)
-        .bind(&req.device.account_id)
+    let sql = format!("UPDATE bots SET {column} = ? WHERE id = ? AND owner_account_id = ?");
+    sqlx::query(&sql)
+        .bind(i64::from(value))
+        .bind(bot_id)
+        .bind(account_id)
         .execute(&state.db)
         .await?;
 
     Ok(Json(FeatureResp {
-        bot_id,
-        feature,
-        state: req.body.state,
+        bot_id: bot_id.to_owned(),
+        feature: feature.to_owned(),
+        state: value,
     }))
+}
+
+/// POST /v1/bots/{bot_id}/features/{feature}/apply
+pub async fn feature_apply(
+    State(state): State<AppState>,
+    Path((bot_id, feature)): Path<(String, String)>,
+    req: Signed<crate::auth::NoBody>,
+) -> ApiResult<Json<FeatureResp>> {
+    set_feature(&state, &req.device.account_id, &bot_id, &feature, true).await
+}
+
+/// POST /v1/bots/{bot_id}/features/{feature}/release
+pub async fn feature_release(
+    State(state): State<AppState>,
+    Path((bot_id, feature)): Path<(String, String)>,
+    req: Signed<crate::auth::NoBody>,
+) -> ApiResult<Json<FeatureResp>> {
+    set_feature(&state, &req.device.account_id, &bot_id, &feature, false).await
 }
 
 /// PUT /v1/bots/{bot_id}/commands

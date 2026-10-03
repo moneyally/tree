@@ -182,6 +182,146 @@ fn commitment(key: &FileKey, nonce: &[u8; NONCE_LEN], aad: &[u8], ciphertext: &[
     h.finalize().into()
 }
 
+
+const SHARE_MAGIC: &[u8] = b"TREEFSHARE\x01";
+const MAX_FILE_ID: usize = 64;
+const MAX_FILENAME: usize = 255;
+const MAX_MIME: usize = 127;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileShare {
+    pub file_id: String,
+    pub capability: [u8; CAP_BYTES],
+    pub file_key: FileKey,
+    pub ciphertext_sha256: [u8; COMMIT_LEN],
+    pub plaintext_size: u64,
+    pub filename: String,
+    pub mime: String,
+}
+
+impl FileShare {
+    pub fn encode(&self) -> Result<Vec<u8>, TreeError> {
+        validate_file_id(&self.file_id)?;
+        if self.filename.as_bytes().len() > MAX_FILENAME {
+            return Err(TreeError::FileCrypto("filename is too long".into()));
+        }
+        if self.mime.as_bytes().len() > MAX_MIME || !self.mime.is_ascii() {
+            return Err(TreeError::FileCrypto("mime type is invalid".into()));
+        }
+        let mut out = Vec::with_capacity(256);
+        out.extend_from_slice(SHARE_MAGIC);
+        put_u8_string(&mut out, &self.file_id)?;
+        out.extend_from_slice(&self.capability);
+        out.extend_from_slice(self.file_key.as_bytes());
+        out.extend_from_slice(&self.ciphertext_sha256);
+        out.extend_from_slice(&self.plaintext_size.to_be_bytes());
+        put_u16_string(&mut out, &self.filename)?;
+        put_u16_string(&mut out, &self.mime)?;
+        Ok(out)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, TreeError> {
+        if !bytes.starts_with(SHARE_MAGIC) {
+            return Err(TreeError::Malformed("not a Tree file share".into()));
+        }
+        let mut r = ShareReader(&bytes[SHARE_MAGIC.len()..]);
+        let file_id = r.string()?;
+        validate_file_id(&file_id)?;
+        let capability: [u8; CAP_BYTES] = r
+            .take(CAP_BYTES)?
+            .try_into()
+            .map_err(|_| TreeError::Malformed("bad file capability".into()))?;
+        let key = FileKey::from_bytes(r.take(KEY_LEN)?)?;
+        let ciphertext_sha256: [u8; COMMIT_LEN] = r
+            .take(COMMIT_LEN)?
+            .try_into()
+            .map_err(|_| TreeError::Malformed("bad file hash".into()))?;
+        let plaintext_size = r.u64()?;
+        let filename = r.string()?;
+        if filename.as_bytes().len() > MAX_FILENAME {
+            return Err(TreeError::Malformed("filename is too long".into()));
+        }
+        let mime = r.string()?;
+        if mime.as_bytes().len() > MAX_MIME || !mime.is_ascii() {
+            return Err(TreeError::Malformed("mime type is invalid".into()));
+        }
+        if !r.0.is_empty() {
+            return Err(TreeError::Malformed("trailing bytes in file share".into()));
+        }
+        Ok(Self {
+            file_id,
+            capability,
+            file_key: key,
+            ciphertext_sha256,
+            plaintext_size,
+            filename,
+            mime,
+        })
+    }
+}
+
+fn put_u8_string(out: &mut Vec<u8>, value: &str) -> Result<(), TreeError> {
+    if value.len() > u8::MAX as usize {
+        return Err(TreeError::FileCrypto("string is too long".into()));
+    }
+    out.push(value.len() as u8);
+    out.extend_from_slice(value.as_bytes());
+    Ok(())
+}
+
+fn put_u16_string(out: &mut Vec<u8>, value: &str) -> Result<(), TreeError> {
+    if value.len() > u16::MAX as usize {
+        return Err(TreeError::FileCrypto("string is too long".into()));
+    }
+    out.extend_from_slice(&(value.len() as u16).to_be_bytes());
+    out.extend_from_slice(value.as_bytes());
+    Ok(())
+}
+
+fn validate_file_id(file_id: &str) -> Result<(), TreeError> {
+    if file_id.is_empty()
+        || file_id.len() > MAX_FILE_ID
+        || !file_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return Err(TreeError::Malformed("invalid file id".into()));
+    }
+    Ok(())
+}
+
+struct ShareReader<'a>(&'a [u8]);
+
+impl ShareReader<'_> {
+    fn take(&mut self, n: usize) -> Result<&[u8], TreeError> {
+        if self.0.len() < n {
+            return Err(TreeError::Malformed("truncated file share".into()));
+        }
+        let (head, rest) = self.0.split_at(n);
+        self.0 = rest;
+        Ok(head)
+    }
+
+    fn string(&mut self) -> Result<String, TreeError> {
+        let len = self.take(1)?[0] as usize;
+        String::from_utf8(self.take(len)?.to_vec())
+            .map_err(|_| TreeError::Malformed("file share string is not UTF-8".into()))
+    }
+
+    fn u64(&mut self) -> Result<u64, TreeError> {
+        Ok(u64::from_be_bytes(
+            self.take(8)?.try_into().expect("length checked"),
+        ))
+    }
+}
+
+pub fn media_aad(group_id: &[u8]) -> Vec<u8> {
+    let mut aad = Vec::with_capacity(24);
+    aad.extend_from_slice(b"tree-media-v1\n");
+    aad.extend_from_slice(group_id);
+    aad
+}
+
 fn validate_aad(aad: &[u8]) -> Result<(), TreeError> {
     if aad.len() > MAX_AAD {
         return Err(TreeError::FileCrypto("file AAD is too large".into()));
@@ -222,6 +362,29 @@ mod tests {
         let mut enc = encrypt(&key, b"aad", b"secret").unwrap();
         enc.key_commitment[0] ^= 1;
         assert!(decrypt(&key, b"aad", &enc).is_err());
+    }
+
+    #[test]
+    fn file_share_round_trips() {
+        let key = FileKey::generate().unwrap();
+        let share = FileShare {
+            file_id: "ABCDEFGHIJKLMNOPQRSTUV".into(),
+            capability: [3u8; CAP_BYTES],
+            file_key: key,
+            ciphertext_sha256: [4u8; COMMIT_LEN],
+            plaintext_size: 123,
+            filename: "photo.jpg".into(),
+            mime: "image/jpeg".into(),
+        };
+        let bytes = share.encode().unwrap();
+        let decoded = FileShare::decode(&bytes).unwrap();
+        assert_eq!(decoded.file_id, share.file_id);
+        assert_eq!(decoded.capability, share.capability);
+        assert_eq!(decoded.file_key.as_bytes(), share.file_key.as_bytes());
+        assert_eq!(decoded.ciphertext_sha256, share.ciphertext_sha256);
+        assert_eq!(decoded.plaintext_size, 123);
+        assert_eq!(decoded.filename, "photo.jpg");
+        assert_eq!(decoded.mime, "image/jpeg");
     }
 
     #[test]

@@ -50,9 +50,13 @@ async fn recovery_adds_a_new_device_and_rejects_replay() {
         .send()
         .await
         .unwrap();
-    let (st, v) = decode(first).await;
-    assert_eq!(st, reqwest::StatusCode::CREATED, "{v}");
-    assert_eq!(v["account_id"].as_str(), Some(alice.account_id.as_str()));
+    let (st, first_body) = decode(first).await;
+    assert_eq!(st, reqwest::StatusCode::CREATED, "{first_body}");
+    assert_eq!(
+        first_body["account_id"].as_str(),
+        Some(alice.account_id.as_str())
+    );
+    let recovered_device_id = first_body["device_id"].as_str().unwrap().to_string();
 
     let second = api
         .http

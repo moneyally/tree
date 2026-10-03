@@ -243,10 +243,6 @@ pub struct InitiatorConfirmReq {
 }
 json_body!(InitiatorConfirmReq, |_cfg| 256);
 
-fn confirm_message(link_id: &str, code: &str) -> Vec<u8> {
-    format!("{CONFIRM_CONTEXT}\n{link_id}\n{code}\n").into_bytes()
-}
-
 fn validate_code(code: &str) -> ApiResult<()> {
     if code.len() != 6 || !code.bytes().all(|b| b.is_ascii_digit()) {
         return Err(ApiError::bad_request("verification code must be six digits"));

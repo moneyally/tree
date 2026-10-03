@@ -574,13 +574,7 @@ impl Group {
                 .members()
                 .map(|m| MemberId::of(&m.signature_key))
                 .collect::<Vec<_>>();
-            apply_control_state(
-                &mut self.state,
-                seq,
-                me.member_id(),
-                &control,
-                &members,
-            )?;
+            apply_control_state(&mut self.state, seq, me.member_id(), &control, &members)?;
             self.state.last_control_seq = seq;
             self.state.last_control_author = Some(me.member_id());
             self.save(me)?;

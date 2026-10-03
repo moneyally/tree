@@ -473,6 +473,29 @@ fn admin_settings_are_authenticated_and_sequence_ordered() {
     );
 }
 #[test]
+fn concurrent_admin_controls_on_different_settings_converge() {
+    let (alice, bob, mut a, mut b) = two_person_chat();
+
+    let add_admin = a.add_admin(&alice, bob.member_id()).unwrap();
+    b.receive(&bob, &add_admin).unwrap();
+    assert!(a.is_admin(&alice));
+    assert!(b.is_admin(&bob));
+
+    let title = a.set_title(&alice, Some("A")).unwrap();
+    let timer = b.set_disappearing_seconds(&bob, 3600).unwrap();
+
+    // Both controls were created from the same local control sequence.
+    // Deliver them in opposite orders; both settings must converge.
+    a.receive(&alice, &timer).unwrap();
+    b.receive(&bob, &title).unwrap();
+
+    assert_eq!(a.title(), Some("A".to_string()));
+    assert_eq!(b.title(), Some("A".to_string()));
+    assert_eq!(a.disappearing_seconds(), 3600);
+    assert_eq!(b.disappearing_seconds(), 3600);
+}
+
+#[test]
 fn one_pending_commit_at_a_time() {
     let (alice, bob, mut a, _b) = two_person_chat();
     let first = a.refresh_keys(&alice).unwrap();

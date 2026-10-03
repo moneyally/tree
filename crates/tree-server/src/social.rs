@@ -438,6 +438,20 @@ pub async fn report(
     if header.group_id != group_id.as_slice() {
         return Err(ApiError::bad_request("group_id does not match evidence"));
     }
+    let member = sqlx::query(
+        "SELECT 1 FROM group_devices WHERE group_id = ? AND device_id = ?",
+    )
+    .bind(&group_id)
+    .bind(&req.device.device_id)
+    .fetch_optional(&state.db)
+    .await?
+    .is_some();
+    if !member {
+        return Err(ApiError::forbidden(
+            "NOT_ELIGIBLE",
+            "reporter is not a member of this group",
+        ));
+    }
 
     let id = crate::util::new_id();
     let evidence_hash: [u8; 32] = Sha256::digest(&evidence).into();

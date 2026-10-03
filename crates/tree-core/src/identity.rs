@@ -79,7 +79,10 @@ mod tests {
     #[test]
     fn username_normalization_is_canonical() {
         assert_eq!(normalize_username("Alice_01").unwrap(), "alice_01");
-        assert_eq!(username_hash("Alice").unwrap(), username_hash("alice").unwrap());
+        assert_eq!(
+            username_hash("Alice").unwrap(),
+            username_hash("alice").unwrap()
+        );
         assert!(normalize_username("ab").is_err());
         assert!(normalize_username("1alice").is_err());
         assert!(normalize_username("alice-01").is_err());

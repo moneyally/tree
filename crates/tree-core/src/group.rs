@@ -851,62 +851,62 @@ impl Group {
             return Ok(Incoming::OwnEcho);
         }
         let now = unix_now();
-        self.state.prune_future(now);
 
         // Read only enough of the MLS message to learn its epoch. No MLS
         // state is touched until the Tree envelope seal is verified.
         let announced = peek_epoch(bytes, self.mls.group_id().as_slice())?;
-        if announced > self.epoch() {
-            if !self
-                .state
-                .future
-                .iter()
-                .any(|p| bool::from(sha256(&p.bytes).ct_eq(&hash)))
-            {
-                self.state.future.push(PendingEnvelope {
-                    epoch: announced,
-                    received_at: now,
-                    bytes: bytes.to_vec(),
-                });
-                self.state.prune_future(now);
-                self.save(me)?;
+        self.atomic(me, |this| {
+            this.state.prune_future(now);
+            if announced > this.epoch() {
+                if !this
+                    .state
+                    .future
+                    .iter()
+                    .any(|p| bool::from(sha256(&p.bytes).ct_eq(&hash)))
+                {
+                    this.state.future.push(PendingEnvelope {
+                        epoch: announced,
+                        received_at: now,
+                        bytes: bytes.to_vec(),
+                    });
+                    this.state.prune_future(now);
+                    this.save(me)?;
+                }
+                return Ok(Incoming::HeldForRetry { epoch: announced });
             }
-            return Ok(Incoming::HeldForRetry { epoch: announced });
-        }
 
-        // Checked before anything is written.
-        let (epoch, body) = self.open_envelope(me, bytes)?;
-        let msg = MlsMessageIn::tls_deserialize_exact(body)
-            .map_err(|e| TreeError::Malformed(format!("{e:?}")))?;
-        let protocol = msg
-            .try_into_protocol_message()
-            .map_err(|_| TreeError::Malformed("not a group message".into()))?;
-        if protocol.wire_format() != WireFormat::PrivateMessage {
-            return Err(TreeError::Rejected(
-                "only private messages are accepted".into(),
-            ));
-        }
-        if protocol.group_id().as_slice() != self.mls.group_id().as_slice()
-            || protocol.epoch().as_u64() != epoch
-        {
-            return Err(TreeError::Rejected(
-                "header does not match the envelope".into(),
-            ));
-        }
-        match protocol.content_type() {
-            ContentType::Application => {}
-            ContentType::Commit if epoch == self.epoch() => {}
-            ContentType::Commit => {
-                return Err(TreeError::Rejected("commit for a past epoch".into()))
-            }
-            ContentType::Proposal => {
+            let (epoch, body) = this.open_envelope(me, bytes)?;
+            let msg = MlsMessageIn::tls_deserialize_exact(body)
+                .map_err(|e| TreeError::Malformed(format!("{e:?}")))?;
+            let protocol = msg
+                .try_into_protocol_message()
+                .map_err(|_| TreeError::Malformed("not a group message".into()))?;
+            if protocol.wire_format() != WireFormat::PrivateMessage {
                 return Err(TreeError::Rejected(
-                    "proposals are not accepted in Tree v1 (F-007)".into(),
-                ))
+                    "only private messages are accepted".into(),
+                ));
             }
-        }
-        me.provider
-            .atomically(|| self.process(me, protocol, epoch, hash))
+            if protocol.group_id().as_slice() != this.mls.group_id().as_slice()
+                || protocol.epoch().as_u64() != epoch
+            {
+                return Err(TreeError::Rejected(
+                    "header does not match the envelope".into(),
+                ));
+            }
+            match protocol.content_type() {
+                ContentType::Application => {}
+                ContentType::Commit if epoch == this.epoch() => {}
+                ContentType::Commit => {
+                    return Err(TreeError::Rejected("commit for a past epoch".into()))
+                }
+                ContentType::Proposal => {
+                    return Err(TreeError::Rejected(
+                        "proposals are not accepted in Tree v1 (F-007)".into(),
+                    ))
+                }
+            }
+            this.process(me, protocol, epoch, hash)
+        })
     }
 
     fn process<P: TreeProvider>(

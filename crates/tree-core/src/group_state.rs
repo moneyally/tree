@@ -20,7 +20,7 @@ use zeroize::Zeroizing;
 
 use crate::{error::TreeError, group::MemberId, message_state::MessageLedger};
 
-const VERSION: u8 = 7;
+const VERSION: u8 = 8;
 
 /// A commit this device created that the server has not accepted yet.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,8 +72,13 @@ pub(crate) struct GroupState {
     pub title: Option<String>,
     pub disappearing_seconds: u32,
     pub last_control_seq: u64,
-    /// Deterministic author tie-breaker for concurrent controls at the same sequence.
+    /// Global metadata tag for the greatest control seen.
     pub last_control_author: Option<MemberId>,
+    /// Per-setting deterministic ordering tags.
+    pub title_tag: Option<(u64, MemberId)>,
+    pub disappearing_tag: Option<(u64, MemberId)>,
+    /// Per-target ordering tags for admin changes.
+    pub admin_tags: Vec<(MemberId, u64, MemberId)>,
     /// Bounded metadata needed for structured message authorization/replay.
     pub messages: MessageLedger,
 }
@@ -160,6 +165,28 @@ impl GroupState {
                 out.push(1);
                 out.extend_from_slice(id.as_bytes());
             }
+        }
+        match self.title_tag {
+            None => out.push(0),
+            Some((seq, id)) => {
+                out.push(1);
+                out.extend_from_slice(&seq.to_be_bytes());
+                out.extend_from_slice(id.as_bytes());
+            }
+        }
+        match self.disappearing_tag {
+            None => out.push(0),
+            Some((seq, id)) => {
+                out.push(1);
+                out.extend_from_slice(&seq.to_be_bytes());
+                out.extend_from_slice(id.as_bytes());
+            }
+        }
+        out.extend_from_slice(&(self.admin_tags.len() as u16).to_be_bytes());
+        for (target, seq, author) in &self.admin_tags {
+            out.extend_from_slice(target.as_bytes());
+            out.extend_from_slice(&seq.to_be_bytes());
+            out.extend_from_slice(author.as_bytes());
         }
         let messages = self.messages.encode()?;
         put_bytes(&mut out, &messages);
@@ -273,6 +300,29 @@ impl GroupState {
         } else {
             None
         };
+        let (title_tag, disappearing_tag, admin_tags) = if version >= 8 {
+            let title_tag = match r.u8()? {
+                0 => None,
+                1 => Some((r.u64()?, MemberId(r.array()?))),
+                _ => return Err(damaged()),
+            };
+            let disappearing_tag = match r.u8()? {
+                0 => None,
+                1 => Some((r.u64()?, MemberId(r.array()?))),
+                _ => return Err(damaged()),
+            };
+            let count = r.u16()? as usize;
+            if count > 2048 {
+                return Err(damaged());
+            }
+            let mut admin_tags = Vec::with_capacity(count);
+            for _ in 0..count {
+                admin_tags.push((MemberId(r.array()?), r.u64()?, MemberId(r.array()?)));
+            }
+            (title_tag, disappearing_tag, admin_tags)
+        } else {
+            (None, None, Vec::new())
+        };
         let messages = if version >= 6 {
             let encoded = r.bytes()?;
             crate::message_state::MessageLedger::decode(&encoded)?
@@ -294,6 +344,9 @@ impl GroupState {
             disappearing_seconds,
             last_control_seq,
             last_control_author,
+            title_tag,
+            disappearing_tag,
+            admin_tags,
             messages,
         })
     }
@@ -377,6 +430,9 @@ mod tests {
             disappearing_seconds: 86400,
             last_control_seq: 12,
             last_control_author: Some(MemberId([2; 32])),
+            title_tag: Some((12, MemberId([2; 32]))),
+            disappearing_tag: Some((11, MemberId([3; 32]))),
+            admin_tags: vec![(MemberId([2; 32]), 10, MemberId([3; 32]))],
             messages: MessageLedger {
                 next_seq: 4,
                 sender_seq: vec![(MemberId([8; 32]), 9)],
@@ -428,7 +484,7 @@ mod tests {
         let _ = ledger_len;
         // Build a clean v5 fixture from the prefix before the version-6
         // message-ledger length/data suffix.
-        let suffix_len = 1 + 32 + 4 + sample().messages.encode().unwrap().len();
+        let suffix_len = 1 + 8 + 32 + 8 + 32 + 2 + (32 + 8 + 32) + 4 + sample().messages.encode().unwrap().len();
         v5.truncate(msg_len - suffix_len);
         v5[0] = 5;
         let decoded = GroupState::decode(&v5).unwrap();

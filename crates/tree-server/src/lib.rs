@@ -28,6 +28,7 @@ pub mod limits;
 pub mod messages;
 pub mod util;
 pub mod wire;
+pub mod ws;
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -199,6 +200,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/reports", post(social::report))
         .route("/v1/files", post(files::upload))
         .route("/v1/files/{file_id}", get(files::download))
+        .route("/v1/ws", get(ws::connect))
         .route("/v1/recovery/setup", post(recovery::setup))
         .route("/v1/recovery", post(recovery::recover))
         .route("/v1/keypackages/claim", post(keypackages::claim))

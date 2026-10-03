@@ -18,9 +18,14 @@ fn rejected_with(r: &Result<Incoming, TreeError>, what: &str) -> bool {
 #[test]
 fn out_of_order_within_tolerance() {
     let (alice, bob, mut a, mut b) = two_person_chat();
-    let msgs: Vec<Vec<u8>> = (0..20).map(|i| a.send(&alice, format!("m{i}").as_bytes()).unwrap()).collect();
+    let msgs: Vec<Vec<u8>> = (0..20)
+        .map(|i| a.send(&alice, format!("m{i}").as_bytes()).unwrap())
+        .collect();
     for (i, m) in msgs.iter().enumerate().rev() {
-        assert!(is_message(&b.receive(&bob, m), format!("m{i}").as_bytes()), "m{i} lost");
+        assert!(
+            is_message(&b.receive(&bob, m), format!("m{i}").as_bytes()),
+            "m{i} lost"
+        );
     }
 }
 
@@ -31,13 +36,24 @@ fn out_of_order_within_tolerance() {
 #[test]
 fn out_of_order_tolerance_boundary() {
     let (alice, bob, mut a, mut b) = two_person_chat();
-    let msgs: Vec<Vec<u8>> = (0..34).map(|i| a.send(&alice, format!("m{i}").as_bytes()).unwrap()).collect();
+    let msgs: Vec<Vec<u8>> = (0..34)
+        .map(|i| a.send(&alice, format!("m{i}").as_bytes()).unwrap())
+        .collect();
     assert!(is_message(&b.receive(&bob, &msgs[33]), b"m33"));
     for (i, m) in msgs.iter().enumerate().take(33).skip(2) {
-        assert!(is_message(&b.receive(&bob, m), format!("m{i}").as_bytes()), "m{i} lost");
+        assert!(
+            is_message(&b.receive(&bob, m), format!("m{i}").as_bytes()),
+            "m{i} lost"
+        );
     }
-    assert!(matches!(b.receive(&bob, &msgs[1]), Err(TreeError::Rejected(_))));
-    assert!(matches!(b.receive(&bob, &msgs[0]), Err(TreeError::Rejected(_))));
+    assert!(matches!(
+        b.receive(&bob, &msgs[1]),
+        Err(TreeError::Rejected(_))
+    ));
+    assert!(matches!(
+        b.receive(&bob, &msgs[0]),
+        Err(TreeError::Rejected(_))
+    ));
 }
 
 /// The receiver will not derive keys more than 1000 messages ahead.
@@ -49,7 +65,10 @@ fn forward_distance_bounded() {
         last = a.send(&alice, b"flood").unwrap();
     }
     // Generation 1001 is 1001 steps ahead of the receiver: refused.
-    assert!(matches!(b.receive(&bob, &last), Err(TreeError::Rejected(_))));
+    assert!(matches!(
+        b.receive(&bob, &last),
+        Err(TreeError::Rejected(_))
+    ));
 }
 
 /// F-002 (fixed): a message sent in epoch N that arrives after the receiver
@@ -63,7 +82,11 @@ fn message_from_previous_epoch_after_commit_is_read() {
     assert_eq!(a.epoch(), 2);
     assert_eq!(
         a.receive(&alice, &in_flight).unwrap(),
-        Incoming::Message { from: bob.member_id(), name: "bob".into(), body: b"sent at epoch 1".to_vec() }
+        Incoming::Message {
+            from: bob.member_id(),
+            name: "bob".into(),
+            body: b"sent at epoch 1".to_vec()
+        }
     );
     b.receive(&bob, &c).unwrap();
     let m = b.send(&bob, b"epoch 2").unwrap();
@@ -75,7 +98,9 @@ fn message_from_previous_epoch_after_commit_is_read() {
 #[test]
 fn past_epoch_window_is_two_epochs() {
     let (alice, bob, mut a, mut b) = two_person_chat();
-    let msgs: Vec<Vec<u8>> = (0..3).map(|i| b.send(&bob, format!("e1 m{i}").as_bytes()).unwrap()).collect();
+    let msgs: Vec<Vec<u8>> = (0..3)
+        .map(|i| b.send(&bob, format!("e1 m{i}").as_bytes()).unwrap())
+        .collect();
     a.refresh_now(&alice).unwrap(); // epoch 2: epoch 1 is N-1
     assert!(is_message(&a.receive(&alice, &msgs[0]), b"e1 m0"));
     a.refresh_now(&alice).unwrap(); // epoch 3: epoch 1 is N-2
@@ -120,7 +145,10 @@ fn message_from_next_epoch_before_commit() {
         b.receive(&bob, &early).unwrap(),
         Incoming::HeldForRetry { epoch: 2 }
     );
-    assert_eq!(b.receive(&bob, &early).unwrap(), Incoming::HeldForRetry { epoch: 2 });
+    assert_eq!(
+        b.receive(&bob, &early).unwrap(),
+        Incoming::HeldForRetry { epoch: 2 }
+    );
     b.receive(&bob, &c).unwrap();
     assert!(is_message(&b.receive(&bob, &early), b"epoch 2 message"));
 }
@@ -178,7 +206,10 @@ fn past_epoch_commit_rejected() {
     let (alice, bob, mut a, mut b) = two_person_chat();
     let lost = b.refresh_keys(&bob).unwrap(); // made in epoch 1, never accepted
     a.refresh_now(&alice).unwrap(); // epoch 2
-    assert!(rejected_with(&a.receive(&alice, &lost.commit), "past epoch"));
+    assert!(rejected_with(
+        &a.receive(&alice, &lost.commit),
+        "past epoch"
+    ));
     assert_eq!(a.epoch(), 2);
 }
 
@@ -191,7 +222,11 @@ fn own_echoes() {
     assert_eq!(a.receive(&alice, &m).unwrap(), Incoming::OwnEcho);
     let c = a.refresh_now(&alice).unwrap();
     assert_eq!(a.receive(&alice, &c).unwrap(), Incoming::OwnEcho);
-    assert_eq!(a.receive(&alice, &c).unwrap(), Incoming::OwnEcho, "every repeat");
+    assert_eq!(
+        a.receive(&alice, &c).unwrap(),
+        Incoming::OwnEcho,
+        "every repeat"
+    );
     // The group is unaffected and an echo does not burn anything.
     assert!(a.is_member());
     assert_eq!(a.epoch(), 2);
@@ -206,7 +241,11 @@ fn own_commit_echo_forgotten_with_its_epoch() {
     let (alice, _bob, mut a, _b) = two_person_chat();
     let c = a.refresh_now(&alice).unwrap(); // sealed in 1
     a.refresh_now(&alice).unwrap();
-    assert_eq!(a.receive(&alice, &c).unwrap(), Incoming::OwnEcho, "epoch 1 is N-2");
+    assert_eq!(
+        a.receive(&alice, &c).unwrap(),
+        Incoming::OwnEcho,
+        "epoch 1 is N-2"
+    );
     a.refresh_now(&alice).unwrap();
     assert!(a.receive(&alice, &c).is_err(), "epoch 1 is N-3");
 }
@@ -226,7 +265,12 @@ fn concurrent_commits_no_longer_fork() {
     a.confirm_commit(&alice).unwrap();
     assert_eq!(
         b.receive(&bob, &ca.commit).unwrap(),
-        Incoming::GroupChanged { added: vec![], removed: vec![], epoch: 2, own_commit_discarded: true }
+        Incoming::GroupChanged {
+            added: vec![],
+            removed: vec![],
+            epoch: 2,
+            own_commit_discarded: true
+        }
     );
     assert!(b.pending_commit().is_none());
     assert_eq!(a.epoch(), b.epoch());
@@ -324,9 +368,7 @@ fn structured_message_lifecycle_is_authenticated() {
         other => panic!("unexpected incoming: {other:?}"),
     }
 
-    let reaction = b
-        .react_to_message(&bob, message_id, "👍", true)
-        .unwrap();
+    let reaction = b.react_to_message(&bob, message_id, "👍", true).unwrap();
     match a.receive(&alice, &reaction).unwrap() {
         Incoming::StructuredMessages { events } => {
             assert!(matches!(
@@ -341,7 +383,9 @@ fn structured_message_lifecycle_is_authenticated() {
     let receipt = b.send_read_receipt(&bob, message_id).unwrap();
     match a.receive(&alice, &receipt).unwrap() {
         Incoming::StructuredMessages { events } => {
-            assert!(matches!(events[0].1, MessageEvent::Read { target, .. } if target == message_id));
+            assert!(
+                matches!(events[0].1, MessageEvent::Read { target, .. } if target == message_id)
+            );
         }
         other => panic!("unexpected incoming: {other:?}"),
     }
@@ -349,7 +393,10 @@ fn structured_message_lifecycle_is_authenticated() {
     let typing = b.send_typing(&bob, true).unwrap();
     match a.receive(&alice, &typing).unwrap() {
         Incoming::StructuredMessages { events } => {
-            assert!(matches!(events[0].1, MessageEvent::Typing { active: true, .. }));
+            assert!(matches!(
+                events[0].1,
+                MessageEvent::Typing { active: true, .. }
+            ));
         }
         other => panic!("unexpected incoming: {other:?}"),
     }
@@ -519,11 +566,24 @@ fn concurrent_admin_controls_on_different_settings_converge() {
 fn one_pending_commit_at_a_time() {
     let (alice, bob, mut a, _b) = two_person_chat();
     let first = a.refresh_keys(&alice).unwrap();
-    assert!(matches!(a.refresh_keys(&alice), Err(TreeError::CommitPending)));
+    assert!(matches!(
+        a.refresh_keys(&alice),
+        Err(TreeError::CommitPending)
+    ));
     let kp = Client::new("x").unwrap().key_package().unwrap();
-    assert!(matches!(a.add(&alice, &[kp]), Err(TreeError::CommitPending)));
-    assert!(matches!(a.remove(&alice, &[bob.member_id()]), Err(TreeError::CommitPending)));
-    assert_eq!(a.pending_commit().unwrap(), first, "the first one is untouched");
+    assert!(matches!(
+        a.add(&alice, &[kp]),
+        Err(TreeError::CommitPending)
+    ));
+    assert!(matches!(
+        a.remove(&alice, &[bob.member_id()]),
+        Err(TreeError::CommitPending)
+    ));
+    assert_eq!(
+        a.pending_commit().unwrap(),
+        first,
+        "the first one is untouched"
+    );
 }
 
 /// Discarding drops the commit; a new one can be made. Discard with nothing
@@ -531,7 +591,10 @@ fn one_pending_commit_at_a_time() {
 #[test]
 fn discard_and_confirm_without_pending() {
     let (alice, bob, mut a, mut b) = two_person_chat();
-    assert!(matches!(a.confirm_commit(&alice), Err(TreeError::NoPendingCommit)));
+    assert!(matches!(
+        a.confirm_commit(&alice),
+        Err(TreeError::NoPendingCommit)
+    ));
     a.discard_commit(&alice).unwrap();
     let dropped = a.refresh_keys(&alice).unwrap();
     a.discard_commit(&alice).unwrap();
@@ -549,7 +612,10 @@ fn discard_and_confirm_without_pending() {
 fn own_pending_commit_arriving_is_merged() {
     let (alice, bob, mut a, mut b) = two_person_chat();
     let p = a.refresh_keys(&alice).unwrap();
-    assert_eq!(a.receive(&alice, &p.commit).unwrap(), Incoming::OwnCommitMerged { epoch: 2 });
+    assert_eq!(
+        a.receive(&alice, &p.commit).unwrap(),
+        Incoming::OwnCommitMerged { epoch: 2 }
+    );
     assert!(a.pending_commit().is_none());
     assert_eq!(a.receive(&alice, &p.commit).unwrap(), Incoming::OwnEcho);
     b.receive(&bob, &p.commit).unwrap();
@@ -567,7 +633,10 @@ fn lost_add_retried_with_same_key_package() {
     let won = b.refresh_now(&bob).unwrap();
     assert!(matches!(
         a.receive(&alice, &won).unwrap(),
-        Incoming::GroupChanged { own_commit_discarded: true, .. }
+        Incoming::GroupChanged {
+            own_commit_discarded: true,
+            ..
+        }
     ));
     let retry = a.add(&alice, &[&kp]).unwrap();
     assert_eq!(retry.epoch, 2);
@@ -592,7 +661,10 @@ fn joiner_should_refresh_keys() {
         Err(TreeError::Rejected(_))
     ));
     let add = a.add_now(&alice, &carol.key_package().unwrap()).unwrap();
-    assert!(b.should_refresh_keys(), "an add does not refresh the adder's key");
+    assert!(
+        b.should_refresh_keys(),
+        "an add does not refresh the adder's key"
+    );
     b.receive(&bob, &add.commit).unwrap();
     let r = b.refresh_now(&bob).unwrap();
     assert!(!b.should_refresh_keys());

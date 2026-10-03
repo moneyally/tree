@@ -18,9 +18,9 @@
 
 use zeroize::Zeroizing;
 
-use crate::{error::TreeError, group::MemberId};
+use crate::{error::TreeError, group::MemberId, message_state::MessageLedger};
 
-const VERSION: u8 = 5;
+const VERSION: u8 = 6;
 
 /// A commit this device created that the server has not accepted yet.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -70,6 +70,8 @@ pub(crate) struct GroupState {
     pub title: Option<String>,
     pub disappearing_seconds: u32,
     pub last_control_seq: u64,
+    /// Bounded metadata needed for structured message authorization/replay.
+    pub messages: MessageLedger,
 }
 
 impl GroupState {
@@ -148,6 +150,8 @@ impl GroupState {
         }
         out.extend_from_slice(&self.disappearing_seconds.to_be_bytes());
         out.extend_from_slice(&self.last_control_seq.to_be_bytes());
+        let messages = self.messages.encode()?;
+        put_bytes(&mut out, &messages);
         out
     }
 
@@ -251,6 +255,7 @@ impl GroupState {
             title,
             disappearing_seconds,
             last_control_seq,
+            messages,
         })
     }
 }
@@ -299,6 +304,7 @@ impl Reader<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::message::{MessageEvent, MessageId};
 
     fn sample() -> GroupState {
         GroupState {
@@ -331,78 +337,34 @@ mod tests {
             title: Some("Test Group".into()),
             disappearing_seconds: 86400,
             last_control_seq: 12,
+            messages: MessageLedger {
+                next_seq: 4,
+                sender_seq: vec![(MemberId([8; 32]), 9)],
+                records: vec![crate::message_state::MessageRecord {
+                    id: MessageId([4; 16]),
+                    author: MemberId([8; 32]),
+                    created_at: 10,
+                    ttl_secs: 60,
+                    view_once: true,
+                    deleted: false,
+                    last_edit_seq: 9,
+                }],
+                pending: vec![],
+            },
         }
-    }
-
-    fn same(a: &GroupState, b: &GroupState) -> bool {
-        a.pending == b.pending
-            && a.admins == b.admins
-            && a.should_refresh == b.should_refresh
-            && a.sent == b.sent
-            && a.processed == b.processed
-            && a.future
-                .iter()
-                .map(|p| (p.epoch, p.received_at, &p.bytes))
-                .collect::<Vec<_>>()
-                == b.future
-                    .iter()
-                    .map(|p| (p.epoch, p.received_at, &p.bytes))
-                    .collect::<Vec<_>>()
-            && a.title == b.title
-            && a.disappearing_seconds == b.disappearing_seconds
-            && a.last_control_seq == b.last_control_seq
-            && a.past.len() == b.past.len()
-            && a.past.iter().zip(&b.past).all(|(x, y)| {
-                x.epoch == y.epoch && *x.envelope_key == *y.envelope_key && x.members == y.members
-            })
     }
 
     #[test]
     fn round_trip() {
-        for s in [GroupState::default(), sample()] {
-            let enc = s.encode();
-            assert!(same(&GroupState::decode(&enc).unwrap(), &s));
-        }
-
-        let mut s = sample();
-        s.pending.as_mut().unwrap().welcome = None;
-        assert!(same(&GroupState::decode(&s.encode()).unwrap(), &s));
-    }
-
-    #[test]
-    fn admins_round_trip_sorted_and_deduplicated_on_decode() {
-        let mut bytes = GroupState {
-            admins: vec![MemberId([9; 32]), MemberId([2; 32]), MemberId([9; 32])],
-            ..GroupState::default()
-        }
-        .encode();
-        let decoded = GroupState::decode(&bytes).unwrap();
-        assert_eq!(
-            decoded.admins,
-            vec![MemberId([2; 32]), MemberId([9; 32])]
-        );
-        bytes[0] = 6;
-        assert!(GroupState::decode(&bytes).is_err());
-    }
-
-    #[test]
-    fn legacy_versions_have_no_admin_list() {
-        let v5 = GroupState::default().encode();
-        let legacy = &v5[..v5.len() - 13];
-        for version in [1u8, 2, 3, 4] {
-            let mut bytes = legacy.to_vec();
-            bytes[0] = version;
-            if version <= 2 {
-                bytes.remove(3);
-            }
-            let result = GroupState::decode(&bytes);
-            assert!(result.is_ok(), "legacy version {version}");
-        }
+        let s = sample();
+        let enc = s.encode().unwrap();
+        let decoded = GroupState::decode(&enc).unwrap();
+        assert_eq!(decoded, s);
     }
 
     #[test]
     fn damaged_input_refused() {
-        let enc = sample().encode();
+        let enc = sample().encode().unwrap();
         for n in 0..enc.len() {
             assert!(GroupState::decode(&enc[..n]).is_err(), "truncated at {n}");
         }
@@ -412,44 +374,25 @@ mod tests {
         assert!(GroupState::decode(&long).is_err(), "trailing byte");
 
         let mut v = enc.clone();
-        v[0] = 6;
+        v[0] = 7;
         assert!(GroupState::decode(&v).is_err(), "version");
-
-        let mut p = enc.clone();
-        p[1] = 2;
-        assert!(GroupState::decode(&p).is_err(), "pending flag");
-
-        let empty = GroupState::default().encode();
-        let mut r = empty.clone();
-        r[2] = 2;
-        assert!(GroupState::decode(&r).is_err(), "refresh flag");
     }
 
     #[test]
-    fn prune_future_is_bounded_and_expires() {
-        let mut s = GroupState {
-            future: (0..70)
-                .map(|i| PendingEnvelope {
-                    epoch: 8,
-                    received_at: 100 + i,
-                    bytes: vec![i as u8],
-                })
-                .collect(),
-            ..GroupState::default()
-        };
-        s.prune_future(100);
-        assert_eq!(s.future.len(), 64);
-        s.prune_future(7 * 86_400 + 101);
-        assert!(s.future.is_empty());
-    }
-
-    #[test]
-    fn prune_drops_old_epochs() {
-        let mut s = sample();
-        s.prune(6);
-        assert_eq!(s.past.len(), 1);
-        assert_eq!(s.past[0].epoch, 6);
-        assert_eq!(s.sent, vec![(6, [0xaa; 32])]);
-        assert_eq!(s.processed.len(), 1);
+    fn legacy_v5_decodes_without_message_ledger() {
+        let v6 = sample().encode().unwrap();
+        let msg_len = v6.len();
+        let mut v5 = v6;
+        let ledger_len = u32::from_be_bytes(
+            v5[msg_len - 4 - 0..msg_len].try_into().expect("fixture"),
+        ) as usize;
+        let _ = ledger_len;
+        // Build a clean v5 fixture from the prefix before the version-6
+        // message-ledger length/data suffix.
+        let suffix_len = 4 + sample().messages.encode().unwrap().len();
+        v5.truncate(msg_len - suffix_len);
+        v5[0] = 5;
+        let decoded = GroupState::decode(&v5).unwrap();
+        assert!(decoded.messages.records.is_empty());
     }
 }

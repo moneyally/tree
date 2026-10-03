@@ -380,7 +380,8 @@ impl Registry {
         for (key, (state, option)) in entries {
             if let Ok(f) = self.def(key) {
                 if f.scope == Scope::User && f.lock == Lock::None {
-                    self.state.insert((Scope::User, f.key), (*state, option.clone()));
+                    self.state
+                        .insert((Scope::User, f.key), (*state, option.clone()));
                 }
             }
         }

@@ -126,7 +126,12 @@ impl GroupState {
             }
         }
         out.push(self.should_refresh as u8);
-        let admin_count = u8::try_from(self.admins.len()).expect("admin list is bounded");
+        if self.admins.len() > 64 || self.admin_tags.len() > 64 {
+            return Err(TreeError::Storage(
+                "group administrator state is too large".into(),
+            ));
+        }
+        let admin_count = self.admins.len() as u8;
         out.push(admin_count);
         for id in &self.admins {
             out.extend_from_slice(id.as_bytes());

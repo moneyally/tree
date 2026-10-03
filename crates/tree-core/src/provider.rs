@@ -36,6 +36,7 @@ pub trait TreeProvider: OpenMlsProvider {
 
     /// Stored providers must reload OpenMLS after a failed transaction because
     /// the database was rolled back underneath the in-memory group object.
+    /// In-memory providers keep their state local and restore Tree metadata.
     fn reload_group_after_error(&self) -> bool {
         false
     }

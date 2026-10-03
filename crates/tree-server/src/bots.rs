@@ -674,9 +674,14 @@ pub async fn authenticate_token(state: &AppState, headers: &HeaderMap) -> ApiRes
     let prefix = token
         .strip_prefix(TOKEN_PREFIX)
         .ok_or_else(|| ApiError::unauthorized("invalid bot token"))?;
-    let (bot_id, suffix) = prefix
-        .split_once('_')
-        .ok_or_else(|| ApiError::unauthorized("invalid bot token"))?;
+    const TOKEN_SUFFIX_LEN: usize = 43; // 32 random bytes, base64url without padding.
+    if prefix.len() != crate::util::ID_LEN + 1 + TOKEN_SUFFIX_LEN
+        || prefix.as_bytes().get(crate::util::ID_LEN) != Some(&b'_')
+    {
+        return Err(ApiError::unauthorized("invalid bot token"));
+    }
+    let bot_id = &prefix[..crate::util::ID_LEN];
+    let suffix = &prefix[crate::util::ID_LEN + 1..];
     check_id(bot_id, "bot id")?;
     let raw_suffix = URL_SAFE_NO_PAD
         .decode(suffix)

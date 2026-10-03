@@ -470,7 +470,7 @@ mod tests {
         assert!(GroupState::decode(&long).is_err(), "trailing byte");
 
         let mut v = enc.clone();
-        v[0] = 7;
+        v[0] = VERSION + 1;
         assert!(GroupState::decode(&v).is_err(), "version");
     }
 

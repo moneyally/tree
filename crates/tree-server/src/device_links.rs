@@ -362,7 +362,7 @@ pub async fn confirm_join(
     .execute(&state.db)
     .await?;
 
-    let (created, _device_id) = finalize_if_ready(&state, &link_id).await;
+    let (created, _device_id) = finalize_if_ready(&state, &link_id).await?;
     let (_, _, joiner, init_ok, join_ok, expires_at) = load_session(&state, &link_id).await?;
     Ok((
         if created { StatusCode::CREATED } else { StatusCode::OK },

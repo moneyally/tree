@@ -32,7 +32,7 @@ impl RecoveryPhrase {
         let mut entropy = [0u8; ENTROPY_BYTES];
         getrandom::fill(&mut entropy)
             .map_err(|e| TreeError::Identity(format!("OS randomness unavailable: {e}")))?;
-        Self::from_entropy(entropy)
+        Self::from_entropy_bytes(entropy)
     }
 
     pub fn from_phrase(phrase: &str) -> Result<Self, TreeError> {
@@ -53,7 +53,7 @@ impl RecoveryPhrase {
         })
     }
 
-    fn from_entropy(entropy: [u8; ENTROPY_BYTES]) -> Result<Self, TreeError> {
+    pub(crate) fn from_entropy_bytes(entropy: [u8; ENTROPY_BYTES]) -> Result<Self, TreeError> {
         let mnemonic = Mnemonic::from_entropy(&entropy)
             .map_err(|_| TreeError::Identity("could not encode recovery entropy".into()))?;
         Ok(Self {
@@ -64,6 +64,10 @@ impl RecoveryPhrase {
 
     pub fn phrase(&self) -> &str {
         &self.phrase
+    }
+
+    pub(crate) fn entropy_bytes(&self) -> [u8; ENTROPY_BYTES] {
+        self.entropy
     }
 
     /// Derives the deterministic Ed25519 key used only for recovery.

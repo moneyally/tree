@@ -847,6 +847,9 @@ async fn receive(args: ReceiveArgs) -> Result<()> {
                 Incoming::RemovedFromGroup => {
                     println!("removed_from_group group={}", hex::encode(group.id()));
                 }
+                Incoming::HeldForRetry { epoch } => {
+                    println!("held_for_retry group={} epoch={epoch}", hex::encode(group.id()));
+                }
                 Incoming::OwnEcho => {
                     println!("own_echo group={}", hex::encode(group.id()));
                 }

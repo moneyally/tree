@@ -12,7 +12,6 @@ use crate::{
 };
 
 const VERSION: u8 = 1;
-const MAX_SENDERS: usize = 1024;
 const MAX_RECORDS: usize = 4096;
 const MAX_PENDING: usize = 256;
 
@@ -36,7 +35,6 @@ pub(crate) struct PendingMutation {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct MessageLedger {
     pub next_seq: u64,
-    pub sender_seq: Vec<(MemberId, u64)>,
     pub records: Vec<MessageRecord>,
     pub pending: Vec<PendingMutation>,
 }
@@ -48,25 +46,6 @@ impl MessageLedger {
             .checked_add(1)
             .ok_or_else(|| TreeError::Group("message sequence exhausted".into()))?;
         Ok(self.next_seq)
-    }
-
-    /// Returns false for a duplicate/stale event and updates the watermark
-    /// when the sequence is newer.
-    pub fn accept_sender_seq(&mut self, sender: MemberId, seq: u64) -> bool {
-        if let Some((_, current)) = self.sender_seq.iter_mut().find(|(id, _)| *id == sender) {
-            if seq <= *current {
-                return false;
-            }
-            *current = seq;
-            return true;
-        }
-        if self.sender_seq.len() >= MAX_SENDERS {
-            // Membership itself is bounded by the group size. Evicting the
-            // oldest sender watermark is preferable to unbounded storage.
-            self.sender_seq.remove(0);
-        }
-        self.sender_seq.push((sender, seq));
-        true
     }
 
     pub fn record_new(&mut self, record: MessageRecord) -> bool {
@@ -119,12 +98,6 @@ impl MessageLedger {
         let mut out = vec![VERSION];
         out.extend_from_slice(&self.next_seq.to_be_bytes());
 
-        out.extend_from_slice(&(self.sender_seq.len() as u16).to_be_bytes());
-        for (id, seq) in &self.sender_seq {
-            out.extend_from_slice(id.as_bytes());
-            out.extend_from_slice(&seq.to_be_bytes());
-        }
-
         out.extend_from_slice(&(self.records.len() as u16).to_be_bytes());
         for record in &self.records {
             out.extend_from_slice(record.id.as_bytes());
@@ -161,15 +134,6 @@ impl MessageLedger {
             return Err(damaged());
         }
         let next_seq = r.u64()?;
-
-        let sender_count = r.u16()? as usize;
-        if sender_count > MAX_SENDERS {
-            return Err(damaged());
-        }
-        let mut sender_seq = Vec::with_capacity(sender_count);
-        for _ in 0..sender_count {
-            sender_seq.push((MemberId(r.array()?), r.u64()?));
-        }
 
         let record_count = r.u16()? as usize;
         if record_count > MAX_RECORDS {
@@ -216,7 +180,6 @@ impl MessageLedger {
         }
         Ok(Self {
             next_seq,
-            sender_seq,
             records,
             pending,
         })
@@ -277,16 +240,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sender_sequence_watermark_is_monotonic() {
-        let sender = MemberId([7; 32]);
-        let mut ledger = MessageLedger::default();
-        assert!(ledger.accept_sender_seq(sender, 1));
-        assert!(!ledger.accept_sender_seq(sender, 1));
-        assert!(!ledger.accept_sender_seq(sender, 0));
-        assert!(ledger.accept_sender_seq(sender, 2));
-    }
-
-    #[test]
     fn ledger_round_trips_without_plaintext_history() {
         let sender = MemberId([1; 32]);
         let id = MessageId([2; 16]);
@@ -298,7 +251,6 @@ mod tests {
         };
         let ledger = MessageLedger {
             next_seq: 8,
-            sender_seq: vec![(sender, 3)],
             records: vec![MessageRecord {
                 id,
                 author: sender,

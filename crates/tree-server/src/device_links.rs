@@ -409,19 +409,41 @@ async fn finalize_if_ready(state: &AppState, link_id: &str) -> ApiResult<(bool, 
 
     let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
 
-    let exists: Option<i64> = sqlx::query(
-        "SELECT 1 FROM devices WHERE auth_pub = ?",
+    // Re-check the consumed flag after acquiring the write lock. A second
+    // confirmation racing the first one must be idempotent, not create a
+    // second device or return a spurious conflict.
+    let used_now: i64 = sqlx::query("SELECT used FROM device_link_sessions WHERE id = ?")
+        .bind(link_id)
+        .fetch_one(&mut *tx)
+        .await?
+        .try_get("used")?;
+    if used_now != 0 {
+        let existing: Option<String> = sqlx::query(
+            "SELECT id FROM devices WHERE auth_pub = ?",
+        )
+        .bind(&joiner[..])
+        .fetch_optional(&mut *tx)
+        .await?
+        .map(|row| row.try_get("id"))
+        .transpose()?;
+        return Ok((false, existing.unwrap_or_default()));
+    }
+
+    let exists: Option<String> = sqlx::query(
+        "SELECT id FROM devices WHERE auth_pub = ?",
     )
     .bind(&joiner[..])
     .fetch_optional(&mut *tx)
     .await?
-    .map(|row| row.try_get(0))
+    .map(|row| row.try_get("id"))
     .transpose()?;
-    if exists.is_some() {
-        return Err(ApiError::conflict(
-            "ALREADY_EXISTS",
-            "this authentication key is already registered",
-        ));
+    if let Some(existing) = exists {
+        sqlx::query("UPDATE device_link_sessions SET used = 1 WHERE id = ?")
+            .bind(link_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        return Ok((false, existing));
     }
 
     let count: i64 = sqlx::query(

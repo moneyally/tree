@@ -8,7 +8,7 @@
 //! serialized here: MLS authenticates the sender. A per-sender sequence
 //! number prevents replay and stale edit/delete/reaction operations.
 
-use getrandom::getrandom;
+use getrandom::fill;
 
 use crate::error::TreeError;
 
@@ -25,7 +25,7 @@ pub struct MessageId(pub [u8; 16]);
 impl MessageId {
     pub fn generate() -> Result<Self, TreeError> {
         let mut id = [0u8; 16];
-        getrandom(&mut id)
+        fill(&mut id)
             .map_err(|e| TreeError::Identity(format!("OS randomness unavailable: {e}")))?;
         Ok(Self(id))
     }

@@ -114,8 +114,14 @@ async fn real_clients_chat_through_server_and_removed_device_is_locked_out() {
 
     let bob_msgs = api.fetch(&bob_net, 0).await;
     assert_eq!(bob_msgs.len(), 1);
-    assert_eq!(b.receive(&bob, &unb64(bob_msgs[0]["body"].as_str().unwrap())).unwrap(),
-               Incoming::GroupChanged { added: _, removed: _, epoch: 2, own_commit_discarded: false });
+    assert!(matches!(
+        b.receive(&bob, &unb64(bob_msgs[0]["body"].as_str().unwrap())).unwrap(),
+        Incoming::GroupChanged {
+            epoch: 2,
+            own_commit_discarded: false,
+            ..
+        }
+    ));
     api.ack(&bob_net, &[bob_msgs[0]["id"].as_str().unwrap()]).await;
 
     let mut c = charlie.join(p2.welcome.as_ref().unwrap()).unwrap();

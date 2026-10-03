@@ -61,7 +61,11 @@ async fn serve(state: AppState, device_id: String, mut socket: WebSocket) {
                             "body": message.body,
                             "received_at": message.received_at,
                         });
-                        if socket.send(Message::Text(payload.to_string().into())).await.is_err() {
+                        if socket
+                            .send(Message::Text(payload.to_string().into()))
+                            .await
+                            .is_err()
+                        {
                             state.waiters.unsubscribe(&device_id, notify.clone());
                             return;
                         }
@@ -70,12 +74,10 @@ async fn serve(state: AppState, device_id: String, mut socket: WebSocket) {
             }
             Err(_) => {
                 let _ = socket
-                    .send(Message::Close(Some(
-                        axum::extract::ws::CloseFrame {
-                            code: axum::extract::ws::close_code::ERROR,
-                            reason: "mailbox unavailable".into(),
-                        },
-                    )))
+                    .send(Message::Close(Some(axum::extract::ws::CloseFrame {
+                        code: axum::extract::ws::close_code::ERROR,
+                        reason: "mailbox unavailable".into(),
+                    })))
                     .await;
                 break;
             }

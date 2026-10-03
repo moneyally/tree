@@ -458,6 +458,7 @@ impl Group {
                 .create_message(&me.provider, &me.signer, &bytes)
                 .map_err(group_err)?;
             let envelope = self.seal(me, &out.to_bytes().map_err(group_err)?)?;
+            apply_control_state(&mut self.state, &control);
             self.state.last_control_seq = seq;
             self.save(me)?;
             Ok(envelope)

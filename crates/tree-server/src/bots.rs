@@ -132,7 +132,7 @@ fn validate_description(description: &str) -> ApiResult<()> {
 
 fn new_token(bot_id: &str, secret: &[u8; 32]) -> ApiResult<(String, Vec<u8>)> {
     let mut raw = [0u8; 32];
-    getrandom::fill(&mut raw).map_err(|_| ApiError::internal())?;
+    getrandom::getrandom(&mut raw).map_err(|_| ApiError::internal())?;
     let suffix = URL_SAFE_NO_PAD.encode(raw);
     let token = format!("{TOKEN_PREFIX}{bot_id}_{suffix}");
     let hash = token_hmac(secret, token.as_bytes())?;

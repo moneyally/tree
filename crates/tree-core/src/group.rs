@@ -1136,7 +1136,7 @@ impl Group {
         event: MessageEvent,
     ) -> Result<Vec<(MemberId, MessageEvent)>, TreeError> {
         let now = unix_now();
-        match &event {
+        match event.clone() {
             MessageEvent::New {
                 id,
                 sent_at: _,

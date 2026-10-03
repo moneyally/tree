@@ -38,7 +38,7 @@ async fn bot_token_lifecycle_and_gateway_device_are_isolated() {
     assert!(token.starts_with("tb_"));
     assert!(!token.contains(' '));
 
-    let (st, me) = api.send_bot("/v1/bot/getMe", &token).await;
+    let (st, me) = api.get_bot("/v1/bot/getMe", &token).await;
     assert_eq!(st, StatusCode::OK, "{me}");
     assert_eq!(me["id"].as_str(), Some(bot_id.as_str()));
     assert_eq!(me["name"].as_str(), Some("Test Bot"));

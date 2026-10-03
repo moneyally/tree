@@ -1174,7 +1174,7 @@ impl Group {
                     last_edit_seq: event.seq(),
                 };
                 self.state.messages.record_new(record);
-                let mut output = vec![(from, event)];
+                let mut output = vec![(from, event.clone())];
                 let mut pending = self.state.messages.take_pending_for(*id);
                 pending.sort_by_key(|mutation| mutation.event.seq());
                 for mutation in pending {
@@ -1228,14 +1228,16 @@ impl Group {
         let target = event
             .target()
             .ok_or_else(|| TreeError::Malformed("mutation has no target".into()))?;
-        let record = self
-            .state
-            .messages
-            .record_mut(target)
-            .ok_or_else(|| TreeError::Storage("message record disappeared".into()))?;
-
         match &event {
             MessageEvent::Edit { seq, .. } | MessageEvent::Delete { seq, .. } => {
+                if !self.state.messages.accept_sender_seq(from, *seq) {
+                    return Ok(false);
+                }
+                let record = self
+                    .state
+                    .messages
+                    .record_mut(target)
+                    .ok_or_else(|| TreeError::Storage("message record disappeared".into()))?;
                 if record.author != from {
                     return Err(TreeError::Rejected(
                         "message mutation sender is not the original author".into(),
@@ -1245,9 +1247,6 @@ impl Group {
                     return Ok(false);
                 }
                 if now.saturating_sub(record.created_at) as u64 > DEFAULT_EDIT_WINDOW_SECS {
-                    return Ok(false);
-                }
-                if !self.state.messages.accept_sender_seq(from, *seq) {
                     return Ok(false);
                 }
                 if *seq <= record.last_edit_seq {
@@ -1260,10 +1259,15 @@ impl Group {
                 Ok(true)
             }
             MessageEvent::Reaction { seq, .. } | MessageEvent::Read { seq, .. } => {
-                if record.deleted {
+                if !self.state.messages.accept_sender_seq(from, *seq) {
                     return Ok(false);
                 }
-                if !self.state.messages.accept_sender_seq(from, *seq) {
+                let record = self
+                    .state
+                    .messages
+                    .record(target)
+                    .ok_or_else(|| TreeError::Storage("message record disappeared".into()))?;
+                if record.deleted {
                     return Ok(false);
                 }
                 Ok(true)

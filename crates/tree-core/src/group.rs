@@ -593,12 +593,12 @@ impl Group {
                         ));
                     }
                     let control = decode_control(&body)?;
-                    if control.seq() <= self.state.last_control_seq {
+                    if control.seq <= self.state.last_control_seq {
                         self.mark_processed(epoch, hash);
                         self.save(me)?;
                         return Ok(Incoming::OwnEcho);
                     }
-                    apply_control_state(&mut self.state, &control.control)?;
+                    apply_control_state(&mut self.state, &control.control);
                     self.state.last_control_seq = control.seq;
                     self.mark_processed(epoch, hash);
                     self.state.future.retain(|p| sha256(&p.bytes) != hash);
@@ -898,19 +898,11 @@ fn decode_control(bytes: &[u8]) -> Result<DecodedControl, TreeError> {
     Ok(DecodedControl { seq, control })
 }
 
-fn apply_control_state(
-    state: &mut GroupState,
-    control: &Control,
-) -> Result<(), TreeError> {
+fn apply_control_state(state: &mut GroupState, control: &Control) {
     match control {
-        Control::SetTitle(title) => {
-            state.title = title.clone();
-        }
-        Control::SetDisappearingSeconds(seconds) => {
-            state.disappearing_seconds = *seconds;
-        }
+        Control::SetTitle(title) => state.title = title.clone(),
+        Control::SetDisappearingSeconds(seconds) => state.disappearing_seconds = *seconds,
     }
-    Ok(())
 }
 
 struct ControlReader<'a>(&'a [u8]);

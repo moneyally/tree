@@ -1184,7 +1184,7 @@ impl Group {
                 }
             }
             MessageEvent::Reaction { target, .. } | MessageEvent::Read { target, .. } => {
-                if self.state.messages.record(*target).is_none() {
+                if self.state.messages.record(target).is_none() {
                     self.state
                         .messages
                         .queue_pending(PendingMutation { from, event });

@@ -21,6 +21,7 @@ use crate::{json_body, AppState};
 const LINK_TTL_SECS: i64 = 5 * 60;
 const LINK_CODE_DIGITS: u32 = 1_000_000;
 const JOIN_CONTEXT: &str = "tree-device-link-join-v1";
+const CONFIRM_CONTEXT: &str = "tree-device-link-confirm-v1";
 
 #[derive(Serialize)]
 pub struct InitiateResp {

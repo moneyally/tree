@@ -143,9 +143,7 @@ pub fn negotiate(
     remote: &[CryptoProfile],
 ) -> Result<CryptoProfile, TreeError> {
     for candidate in local {
-        if remote.iter().any(|p| p == candidate)
-            && candidate.is_supported_by_current_core()
-        {
+        if remote.iter().any(|p| p == candidate) && candidate.is_supported_by_current_core() {
             return Ok(candidate.clone());
         }
     }

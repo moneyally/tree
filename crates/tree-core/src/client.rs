@@ -404,8 +404,9 @@ impl<P: TreeProvider> Client<P> {
                     should_refresh: true,
                     ..GroupState::default()
                 };
+                let encoded_state = state.encode()?;
                 self.provider
-                    .save_group_state(mls.group_id().as_slice(), &state.encode())?;
+                    .save_group_state(mls.group_id().as_slice(), &encoded_state)?;
                 Ok(Group::new(mls, state))
             })();
             if result.is_err() {

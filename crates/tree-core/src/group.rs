@@ -574,7 +574,13 @@ impl Group {
                 .members()
                 .map(|m| MemberId::of(&m.signature_key))
                 .collect::<Vec<_>>();
-            apply_control_state(&mut self.state, seq, me.member_id(), &control, &members)?;
+            apply_control_state(
+                &mut self.state,
+                seq,
+                me.member_id(),
+                &control,
+                &members,
+            )?;
             self.state.last_control_seq = seq;
             self.state.last_control_author = Some(me.member_id());
             self.save(me)?;
@@ -969,9 +975,22 @@ impl Group {
                         .members()
                         .map(|m| MemberId::of(&m.signature_key))
                         .collect::<Vec<_>>();
-                    apply_control_state(&mut self.state, control.seq, from, &control.control, &members)?;
-                    self.state.last_control_seq = control.seq;
-                    self.state.last_control_author = Some(from);
+                    apply_control_state(
+                        &mut self.state,
+                        control.seq,
+                        from,
+                        &control.control,
+                        &members,
+                    )?;
+                    let tag = (control.seq, from);
+                    if self
+                        .state
+                        .last_control_author
+                        .is_none_or(|author| tag > (self.state.last_control_seq, author))
+                    {
+                        self.state.last_control_seq = control.seq;
+                        self.state.last_control_author = Some(from);
+                    }
                     self.mark_processed(epoch, hash);
                     self.state.future.retain(|p| sha256(&p.bytes) != hash);
                     self.save(me)?;

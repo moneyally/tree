@@ -31,7 +31,10 @@ async fn username_is_hashed_and_unique() {
         )
         .await;
     assert_eq!(st, StatusCode::OK, "{v}");
-    assert_eq!(v["username_hash"].as_str(), Some(hex::encode(hash).as_str()));
+    assert_eq!(
+        v["username_hash"].as_str(),
+        Some(hex::encode(hash).as_str())
+    );
 
     let (st, v) = api
         .call(
@@ -54,9 +57,7 @@ async fn username_is_hashed_and_unique() {
     assert_eq!(st, StatusCode::OK, "{v}");
     assert_eq!(v["account_id"].as_str(), Some(alice.account_id.as_str()));
 
-    let (st, v) = api
-        .call(&alice, Method::DELETE, "/v1/username", None)
-        .await;
+    let (st, v) = api.call(&alice, Method::DELETE, "/v1/username", None).await;
     assert_eq!(st, StatusCode::OK, "{v}");
 
     let (st, v) = api
@@ -89,9 +90,14 @@ async fn blocks_stop_requests_but_can_be_removed() {
         .await;
     assert_eq!(st, StatusCode::OK, "{v}");
 
-    let (st, v) = api.call(&bob, Method::GET, "/v1/message-requests", None).await;
+    let (st, v) = api
+        .call(&bob, Method::GET, "/v1/message-requests", None)
+        .await;
     assert_eq!(st, StatusCode::OK, "{v}");
-    assert_eq!(v["incoming"][0]["account_id"].as_str(), Some(alice.account_id.as_str()));
+    assert_eq!(
+        v["incoming"][0]["account_id"].as_str(),
+        Some(alice.account_id.as_str())
+    );
     assert_eq!(v["incoming"][0]["state"].as_str(), Some("pending"));
 
     let (st, v) = api
@@ -171,18 +177,23 @@ async fn report_stores_only_opaque_evidence_hash_and_bytes() {
         "evidence": b64(&evidence),
         "category": "spam"
     });
-    let (st, v) = api.call(&alice, Method::POST, "/v1/reports", Some(body)).await;
+    let (st, v) = api
+        .call(&alice, Method::POST, "/v1/reports", Some(body))
+        .await;
     assert_eq!(st, StatusCode::OK, "{v}");
-    assert_eq!(v["evidence_sha256"].as_str(), Some(hex::encode(hash).as_str()));
+    assert_eq!(
+        v["evidence_sha256"].as_str(),
+        Some(hex::encode(hash).as_str())
+    );
 
-    let stored: Vec<u8> = sqlx::query_scalar(
-        "SELECT ciphertext FROM reports ORDER BY created_at DESC LIMIT 1",
-    )
+    let stored: Vec<u8> =
+        sqlx::query_scalar("SELECT ciphertext FROM reports ORDER BY created_at DESC LIMIT 1")
     .fetch_one(&ts.server.state.db)
     .await
     .unwrap();
     assert_eq!(stored, evidence);
-    assert!(!stored.windows(b"opaque evidence plaintext".len())
+    assert!(!stored
+        .windows(b"opaque evidence plaintext".len())
         .any(|w| w == b"opaque evidence plaintext"));
 
     // Per-device safety fingerprint is deterministic and non-trivial.

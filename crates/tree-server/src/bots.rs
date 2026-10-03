@@ -618,7 +618,8 @@ pub async fn set_commands(
         {
             return Err(ApiError::bad_request("invalid bot command name"));
         }
-        if cmd.description.len() > MAX_COMMAND_DESC || cmd.description.chars().any(char::is_control) {
+        if cmd.description.len() > MAX_COMMAND_DESC || cmd.description.chars().any(char::is_control)
+        {
             return Err(ApiError::bad_request("invalid bot command description"));
         }
     }

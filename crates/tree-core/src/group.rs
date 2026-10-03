@@ -574,7 +574,7 @@ impl Group {
                 .members()
                 .map(|m| MemberId::of(&m.signature_key))
                 .collect::<Vec<_>>();
-            apply_control_state(&mut self.state, &control, &members)?;
+            apply_control_state(&mut self.state, seq, me.member_id(), &control, &members)?;
             self.state.last_control_seq = seq;
             self.state.last_control_author = Some(me.member_id());
             self.save(me)?;
@@ -980,7 +980,7 @@ impl Group {
                         .members()
                         .map(|m| MemberId::of(&m.signature_key))
                         .collect::<Vec<_>>();
-                    apply_control_state(&mut self.state, &control.control, &members)?;
+                    apply_control_state(&mut self.state, control.seq, from, &control.control, &members)?;
                     self.state.last_control_seq = control.seq;
                     self.state.last_control_author = Some(from);
                     self.mark_processed(epoch, hash);
@@ -1493,27 +1493,57 @@ fn decode_control(bytes: &[u8]) -> Result<DecodedControl, TreeError> {
 
 fn apply_control_state(
     state: &mut GroupState,
+    seq: u64,
+    author: MemberId,
     control: &Control,
     current_members: &[MemberId],
 ) -> Result<(), TreeError> {
     match control {
-        Control::SetTitle(title) => state.title = title.clone(),
-        Control::SetDisappearingSeconds(seconds) => state.disappearing_seconds = *seconds,
-        Control::AddAdmin(target) => {
+        Control::SetTitle(title) => {
+            let tag = (seq, author);
+            if state.title_tag.is_none_or(|old| tag > old) {
+                state.title = title.clone();
+                state.title_tag = Some(tag);
+            }
+        }
+        Control::SetDisappearingSeconds(seconds) => {
+            let tag = (seq, author);
+            if state.disappearing_tag.is_none_or(|old| tag > old) {
+                state.disappearing_seconds = *seconds;
+                state.disappearing_tag = Some(tag);
+            }
+        }
+        Control::AddAdmin(target) | Control::RemoveAdmin(target) => {
             if !current_members.contains(target) {
                 return Err(TreeError::UnknownMember(target.to_hex()));
             }
-            state.admins.push(*target);
-            state.admins.sort_unstable();
-            state.admins.dedup();
-        }
-        Control::RemoveAdmin(target) => {
-            if state.admins.contains(target) && state.admins.len() == 1 {
-                return Err(TreeError::Group(
-                    "cannot remove the last administrator".into(),
-                ));
+            let tag = (seq, author);
+            let newer = state
+                .admin_tags
+                .iter()
+                .find(|(id, _, _)| id == target)
+                .is_none_or(|(_, old_seq, old_author)| tag > (*old_seq, *old_author));
+            if !newer {
+                return Ok(());
             }
-            state.admins.retain(|admin| admin != target);
+            state.admin_tags.retain(|(id, _, _)| id != target);
+            state.admin_tags.push((*target, seq, author));
+            match control {
+                Control::AddAdmin(_) => {
+                    state.admins.push(*target);
+                    state.admins.sort_unstable();
+                    state.admins.dedup();
+                }
+                Control::RemoveAdmin(_) => {
+                    state.admins.retain(|admin| admin != target);
+                    if state.admins.is_empty() {
+                        if let Some(id) = current_members.iter().copied().min() {
+                            state.admins.push(id);
+                        }
+                    }
+                }
+                _ => unreachable!(),
+            }
         }
     }
     Ok(())

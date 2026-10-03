@@ -12,12 +12,11 @@ use std::time::Duration;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
 use axum::response::Response;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::StreamExt;
 use serde::Deserialize;
 use serde_json::json;
 
 use crate::auth::{NoBody, Signed};
-use crate::error::{ApiError, ApiResult};
 use crate::{messages, AppState};
 
 const MAX_CONNECTION_SECS: u64 = 15 * 60;

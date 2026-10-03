@@ -28,7 +28,7 @@ const MAX_AAD: usize = 4096;
 
 const KEY_COMMIT_LABEL: &[u8] = b"tree/file-key-commit/v1";
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileKey(Zeroizing<[u8; KEY_LEN]>);
 
 impl FileKey {

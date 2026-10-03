@@ -850,6 +850,16 @@ async fn receive(args: ReceiveArgs) -> Result<()> {
                 Incoming::HeldForRetry { epoch } => {
                     println!("held_for_retry group={} epoch={epoch}", hex::encode(group.id()));
                 }
+                Incoming::SettingsChanged {
+                    seq,
+                    title,
+                    disappearing_seconds,
+                } => {
+                    println!(
+                        "settings_changed group={} seq={seq} title={title:?} disappearing_seconds={disappearing_seconds}",
+                        hex::encode(group.id())
+                    );
+                }
                 Incoming::OwnEcho => {
                     println!("own_echo group={}", hex::encode(group.id()));
                 }

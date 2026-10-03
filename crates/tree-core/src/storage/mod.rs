@@ -247,10 +247,23 @@ impl StoredProvider {
 
     /// Opens an existing database. A wrong key gives [`TreeError::WrongKey`].
     pub(crate) fn open(path: &Path, source: &dyn KeySource) -> Result<Self, TreeError> {
-        if !path.is_file() {
+        let meta = fs::symlink_metadata(path).map_err(|e| {
+            TreeError::Storage(format!("cannot stat {}: {e}", path.display()))
+        })?;
+        if !meta.file_type().is_file() {
             return Err(TreeError::Storage(format!(
-                "{} does not exist",
+                "{} is not a regular file",
                 path.display()
+            )));
+        }
+        let header_path = KeyHeader::path_for(path);
+        let header_meta = fs::symlink_metadata(&header_path).map_err(|e| {
+            TreeError::Storage(format!("cannot stat {}: {e}", header_path.display()))
+        })?;
+        if !header_meta.file_type().is_file() {
+            return Err(TreeError::Storage(format!(
+                "{} is not a regular file",
+                header_path.display()
             )));
         }
         let header = KeyHeader::read(path)?;

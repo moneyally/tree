@@ -51,7 +51,7 @@ pub async fn upload(
     }
 
     let mut capability_raw = [0u8; CAP_BYTES];
-    getrandom::fill(&mut capability_raw).map_err(|e| {
+    getrandom::getrandom(&mut capability_raw).map_err(|e| {
         ApiError::new(
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             "INTERNAL",

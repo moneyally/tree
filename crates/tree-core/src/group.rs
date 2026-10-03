@@ -523,7 +523,7 @@ impl Group {
             }
             ProcessedMessageContent::OwnPrivateMessage => {
                 self.mark_processed(epoch, hash);
-                self.state.future.retain(|p| p.bytes.as_slice() != hash.as_slice());
+                self.state.future.retain(|p| sha256(&p.bytes) != hash);
                 self.save(me)?;
                 Ok(Incoming::OwnEcho)
             },

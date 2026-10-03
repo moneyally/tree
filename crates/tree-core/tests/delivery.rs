@@ -285,6 +285,33 @@ fn pending_removal_lists_removed() {
 
 /// While a commit is pending no other commit can be made.
 #[test]
+fn non_admin_cannot_add_or_remove_members() {
+    let (alice, bob, mut a, mut b) = two_person_chat();
+    let carol = Client::new("carol").unwrap();
+    assert_eq!(a.admin_id(), Some(alice.member_id()));
+    assert_eq!(b.admin_id(), Some(alice.member_id()));
+
+    assert!(matches!(
+        b.add(&bob, &[carol.key_package().unwrap()]),
+        Err(TreeError::Rejected(_))
+    ));
+    assert!(matches!(
+        b.remove(&bob, &[alice.member_id()]),
+        Err(TreeError::Rejected(_))
+    ));
+
+    let p = a.add(&alice, &[carol.key_package().unwrap()]).unwrap();
+    a.confirm_commit(&alice).unwrap();
+    b.receive(&bob, &p.commit).unwrap();
+    assert_eq!(b.admin_id(), Some(alice.member_id()));
+
+    let rm = a.remove(&alice, &[alice.member_id()]);
+    assert!(rm.is_err(), "administrator cannot remove itself");
+}
+}
+
+
+#[test]
 fn one_pending_commit_at_a_time() {
     let (alice, bob, mut a, _b) = two_person_chat();
     let first = a.refresh_keys(&alice).unwrap();
@@ -356,9 +383,13 @@ fn joiner_should_refresh_keys() {
     assert!(!a.should_refresh_keys());
     assert!(b.should_refresh_keys());
     let carol = Client::new("carol").unwrap();
-    let add = b.add_now(&bob, &carol.key_package().unwrap()).unwrap();
+    assert!(matches!(
+        b.add(&bob, &[carol.key_package().unwrap()]),
+        Err(TreeError::Rejected(_))
+    ));
+    let add = a.add_now(&alice, &carol.key_package().unwrap()).unwrap();
     assert!(b.should_refresh_keys(), "an add does not refresh the adder's key");
-    a.receive(&alice, &add.commit).unwrap();
+    b.receive(&bob, &add.commit).unwrap();
     let r = b.refresh_now(&bob).unwrap();
     assert!(!b.should_refresh_keys());
     a.receive(&alice, &r).unwrap();

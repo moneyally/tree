@@ -8,7 +8,7 @@
 use axum::extract::{Path, Request, State};
 use axum::http::StatusCode;
 use axum::Json;
-use ed25519_dalek::{Signature, VerifyingKey};
+use ed25519_dalek::Signature;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::Row;

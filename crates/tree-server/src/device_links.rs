@@ -378,8 +378,8 @@ pub async fn confirm_join(
             challenge: b64(&challenge),
             joiner_auth_pub: joiner.as_deref().map(b64),
             verification_code: joiner
-            .as_deref()
-            .map(|j| verification_code(&challenge, &init_pub, j)),
+                .as_deref()
+                .map(|j| verification_code(&challenge, &init_pub, j)),
             initiator_confirmed: init_ok,
             joiner_confirmed: join_ok,
             expires_at,
@@ -434,14 +434,12 @@ async fn finalize_if_ready(state: &AppState, link_id: &str) -> ApiResult<(bool, 
         return Ok((false, existing.unwrap_or_default()));
     }
 
-    let exists: Option<String> = sqlx::query(
-        "SELECT id FROM devices WHERE auth_pub = ?",
-    )
-    .bind(&joiner[..])
-    .fetch_optional(&mut *tx)
-    .await?
-    .map(|row| row.try_get("id"))
-    .transpose()?;
+    let exists: Option<String> = sqlx::query("SELECT id FROM devices WHERE auth_pub = ?")
+        .bind(&joiner[..])
+        .fetch_optional(&mut *tx)
+        .await?
+        .map(|row| row.try_get("id"))
+        .transpose()?;
     if exists.is_some() {
         return Err(ApiError::conflict(
             "ALREADY_EXISTS",

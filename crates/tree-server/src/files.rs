@@ -4,7 +4,8 @@
 //! server does not decrypt it. Access is capability-based: a random bearer
 //! token is returned on upload, and only its SHA-256 digest is stored.
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
+use axum::http::HeaderMap;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -17,6 +18,7 @@ use crate::{json_body, AppState};
 
 const CAP_BYTES: usize = 32;
 const MAX_META: usize = 256;
+pub const FILE_CAPABILITY_HEADER: &str = "x-tree-file-capability";
 
 #[derive(Deserialize)]
 pub struct UploadFileReq {
@@ -91,11 +93,6 @@ pub async fn upload(
     }))
 }
 
-#[derive(Deserialize)]
-pub struct FileQuery {
-    pub capability: String,
-}
-
 #[derive(Serialize)]
 pub struct FileResp {
     pub file_id: String,
@@ -109,15 +106,20 @@ pub struct FileResp {
 pub async fn download(
     State(state): State<AppState>,
     Path(file_id): Path<String>,
-    Query(query): Query<FileQuery>,
+    headers: HeaderMap,
     _req: Signed<crate::auth::NoBody>,
 ) -> ApiResult<Json<FileResp>> {
-    if file_id.len() != 22 || query.capability.len() > 128 {
-        return Err(ApiError::bad_request(
-            "invalid file identifier or capability",
-        ));
+    if file_id.len() != 22 {
+        return Err(ApiError::bad_request("invalid file identifier"));
     }
-    let cap = unb64(&query.capability, "capability")?;
+    let cap_text = headers
+        .get(FILE_CAPABILITY_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| ApiError::unauthorized("file capability required"))?;
+    if cap_text.len() > 128 {
+        return Err(ApiError::bad_request("file capability is too long"));
+    }
+    let cap = unb64(cap_text, "capability")?;
     if cap.len() != CAP_BYTES {
         return Err(ApiError::unauthorized("invalid file capability"));
     }

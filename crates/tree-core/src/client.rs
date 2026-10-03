@@ -303,6 +303,37 @@ impl<P: TreeProvider> Client<P> {
     /// Publishes a fresh one-time key package (uploaded to the server so
     /// others can add this device to a group while it is offline). Its
     /// private part stays in this device's store until it is used.
+    /// Lists this device's persistent user-scope feature state.
+    pub fn user_features(
+        &self,
+    ) -> Result<Vec<crate::features::Status>, crate::user_features::UserFeatureError> {
+        crate::user_features::list(&self.provider)
+    }
+
+    pub fn user_feature(
+        &self,
+        key: &str,
+    ) -> Result<crate::features::Status, crate::user_features::UserFeatureError> {
+        crate::user_features::status(&self.provider, key)
+    }
+
+    pub fn apply_user_feature(
+        &self,
+        key: &str,
+        option: Option<String>,
+        plan: crate::features::Plan,
+    ) -> Result<crate::features::Status, crate::user_features::UserFeatureError> {
+        crate::user_features::apply(&self.provider, key, option, plan)
+    }
+
+    pub fn release_user_feature(
+        &self,
+        key: &str,
+        plan: crate::features::Plan,
+    ) -> Result<crate::features::Status, crate::user_features::UserFeatureError> {
+        crate::user_features::release(&self.provider, key, plan)
+    }
+
     pub fn key_package(&self) -> Result<Vec<u8>, TreeError> {
         self.provider.atomically(|| {
             let bundle = KeyPackage::builder()

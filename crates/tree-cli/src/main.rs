@@ -682,7 +682,8 @@ async fn invite(args: InviteArgs) -> Result<()> {
     let mut recipients = args.recipients;
     if recipients.is_empty() && group.epoch() > 0 {
         recipients = api.group_devices(&client, &group.id()).await?;
-        recipients.retain(|id| id != group_member_device_id(&client));
+        let own_device = group_member_device_id(&client);
+        recipients.retain(|id| id != &own_device);
     }
 
     let pending = group
@@ -763,6 +764,7 @@ async fn send(args: SendArgs) -> Result<()> {
             .unwrap_or(0),
         hex::encode(group.id())
     );
+    Ok(())
 }
 
 async fn receive(args: ReceiveArgs) -> Result<()> {
@@ -793,7 +795,7 @@ async fn receive(args: ReceiveArgs) -> Result<()> {
             .decode(required_string(&message, "body")?)
             .context("decode mailbox body")?;
 
-        let result = if raw.first() == Some(&0) {
+        let event: Option<Incoming> = if raw.first() == Some(&0) {
             let mut joined = client
                 .join(&raw)
                 .map_err(|e| anyhow!("join welcome: {e}"))?;
@@ -801,26 +803,24 @@ async fn receive(args: ReceiveArgs) -> Result<()> {
             if joined.should_refresh_keys() {
                 println!("group: key refresh recommended after join");
             }
-            // A welcome never needs a separate group load. Keep the group in
-            // the encrypted profile; Client::join already persisted its state.
             let _ = &mut joined;
-            Ok(())
+            None
         } else {
             let group_id = envelope_group_id(&raw)?;
             let mut group = client
                 .load_group(&group_id)
                 .map_err(|e| anyhow!("load message group {}: {e}", hex::encode(&group_id)))?;
-            match group
+            let incoming = group
                 .receive(&client, &raw)
-                .map_err(|e| anyhow!("decrypt group {}: {e}", hex::encode(&group_id)))?
-            {
+                .map_err(|e| anyhow!("decrypt group {}: {e}", hex::encode(&group_id)))?;
+            match &incoming {
                 Incoming::Message { from, name, body } => {
                     println!(
                         "message group={} from={} name={} body={}",
                         hex::encode(group.id()),
                         from,
                         name,
-                        String::from_utf8_lossy(&body)
+                        String::from_utf8_lossy(body)
                     );
                 }
                 Incoming::GroupChanged {
@@ -848,7 +848,10 @@ async fn receive(args: ReceiveArgs) -> Result<()> {
                     println!("removed_from_group group={}", hex::encode(group.id()));
                 }
                 Incoming::HeldForRetry { epoch } => {
-                    println!("held_for_retry group={} epoch={epoch}", hex::encode(group.id()));
+                    println!(
+                        "held_for_retry group={} epoch={epoch}",
+                        hex::encode(group.id())
+                    );
                 }
                 Incoming::SettingsChanged {
                     seq,
@@ -864,11 +867,10 @@ async fn receive(args: ReceiveArgs) -> Result<()> {
                     println!("own_echo group={}", hex::encode(group.id()));
                 }
             }
-            Ok(())
+            Some(incoming)
         };
 
-        let incoming = result?;
-        if matches!(incoming, Incoming::HeldForRetry { .. }) {
+        if matches!(event, Some(Incoming::HeldForRetry { .. })) {
             // Keep the server mailbox entry. The corresponding commit may
             // arrive later and this same ciphertext must remain retryable.
             continue;

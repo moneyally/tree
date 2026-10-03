@@ -13,6 +13,8 @@ CREATE TABLE bots (
     join_groups         INTEGER NOT NULL DEFAULT 1 CHECK (join_groups IN (0,1)),
     inline_mode         INTEGER NOT NULL DEFAULT 0 CHECK (inline_mode IN (0,1)),
     directory_listed    INTEGER NOT NULL DEFAULT 0 CHECK (directory_listed IN (0,1)),
+    directory_review   TEXT NOT NULL DEFAULT 'pending'
+        CHECK (directory_review IN ('pending','approved','rejected')),
     created_at          INTEGER NOT NULL
 );
 CREATE INDEX bots_owner ON bots(owner_account_id);

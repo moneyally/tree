@@ -200,6 +200,12 @@ impl StoredProvider {
                 path.display()
             )));
         }
+        if fs::symlink_metadata(&header_path).is_ok() {
+            return Err(TreeError::Storage(format!(
+                "{} already exists",
+                header_path.display()
+            )));
+        }
         let crypto = RustCrypto::default();
         let salt: [u8; key::SALT_LEN] = openmls_traits::random::OpenMlsRand::random_array(&crypto)
             .map_err(|e| TreeError::Storage(format!("random: {e:?}")))?;

@@ -12,17 +12,24 @@ use bip39::Mnemonic;
 use ed25519_dalek::SigningKey;
 use hkdf::Hkdf;
 use sha2::Sha256;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::error::TreeError;
 
 const RECOVERY_AUTH_INFO: &[u8] = b"tree/recovery-auth/ed25519/v1";
 const ENTROPY_BYTES: usize = 32;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct RecoveryPhrase {
     entropy: [u8; ENTROPY_BYTES],
     phrase: String,
+}
+
+impl Drop for RecoveryPhrase {
+    fn drop(&mut self) {
+        self.entropy.zeroize();
+        self.phrase.zeroize();
+    }
 }
 
 impl RecoveryPhrase {

@@ -9,7 +9,7 @@
 //! server and then calls [`Group::confirm_commit`] (accepted) or
 //! [`Group::discard_commit`] (another commit won the epoch).
 
-use std::fmt;
+use std::{collections::HashSet, fmt};
 
 use openmls::prelude::{tls_codec::Deserialize, *};
 use openmls_traits::OpenMlsProvider;
@@ -1118,6 +1118,31 @@ impl Group {
         self.state.past.insert(0, left);
         self.state
             .prune(self.epoch().saturating_sub(Self::PAST_EPOCHS));
+
+        // Controls created by a member who is no longer in the MLS group
+        // must not permanently outrank later controls from surviving admins.
+        let current: HashSet<MemberId> = self
+            .mls
+            .members()
+            .map(|m| MemberId::of(&m.signature_key))
+            .collect();
+        if self
+            .state
+            .title_tag
+            .is_some_and(|(_, author)| !current.contains(&author))
+        {
+            self.state.title_tag = None;
+        }
+        if self
+            .state
+            .disappearing_tag
+            .is_some_and(|(_, author)| !current.contains(&author))
+        {
+            self.state.disappearing_tag = None;
+        }
+        self.state
+            .admin_tags
+            .retain(|(_, _, author)| current.contains(author));
     }
 
     fn save<P: TreeProvider>(&self, me: &Client<P>) -> Result<(), TreeError> {

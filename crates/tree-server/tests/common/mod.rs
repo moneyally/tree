@@ -32,7 +32,7 @@ impl TestServer {
 
 fn random<const N: usize>() -> [u8; N] {
     let mut b = [0u8; N];
-    getrandom::fill(&mut b).unwrap();
+    getrandom::getrandom(&mut b).unwrap();
     b
 }
 

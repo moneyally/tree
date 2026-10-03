@@ -13,6 +13,8 @@ pub struct Config {
     pub bind_addr: SocketAddr,
     /// `ADMIN_TOKEN_SHA256`: hex SHA-256 of the operator token. Unset = operator endpoints disabled.
     pub admin_token_sha256: Option<[u8; 32]>,
+    /// Server-only secret used to hash bot tokens.
+    pub bot_token_hmac_secret: Option<[u8; 32]>,
     /// `POW_BITS`: leading zero bits required for signup proof-of-work.
     pub pow_bits: u32,
     /// `MESSAGE_TTL_SECS`: undelivered messages older than this are purged.

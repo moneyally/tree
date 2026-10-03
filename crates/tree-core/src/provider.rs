@@ -41,6 +41,7 @@ pub trait TreeProvider: OpenMlsProvider {
     fn delete_meta(&self, _key: &str) -> Result<(), TreeError> {
         Ok(())
     }
+}
 
 impl TreeProvider for DefaultProvider {}
 impl TreeProvider for LibcruxProvider {}

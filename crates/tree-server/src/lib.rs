@@ -21,6 +21,7 @@ pub mod error;
 pub mod features;
 pub mod groups;
 pub mod keypackages;
+pub mod social;
 pub mod limits;
 pub mod messages;
 pub mod util;
@@ -184,6 +185,14 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/devices/{device_id}", delete(accounts::remove_device))
         .route("/v1/keypackages", post(keypackages::upload))
         .route("/v1/groups/{group_id}/devices", get(groups::list_devices))
+        .route("/v1/username", put(social::set_username).delete(social::delete_username))
+        .route("/v1/username/{username_hash}", get(social::lookup_username))
+        .route("/v1/message-requests", get(social::list_message_requests).post(social::create_message_request))
+        .route("/v1/message-requests/{requester_account_id}/accept", post(social::accept_message_request))
+        .route("/v1/message-requests/{requester_account_id}/reject", post(social::reject_message_request))
+        .route("/v1/blocks", get(social::list_blocks))
+        .route("/v1/blocks/{account_id}", post(social::block_account).delete(social::unblock_account))
+        .route("/v1/reports", post(social::report))
         .route("/v1/keypackages/claim", post(keypackages::claim))
         .route("/v1/keypackages/count", get(keypackages::count))
         .route("/v1/messages", post(messages::send).get(messages::fetch))

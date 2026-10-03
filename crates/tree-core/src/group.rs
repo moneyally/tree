@@ -113,6 +113,12 @@ pub enum Incoming {
     RemovedFromGroup,
     /// A future-epoch envelope was held locally until the corresponding commit arrives.
     HeldForRetry { epoch: u64 },
+    /// The group's E2E settings changed through an authenticated control message.
+    SettingsChanged {
+        seq: u64,
+        title: Option<String>,
+        disappearing_seconds: u32,
+    },
     /// Our own message or already merged commit echoed back; nothing to do.
     OwnEcho,
 }
@@ -155,6 +161,62 @@ impl Group {
 
     pub fn is_member(&self) -> bool {
         self.mls.is_active()
+    }
+
+
+    pub fn title(&self) -> Option<String> {
+        self.state.title.clone()
+    }
+
+    pub fn disappearing_seconds(&self) -> u32 {
+        self.state.disappearing_seconds
+    }
+
+    /// Encrypt a group-settings control message. Only the deterministic v1
+    /// administrator may create settings controls.
+    pub fn set_title<P: TreeProvider>(
+        &mut self,
+        me: &Client<P>,
+        title: Option<&str>,
+    ) -> Result<Vec<u8>, TreeError> {
+        if !self.is_admin(me) {
+            return Err(TreeError::Rejected(
+                "only the group administrator may change settings".into(),
+            ));
+        }
+        let title = title.map(str::trim).filter(|s| !s.is_empty());
+        if let Some(title) = title {
+            if title.len() > 128 {
+                return Err(TreeError::Group(
+                    "group title is limited to 128 UTF-8 bytes".into(),
+                ));
+            }
+            if title.chars().any(char::is_control) {
+                return Err(TreeError::Group(
+                    "group title contains control characters".into(),
+                ));
+            }
+        }
+        self.send_control(me, Control::SetTitle(title.map(ToOwned::to_owned)))
+    }
+
+    /// Set the group disappearing timer. Zero disables it; maximum is 30 days.
+    pub fn set_disappearing_seconds<P: TreeProvider>(
+        &mut self,
+        me: &Client<P>,
+        seconds: u32,
+    ) -> Result<Vec<u8>, TreeError> {
+        if seconds > 30 * 86_400 {
+            return Err(TreeError::Group(
+                "disappearing timer is limited to 30 days".into(),
+            ));
+        }
+        if !self.is_admin(me) {
+            return Err(TreeError::Rejected(
+                "only the group administrator may change settings".into(),
+            ));
+        }
+        self.send_control(me, Control::SetDisappearingSeconds(seconds))
     }
 
     /// Current members in leaf order.
@@ -376,6 +438,36 @@ impl Group {
 
     // ----- application messages ---------------------------------------------
 
+
+    fn send_control<P: TreeProvider>(
+        &mut self,
+        me: &Client<P>,
+        control: Control,
+    ) -> Result<Vec<u8>, TreeError> {
+        if !self.is_admin(me) || !self.mls.is_active() {
+            return Err(TreeError::NotAMember);
+        }
+        let old_seq = self.state.last_control_seq;
+        let seq = old_seq
+            .checked_add(1)
+            .ok_or_else(|| TreeError::Group("settings sequence exhausted".into()))?;
+        let bytes = encode_control(seq, &control)?;
+        let result = me.provider.atomically(|| {
+            let out = self
+                .mls
+                .create_message(&me.provider, &me.signer, &bytes)
+                .map_err(group_err)?;
+            let envelope = self.seal(me, &out.to_bytes().map_err(group_err)?)?;
+            self.state.last_control_seq = seq;
+            self.save(me)?;
+            Ok(envelope)
+        });
+        if result.is_err() {
+            self.state.last_control_seq = old_seq;
+        }
+        result
+    }
+
     /// Encrypts a chat message for everyone in the group (in the current
     /// epoch; also while a commit of ours is pending).
     pub fn send<P: TreeProvider>(&mut self, me: &Client<P>, body: &[u8]) -> Result<Vec<u8>, TreeError> {
@@ -480,10 +572,42 @@ impl Group {
                     return Err(TreeError::Rejected("authenticated data must be empty".into()));
                 }
                 let from = self.sender_id(epoch, &sender)?;
+                let body = m.into_bytes();
+                if body.starts_with(CONTROL_MAGIC) {
+                    if epoch != self.epoch() {
+                        return Err(TreeError::Rejected(
+                            "settings controls from past epochs are not accepted".into(),
+                        ));
+                    }
+                    let admin = self.admin_id().ok_or_else(|| {
+                        TreeError::Rejected("group has no administrator".into())
+                    })?;
+                    if from != admin {
+                        return Err(TreeError::Rejected(
+                            "settings control sender is not the administrator".into(),
+                        ));
+                    }
+                    let control = decode_control(&body)?;
+                    if control.seq() <= self.state.last_control_seq {
+                        self.mark_processed(epoch, hash);
+                        self.save(me)?;
+                        return Ok(Incoming::OwnEcho);
+                    }
+                    self.apply_control(&control)?;
+                    self.state.last_control_seq = control.seq();
+                    self.mark_processed(epoch, hash);
+                    self.state.future.retain(|p| sha256(&p.bytes) != hash);
+                    self.save(me)?;
+                    return Ok(Incoming::SettingsChanged {
+                        seq: control.seq(),
+                        title: self.state.title.clone(),
+                        disappearing_seconds: self.state.disappearing_seconds,
+                    });
+                }
                 self.mark_processed(epoch, hash);
                 self.state.future.retain(|p| sha256(&p.bytes) != hash);
                 self.save(me)?;
-                Ok(Incoming::Message { from, name, body: m.into_bytes() })
+                Ok(Incoming::Message { from, name, body })
             }
             ProcessedMessageContent::StagedCommitMessage(staged) => {
                 let Sender::Member(committer) = sender else {

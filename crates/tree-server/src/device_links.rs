@@ -21,7 +21,6 @@ use crate::{json_body, AppState};
 const LINK_TTL_SECS: i64 = 5 * 60;
 const LINK_CODE_DIGITS: u32 = 1_000_000;
 const JOIN_CONTEXT: &str = "tree-device-link-join-v1";
-const CONFIRM_CONTEXT: &str = "tree-device-link-confirm-v1";
 
 #[derive(Serialize)]
 pub struct InitiateResp {
@@ -74,9 +73,11 @@ pub struct LinkStatusResp {
     pub expires_at: i64,
 }
 
+type SessionFlags = (Vec<u8>, Option<Vec<u8>>, bool, bool, i64);
+
 fn session_row(
     row: &sqlx::sqlite::SqliteRow,
-) -> Result<(Vec<u8>, Option<Vec<u8>>, bool, bool, i64), sqlx::Error> {
+) -> Result<SessionFlags, sqlx::Error> {
     Ok((
         row.try_get("challenge")?,
         row.try_get("joiner_auth_pub")?,
@@ -242,10 +243,6 @@ pub struct InitiatorConfirmReq {
     pub code: String,
 }
 json_body!(InitiatorConfirmReq, |_cfg| 256);
-
-fn confirm_message(link_id: &str, code: &str) -> Vec<u8> {
-    format!("{CONFIRM_CONTEXT}\n{link_id}\n{code}\n").into_bytes()
-}
 
 fn validate_code(code: &str) -> ApiResult<()> {
     if code.len() != 6 || !code.bytes().all(|b| b.is_ascii_digit()) {

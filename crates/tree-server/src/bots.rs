@@ -426,8 +426,14 @@ async fn set_feature(
         }
     }
 
-    let sql = format!("UPDATE bots SET {column} = ? WHERE id = ? AND owner_account_id = ?");
-    sqlx::query(&sql)
+    let sql = match column {
+        "privacy_mode" => "UPDATE bots SET privacy_mode = ? WHERE id = ? AND owner_account_id = ?",
+        "join_groups" => "UPDATE bots SET join_groups = ? WHERE id = ? AND owner_account_id = ?",
+        "inline_mode" => "UPDATE bots SET inline_mode = ? WHERE id = ? AND owner_account_id = ?",
+        "directory_listed" => "UPDATE bots SET directory_listed = ? WHERE id = ? AND owner_account_id = ?",
+        _ => return Err(ApiError::not_found("unknown bot feature")),
+    };
+    sqlx::query(sql)
         .bind(i64::from(value))
         .bind(bot_id)
         .bind(account_id)
@@ -481,6 +487,29 @@ pub async fn register_gateway_device(
     }
 
     let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
+    if let Some(existing): Option<String> = sqlx::query_scalar(
+        "SELECT gateway_device_id FROM bot_identities WHERE bot_id = ?",
+    )
+    .bind(&identity.id)
+    .fetch_one(&mut *tx)
+    .await? {
+        return Ok((
+            StatusCode::OK,
+            Json(GatewayDeviceResp {
+                bot_id: identity.id,
+                account_id: identity.account_id,
+                device_id: existing,
+            }),
+        ));
+    }
+    let count: i64 = sqlx::query("SELECT COUNT(*) AS n FROM devices WHERE account_id = ?")
+        .bind(&identity.account_id)
+        .fetch_one(&mut *tx)
+        .await?
+        .try_get("n")?;
+    if count >= state.cfg.max_devices_per_account as i64 {
+        return Err(ApiError::limit_exceeded("device limit reached"));
+    }
     let account = identity.account_id.clone();
     let device_id = crate::util::new_id();
     sqlx::query(
@@ -666,8 +695,7 @@ pub async fn authenticate_token(
     .fetch_optional(&state.db)
     .await?;
     let row = row.ok_or_else(|| ApiError::unauthorized("invalid bot token"))?;
-    let stored: Vec<u8> = row.try_get("token_hmac")?
-        .ok_or_else(|| ApiError::unauthorized("invalid bot token"))?;
+    let stored: Option<Vec<u8>> = row.try_get("token_hmac")?;
     let account_id: String = row.try_get("account_id")?;
     let gateway_device_id: Option<String> = row.try_get("gateway_device_id")?;
     let stored = stored.ok_or_else(|| ApiError::unauthorized("invalid bot token"))?;

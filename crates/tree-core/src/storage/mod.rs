@@ -105,17 +105,25 @@ impl TreeProvider for StoredProvider {
         let conn = &self.storage.conn;
         conn.execute_batch("SAVEPOINT tree_op")
             .map_err(storage_err)?;
-        let result = op();
-        // Commit even when `op` failed: OpenMLS keeps its in-memory group and
-        // its storage in step as it goes, so whatever it wrote matches the
-        // in-memory state. Only a crash (no commit at all) rolls back.
-        if let Err(e) = conn.execute_batch("RELEASE tree_op") {
-            let _ = conn.execute_batch("ROLLBACK TO tree_op; RELEASE tree_op");
-            return Err(TreeError::Storage(format!(
-                "could not save; reload the group before continuing: {e}"
-            )));
+        match op() {
+            Ok(value) => {
+                if let Err(e) = conn.execute_batch("RELEASE tree_op") {
+                    let _ = conn.execute_batch("ROLLBACK TO tree_op; RELEASE tree_op");
+                    return Err(TreeError::Storage(format!(
+                        "could not save; reload the group before continuing: {e}"
+                    )));
+                }
+                Ok(value)
+            }
+            Err(err) => {
+                if let Err(e) = conn.execute_batch("ROLLBACK TO tree_op; RELEASE tree_op") {
+                    return Err(TreeError::Storage(format!(
+                        "operation failed ({err}) and rollback failed: {e}"
+                    )));
+                }
+                Err(err)
+            }
         }
-        result
     }
 
     fn remember_group(&self, group_id: &[u8]) -> Result<(), TreeError> {

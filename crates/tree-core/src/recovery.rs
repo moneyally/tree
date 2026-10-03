@@ -119,8 +119,9 @@ mod tests {
             &Mnemonic::from_entropy(&[1u8; 32]).unwrap().to_string()
         )
         .unwrap();
-        let mut words: Vec<&str> = phrase.phrase().split_whitespace().collect();
-        words[23] = "abandon";
-        assert!(RecoveryPhrase::from_phrase(&words.join(" ")).is_err());
+        let words: Vec<&str> = phrase.phrase().split_whitespace().collect();
+        let mut invalid = words.clone();
+        invalid[23] = if words[23] == "abandon" { "ability" } else { "abandon" };
+        assert!(RecoveryPhrase::from_phrase(&invalid.join(" ")).is_err());
     }
 }

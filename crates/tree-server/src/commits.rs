@@ -247,7 +247,8 @@ pub async fn submit(
             .filter(|d| *d != &sender && !removed_set.contains(*d))
             .cloned()
             .collect();
-        if !required_recipients.is_subset(&recipients.iter().cloned().collect()) {
+        let recipient_set: HashSet<String> = recipients.iter().cloned().collect();
+        if !required_recipients.is_subset(&recipient_set) {
             return Err(ApiError::bad_request(
                 "recipients must include every current member not being removed",
             ));

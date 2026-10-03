@@ -303,6 +303,17 @@ mod tests {
     }
 
     #[test]
+    fn decodes_legacy_version_one_state() {
+        let v2 = GroupState::default().encode();
+        assert!(v2.len() >= 5);
+        let mut v1 = v2[..v2.len() - 4].to_vec();
+        v1[0] = 1;
+        let decoded = GroupState::decode(&v1).unwrap();
+        assert!(decoded.processed.is_empty());
+        assert!(decoded.future.is_empty());
+    }
+
+    #[test]
     fn prune_drops_old_epochs() {
         let mut s = sample();
         s.prune(6);

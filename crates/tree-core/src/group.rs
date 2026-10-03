@@ -474,23 +474,23 @@ impl Group {
         };
         let hash = sha256(&pending.commit);
         let sealed_in = pending.epoch;
-        me.provider.atomically(|| {
-            let past = self.past_epoch(me)?;
-            let refreshed = self
+        self.atomic(me, |this| {
+            let past = this.past_epoch(me)?;
+            let refreshed = this
                 .mls
                 .pending_commit()
                 .is_some_and(|s| s.update_path_leaf_node().is_some());
-            self.mls
+            this.mls
                 .merge_pending_commit(&me.provider)
                 .map_err(group_err)?;
-            self.state.pending = None;
-            self.state.sent.push((sealed_in, hash));
+            this.state.pending = None;
+            this.state.sent.push((sealed_in, hash));
             if refreshed {
-                self.state.should_refresh = false;
+                this.state.should_refresh = false;
             }
-            self.entered_new_epoch(past);
-            self.save(me)?;
-            Ok(self.epoch())
+            this.entered_new_epoch(past);
+            this.save(me)?;
+            Ok(this.epoch())
         })
     }
 
@@ -501,12 +501,12 @@ impl Group {
         if self.state.pending.is_none() {
             return Ok(());
         }
-        me.provider.atomically(|| {
-            self.mls
+        self.atomic(me, |this| {
+            this.mls
                 .clear_pending_commit(me.provider.storage())
                 .map_err(group_err)?;
-            self.state.pending = None;
-            self.save(me)
+            this.state.pending = None;
+            this.save(me)
         })
     }
 
@@ -523,30 +523,23 @@ impl Group {
             return Err(TreeError::CommitPending);
         }
         let epoch = self.epoch();
-        me.provider.atomically(|| {
+        self.atomic(me, |this| {
             // Tree never stores proposals (F-007); make sure none can be
             // folded into this commit.
-            self.mls
+            this.mls
                 .clear_pending_proposals(me.provider.storage())
                 .map_err(group_err)?;
-            let result = build(&mut self.mls).and_then(|(commit, welcome)| {
-                // Sealed with the CURRENT epoch: what the other members hold.
-                let commit = self.seal(me, &commit.to_bytes().map_err(group_err)?)?;
-                let welcome = welcome
-                    .map(|w| w.to_bytes().map_err(group_err))
-                    .transpose()?;
-                self.state.pending = Some(Pending {
-                    epoch,
-                    commit,
-                    welcome,
-                });
-                self.save(me)
+            let (commit, welcome) = build(&mut this.mls)?;
+            let commit = this.seal(me, &commit.to_bytes().map_err(group_err)?)?;
+            let welcome = welcome
+                .map(|w| w.to_bytes().map_err(group_err))
+                .transpose()?;
+            this.state.pending = Some(Pending {
+                epoch,
+                commit,
+                welcome,
             });
-            if result.is_err() {
-                self.state.pending = None;
-                let _ = self.mls.clear_pending_commit(me.provider.storage());
-            }
-            result
+            this.save(me)
         })?;
         Ok(self.pending_commit().expect("pending commit just stored"))
     }
@@ -561,34 +554,29 @@ impl Group {
         if !self.is_admin(me) || !self.mls.is_active() {
             return Err(TreeError::NotAMember);
         }
-        let old_seq = self.state.last_control_seq;
-        let old_author = self.state.last_control_author;
-        let seq = old_seq
+        let seq = self
+            .state
+            .last_control_seq
             .checked_add(1)
             .ok_or_else(|| TreeError::Group("settings sequence exhausted".into()))?;
         let bytes = encode_control(seq, &control)?;
-        let result = me.provider.atomically(|| {
-            let out = self
+        self.atomic(me, |this| {
+            let out = this
                 .mls
                 .create_message(&me.provider, &me.signer, &bytes)
                 .map_err(group_err)?;
-            let envelope = self.seal(me, &out.to_bytes().map_err(group_err)?)?;
-            let members = self
+            let envelope = this.seal(me, &out.to_bytes().map_err(group_err)?)?;
+            let members = this
                 .mls
                 .members()
                 .map(|m| MemberId::of(&m.signature_key))
                 .collect::<Vec<_>>();
-            apply_control_state(&mut self.state, seq, me.member_id(), &control, &members)?;
-            self.state.last_control_seq = seq;
-            self.state.last_control_author = Some(me.member_id());
-            self.save(me)?;
+            apply_control_state(&mut this.state, seq, me.member_id(), &control, &members)?;
+            this.state.last_control_seq = seq;
+            this.state.last_control_author = Some(me.member_id());
+            this.save(me)?;
             Ok(envelope)
-        });
-        if result.is_err() {
-            self.state.last_control_seq = old_seq;
-            self.state.last_control_author = old_author;
-        }
-        result
+        })
     }
 
     /// Sends a structured text message using the group's current disappearing
@@ -788,14 +776,14 @@ impl Group {
         F: FnOnce(&mut Self) -> Result<(), TreeError>,
     {
         let body = event.encode()?;
-        me.provider.atomically(|| {
-            let out = self
+        self.atomic(me, |this| {
+            let out = this
                 .mls
                 .create_message(&me.provider, &me.signer, &body)
                 .map_err(group_err)?;
-            let envelope = self.seal(me, &out.to_bytes().map_err(group_err)?)?;
-            update(self)?;
-            self.save(me)?;
+            let envelope = this.seal(me, &out.to_bytes().map_err(group_err)?)?;
+            update(this)?;
+            this.save(me)?;
             Ok(envelope)
         })
     }
@@ -815,12 +803,12 @@ impl Group {
                 "message body uses a reserved Tree control prefix".into(),
             ));
         }
-        me.provider.atomically(|| {
-            let out = self
+        self.atomic(me, |this| {
+            let out = this
                 .mls
                 .create_message(&me.provider, &me.signer, body)
                 .map_err(group_err)?;
-            self.seal(me, &out.to_bytes().map_err(group_err)?)
+            this.seal(me, &out.to_bytes().map_err(group_err)?)
         })
     }
 
@@ -1147,6 +1135,36 @@ impl Group {
         let encoded = self.state.encode()?;
         me.provider
             .save_group_state(self.mls.group_id().as_slice(), &encoded)
+    }
+
+    /// Runs a group operation transactionally. Stored providers roll the
+    /// database back on error, so reload the MLS and Tree state afterward.
+    fn atomic<P, T, F>(&mut self, me: &Client<P>, op: F) -> Result<T, TreeError>
+    where
+        P: TreeProvider,
+        F: FnOnce(&mut Self) -> Result<T, TreeError>,
+    {
+        let reload = me.provider.reload_group_after_error();
+        let state_before = (!reload).then(|| self.state.clone());
+        let result = me.provider.atomically(|| op(self));
+        if result.is_err() {
+            if reload {
+                let group_id = self.mls.group_id().clone();
+                let mls = MlsGroup::load(me.provider.storage(), &group_id)
+                    .map_err(crate::storage::storage_err)?
+                    .ok_or(TreeError::NoSuchGroup)?;
+                let state = match me.provider.load_group_state(group_id.as_slice())? {
+                    Some(bytes) => GroupState::decode(&bytes)?,
+                    None => GroupState::default(),
+                };
+                self.mls = mls;
+                self.state = state;
+                self.reconcile_admins();
+            } else if let Some(state) = state_before {
+                self.state = state;
+            }
+        }
+        result
     }
 
     fn reconcile_admins(&mut self) {

@@ -174,7 +174,10 @@ pub(crate) fn kind(f: &Feature) -> Kind {
         Kind::SecurityPolicy
     } else if MODERATION_KEYS.contains(&f.key) || f.scope == Scope::Server {
         Kind::ModerationPolicy
-    } else if f.plan == Plan::Pro || matches!(prefix, "points" | "pro") || f.key == "bot.pay_out_points" {
+    } else if f.plan == Plan::Pro
+        || matches!(prefix, "points" | "pro")
+        || f.key == "bot.pay_out_points"
+    {
         Kind::BillingCapability
     } else if f.scope == Scope::Chat {
         Kind::ChatPolicy
@@ -192,7 +195,10 @@ pub struct Registry {
 impl Registry {
     /// Registry with the stage-1 features from the design document.
     pub fn standard() -> Self {
-        let mut r = Self { defs: BTreeMap::new(), state: BTreeMap::new() };
+        let mut r = Self {
+            defs: BTreeMap::new(),
+            state: BTreeMap::new(),
+        };
         for f in standard_features() {
             r.defs.insert(f.key, f);
         }
@@ -212,7 +218,8 @@ impl Registry {
             }
         }
         // (kind() looks at security and moderation before the plan)
-        if f.plan != Plan::Free && matches!(kind(&f), Kind::SecurityPolicy | Kind::ModerationPolicy) {
+        if f.plan != Plan::Free && matches!(kind(&f), Kind::SecurityPolicy | Kind::ModerationPolicy)
+        {
             return Err(FeatureError::LockedAlways(NOT_SOLD));
         }
         self.defs.insert(f.key, f);
@@ -220,7 +227,9 @@ impl Registry {
     }
 
     fn def(&self, key: &str) -> Result<&Feature, FeatureError> {
-        self.defs.get(key).ok_or_else(|| FeatureError::Unknown(key.to_string()))
+        self.defs
+            .get(key)
+            .ok_or_else(|| FeatureError::Unknown(key.to_string()))
     }
 
     fn raw_state(&self, scope: Scope, f: &Feature) -> (State, Option<String>) {
@@ -229,7 +238,10 @@ impl Registry {
             Lock::AlwaysOff(_) => return (State::Released, None),
             Lock::None => {}
         }
-        self.state.get(&(scope, f.key)).cloned().unwrap_or((f.default, None))
+        self.state
+            .get(&(scope, f.key))
+            .cloned()
+            .unwrap_or((f.default, None))
     }
 
     /// A server-level flag with the same key released => locked below.
@@ -259,8 +271,17 @@ impl Registry {
             Lock::None if self.chat_lock(f) => Some(LockReason::Chat),
             Lock::None => None,
         };
-        let state = if matches!(locked_by, Some(LockReason::Server | LockReason::Chat)) { State::Released } else { state };
-        Ok(Status { key: f.key, state, option, locked_by })
+        let state = if matches!(locked_by, Some(LockReason::Server | LockReason::Chat)) {
+            State::Released
+        } else {
+            state
+        };
+        Ok(Status {
+            key: f.key,
+            state,
+            option,
+            locked_by,
+        })
     }
 
     /// All features of one scope, for drawing a settings screen.
@@ -272,7 +293,12 @@ impl Registry {
             .collect()
     }
 
-    pub fn apply(&mut self, key: &str, option: Option<String>, who: Caller) -> Result<Status, FeatureError> {
+    pub fn apply(
+        &mut self,
+        key: &str,
+        option: Option<String>,
+        who: Caller,
+    ) -> Result<Status, FeatureError> {
         let f = self.def(key)?.clone();
         if let Lock::AlwaysOff(r) = f.lock {
             return Err(FeatureError::ReleasedAlways(r));
@@ -282,7 +308,8 @@ impl Registry {
             return Err(FeatureError::PlanRequired);
         }
         if matches!(f.lock, Lock::None) {
-            self.state.insert((f.scope, f.key), (State::Applied, option));
+            self.state
+                .insert((f.scope, f.key), (State::Applied, option));
         }
         self.status(key)
     }
@@ -316,9 +343,14 @@ impl Registry {
     /// (e.g. no read receipts in this chat). Members then see it released
     /// and locked (`LOCKED_BY_CHAT`). Only plain user preferences can be
     /// locked this way, never security, moderation or billing features.
-    pub fn release_for_chat(&mut self, key: &str, who: Caller) -> Result<Status, FeatureError> {
+    pub fn release_for_chat(
+        &mut self,
+        key: &str,
+        who: Caller,
+    ) -> Result<Status, FeatureError> {
         let f = self.chat_lockable(key, who)?;
-        self.state.insert((Scope::Chat, f.key), (State::Released, None));
+        self.state
+            .insert((Scope::Chat, f.key), (State::Released, None));
         self.status(key)
     }
 
@@ -353,7 +385,14 @@ const NOT_SOLD: &str = "security and safety features are never sold";
 const NOT_CHAT_LOCKABLE: &str = "a chat can only lock personal preferences, not security settings";
 
 const fn feat(key: &'static str, scope: Scope, default: State, stage: u8) -> Feature {
-    Feature { key, scope, default, lock: Lock::None, plan: Plan::Free, stage }
+    Feature {
+        key,
+        scope,
+        default,
+        lock: Lock::None,
+        plan: Plan::Free,
+        stage,
+    }
 }
 
 /// Stage-1 features and permanent locks from the design document.
@@ -403,18 +442,61 @@ pub fn standard_features() -> Vec<Feature> {
         feat("server.calls", Server, Applied, 3),
     ];
     let locked = [
-        ("chat.e2e", Chat, Lock::AlwaysOn("end-to-end encryption is why Tree exists")),
-        ("user.report", User, Lock::AlwaysOn("reporting is required for safety and app stores")),
-        ("user.key_change_warning", User, Lock::AlwaysOn("without it a man-in-the-middle goes unnoticed")),
-        ("user.device_link_code", User, Lock::AlwaysOn("QR-only device linking is phishable")),
-        ("points.send_to_user", User, Lock::AlwaysOff("points never move between people")),
-        ("points.sell_or_exchange", User, Lock::AlwaysOff("points are not money or a token")),
-        ("bot.pay_out_points", Bot, Lock::AlwaysOff("bots can receive points but never pay them out")),
-        ("chat.private_to_public", Chat, Lock::AlwaysOff("old private messages must never become public")),
+        (
+            "chat.e2e",
+            Chat,
+            Lock::AlwaysOn("end-to-end encryption is why Tree exists"),
+        ),
+        (
+            "user.report",
+            User,
+            Lock::AlwaysOn("reporting is required for safety and app stores"),
+        ),
+        (
+            "user.key_change_warning",
+            User,
+            Lock::AlwaysOn("without it a man-in-the-middle goes unnoticed"),
+        ),
+        (
+            "user.device_link_code",
+            User,
+            Lock::AlwaysOn("QR-only device linking is phishable"),
+        ),
+        (
+            "points.send_to_user",
+            User,
+            Lock::AlwaysOff("points never move between people"),
+        ),
+        (
+            "points.sell_or_exchange",
+            User,
+            Lock::AlwaysOff("points are not money or a token"),
+        ),
+        (
+            "bot.pay_out_points",
+            Bot,
+            Lock::AlwaysOff("bots can receive points but never pay them out"),
+        ),
+        (
+            "chat.private_to_public",
+            Chat,
+            Lock::AlwaysOff("old private messages must never become public"),
+        ),
     ];
     for (key, scope, lock) in locked {
-        let default = if matches!(lock, Lock::AlwaysOn(_)) { Applied } else { Released };
-        v.push(Feature { key, scope, default, lock, plan: Plan::Free, stage: 1 });
+        let default = if matches!(lock, Lock::AlwaysOn(_)) {
+            Applied
+        } else {
+            Released
+        };
+        v.push(Feature {
+            key,
+            scope,
+            default,
+            lock,
+            plan: Plan::Free,
+            stage: 1,
+        });
     }
     v
 }
@@ -439,9 +521,23 @@ mod tests {
         for key in SECURITY_KEYS.iter().chain(MODERATION_KEYS) {
             assert!(all.iter().any(|f| f.key == *key), "{key}");
         }
-        let pro = Feature { key: "user.pro_theme", scope: Scope::User, default: State::Released, lock: Lock::None, plan: Plan::Pro, stage: 3 };
+        let pro = Feature {
+            key: "user.pro_theme",
+            scope: Scope::User,
+            default: State::Released,
+            lock: Lock::None,
+            plan: Plan::Pro,
+            stage: 3,
+        };
         assert_eq!(kind(&pro), Kind::BillingCapability);
-        let bot = Feature { key: "bot.inline", scope: Scope::Bot, default: State::Released, lock: Lock::None, plan: Plan::Free, stage: 2 };
+        let bot = Feature {
+            key: "bot.inline",
+            scope: Scope::Bot,
+            default: State::Released,
+            lock: Lock::None,
+            plan: Plan::Free,
+            stage: 2,
+        };
         assert_eq!(kind(&bot), Kind::UserPreference);
     }
 }

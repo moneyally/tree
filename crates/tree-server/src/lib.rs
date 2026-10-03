@@ -275,6 +275,13 @@ pub async fn purge_expired(state: &AppState, now: i64) -> Result<u64, sqlx::Erro
         .execute(&state.db)
         .await?
         .rows_affected();
+    let expired_device_links = sqlx::query(
+        "DELETE FROM device_link_sessions WHERE expires_at <= ? OR used = 1",
+    )
+    .bind(now)
+    .execute(&state.db)
+    .await?
+    .rows_affected();
     let orphans = sqlx::query(
         "DELETE FROM blobs WHERE NOT EXISTS (SELECT 1 FROM deliveries d WHERE d.blob_id = blobs.id)",
     )
@@ -286,7 +293,7 @@ pub async fn purge_expired(state: &AppState, now: i64) -> Result<u64, sqlx::Erro
     )
     .execute(&state.db)
     .await?;
-    Ok(expired + orphans + expired_files)
+    Ok(expired + orphans + expired_files + expired_device_links)
 }
 
 /// A running server.

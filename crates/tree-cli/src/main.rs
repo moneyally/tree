@@ -864,16 +864,6 @@ async fn receive(args: ReceiveArgs) -> Result<()> {
                         hex::encode(group.id())
                     );
                 }
-                Incoming::SettingsChanged {
-                    seq,
-                    title,
-                    disappearing_seconds,
-                } => {
-                    println!(
-                        "settings_changed group={} seq={seq} title={title:?} disappearing_seconds={disappearing_seconds}",
-                        hex::encode(group.id())
-                    );
-                }
                 Incoming::StructuredMessages { events } => {
                     println!(
                         "structured_messages group={} events={}",

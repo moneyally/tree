@@ -340,11 +340,13 @@ mod tests {
 
     #[test]
     fn decodes_legacy_version_one_state() {
-        let v2 = GroupState::default().encode();
-        assert!(v2.len() >= 5);
-        let mut v1 = v2[..v2.len() - 4].to_vec();
+        let v3 = GroupState::default().encode();
+        let mut v1 = v3.clone();
         v1[0] = 1;
+        v1.remove(1 + 1 + 1); // admin flag
+        v1.truncate(v1.len() - 4); // processed/future counters
         let decoded = GroupState::decode(&v1).unwrap();
+        assert!(decoded.admin.is_none());
         assert!(decoded.processed.is_empty());
         assert!(decoded.future.is_empty());
     }

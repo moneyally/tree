@@ -103,7 +103,8 @@ impl OpenMlsProvider for StoredProvider {
 impl TreeProvider for StoredProvider {
     fn atomically<T>(&self, op: impl FnOnce() -> Result<T, TreeError>) -> Result<T, TreeError> {
         let conn = &self.storage.conn;
-        conn.execute_batch("SAVEPOINT tree_op").map_err(storage_err)?;
+        conn.execute_batch("SAVEPOINT tree_op")
+            .map_err(storage_err)?;
         let result = op();
         // Commit even when `op` failed: OpenMLS keeps its in-memory group and
         // its storage in step as it goes, so whatever it wrote matches the
@@ -120,7 +121,10 @@ impl TreeProvider for StoredProvider {
     fn remember_group(&self, group_id: &[u8]) -> Result<(), TreeError> {
         self.storage
             .conn
-            .execute("INSERT OR IGNORE INTO tree_groups (group_id) VALUES (?1)", params![group_id])
+            .execute(
+                "INSERT OR IGNORE INTO tree_groups (group_id) VALUES (?1)",
+                params![group_id],
+            )
             .map(|_| ())
             .map_err(storage_err)
     }
@@ -150,7 +154,11 @@ impl TreeProvider for StoredProvider {
     fn meta_optional(&self, key: &str) -> Result<Option<Vec<u8>>, TreeError> {
         self.storage
             .conn
-            .query_row("SELECT value FROM tree_meta WHERE key = ?1", params![key], |r| r.get(0))
+            .query_row(
+                "SELECT value FROM tree_meta WHERE key = ?1",
+                params![key],
+                |r| r.get(0),
+            )
             .optional()
             .map_err(storage_err)
     }
@@ -169,17 +177,28 @@ impl StoredProvider {
     pub(crate) fn load_group_state(&self, group_id: &[u8]) -> Result<Option<Vec<u8>>, TreeError> {
         self.storage
             .conn
-            .query_row("SELECT state FROM tree_group_state WHERE group_id = ?1", params![group_id], |r| r.get(0))
+            .query_row(
+                "SELECT state FROM tree_group_state WHERE group_id = ?1",
+                params![group_id],
+                |r| r.get(0),
+            )
             .optional()
             .map_err(storage_err)
     }
 
     /// Creates a new encrypted database at `path` (which must not exist yet)
     /// and its key header next to it.
-    pub(crate) fn create(path: &Path, source: &dyn KeySource, params: KdfParams) -> Result<Self, TreeError> {
+    pub(crate) fn create(
+        path: &Path,
+        source: &dyn KeySource,
+        params: KdfParams,
+    ) -> Result<Self, TreeError> {
         let header_path = KeyHeader::path_for(path);
         if path.exists() {
-            return Err(TreeError::Storage(format!("{} already exists", path.display())));
+            return Err(TreeError::Storage(format!(
+                "{} already exists",
+                path.display()
+            )));
         }
         let crypto = RustCrypto::default();
         let salt: [u8; key::SALT_LEN] = openmls_traits::random::OpenMlsRand::random_array(&crypto)
@@ -206,8 +225,12 @@ impl StoredProvider {
             )
             .map_err(storage_err)?;
             conn.execute_batch(TREE_TABLES_V2).map_err(storage_err)?;
-            conn.pragma_update(None, "user_version", TREE_SCHEMA_VERSION).map_err(storage_err)?;
-            Ok(Self { crypto, storage: SqlStorage { conn } })
+            conn.pragma_update(None, "user_version", TREE_SCHEMA_VERSION)
+                .map_err(storage_err)?;
+            Ok(Self {
+                crypto,
+                storage: SqlStorage { conn },
+            })
         };
         build().inspect_err(|_| {
             // Never leave a half-made identity behind.
@@ -219,22 +242,33 @@ impl StoredProvider {
     /// Opens an existing database. A wrong key gives [`TreeError::WrongKey`].
     pub(crate) fn open(path: &Path, source: &dyn KeySource) -> Result<Self, TreeError> {
         if !path.is_file() {
-            return Err(TreeError::Storage(format!("{} does not exist", path.display())));
+            return Err(TreeError::Storage(format!(
+                "{} does not exist",
+                path.display()
+            )));
         }
         let header = KeyHeader::read(path)?;
         let db_key = source.database_key(&header)?;
         let mut conn = open_connection(path, Some(&db_key))?;
         drop(db_key);
-        let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).map_err(storage_err)?;
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .map_err(storage_err)?;
         if !(1..=TREE_SCHEMA_VERSION).contains(&version) {
-            return Err(TreeError::Storage(format!("unsupported database version {version}")));
+            return Err(TreeError::Storage(format!(
+                "unsupported database version {version}"
+            )));
         }
         migrate(&mut conn)?;
         if version < TREE_SCHEMA_VERSION {
             conn.execute_batch(TREE_TABLES_V2).map_err(storage_err)?;
-            conn.pragma_update(None, "user_version", TREE_SCHEMA_VERSION).map_err(storage_err)?;
+            conn.pragma_update(None, "user_version", TREE_SCHEMA_VERSION)
+                .map_err(storage_err)?;
         }
-        Ok(Self { crypto: RustCrypto::default(), storage: SqlStorage { conn } })
+        Ok(Self {
+            crypto: RustCrypto::default(),
+            storage: SqlStorage { conn },
+        })
     }
 
     /// Unencrypted database, only to prove in tests that the scan for
@@ -249,13 +283,19 @@ impl StoredProvider {
         )
         .map_err(storage_err)?;
         conn.execute_batch(TREE_TABLES_V2).map_err(storage_err)?;
-        Ok(Self { crypto: RustCrypto::default(), storage: SqlStorage { conn } })
+        Ok(Self {
+            crypto: RustCrypto::default(),
+            storage: SqlStorage { conn },
+        })
     }
 
     pub(crate) fn put_meta(&self, key: &str, value: &[u8]) -> Result<(), TreeError> {
         self.storage
             .conn
-            .execute("INSERT OR REPLACE INTO tree_meta (key, value) VALUES (?1, ?2)", params![key, value])
+            .execute(
+                "INSERT OR REPLACE INTO tree_meta (key, value) VALUES (?1, ?2)",
+                params![key, value],
+            )
             .map(|_| ())
             .map_err(storage_err)
     }
@@ -263,7 +303,11 @@ impl StoredProvider {
     pub(crate) fn meta(&self, key: &str) -> Result<Vec<u8>, TreeError> {
         self.storage
             .conn
-            .query_row("SELECT value FROM tree_meta WHERE key = ?1", params![key], |r| r.get(0))
+            .query_row(
+                "SELECT value FROM tree_meta WHERE key = ?1",
+                params![key],
+                |r| r.get(0),
+            )
             .optional()
             .map_err(storage_err)?
             .ok_or_else(|| TreeError::Storage(format!("identity record {key:?} missing")))
@@ -272,7 +316,11 @@ impl StoredProvider {
     pub(crate) fn meta_optional(&self, key: &str) -> Result<Option<Vec<u8>>, TreeError> {
         self.storage
             .conn
-            .query_row("SELECT value FROM tree_meta WHERE key = ?1", params![key], |r| r.get(0))
+            .query_row(
+                "SELECT value FROM tree_meta WHERE key = ?1",
+                params![key],
+                |r| r.get(0),
+            )
             .optional()
             .map_err(storage_err)
     }
@@ -284,7 +332,8 @@ impl StoredProvider {
             .prepare("SELECT group_id FROM tree_groups ORDER BY seq")
             .map_err(storage_err)?;
         let rows = stmt.query_map([], |r| r.get(0)).map_err(storage_err)?;
-        rows.collect::<Result<Vec<Vec<u8>>, _>>().map_err(storage_err)
+        rows.collect::<Result<Vec<Vec<u8>>, _>>()
+            .map_err(storage_err)
     }
 }
 
@@ -306,7 +355,8 @@ pub(crate) fn private_file(path: &Path, truncate: bool) -> Result<File, TreeErro
         use std::os::unix::fs::OpenOptionsExt;
         o.mode(0o600);
     }
-    o.open(path).map_err(|e| TreeError::Storage(format!("cannot create {}: {e}", path.display())))
+    o.open(path)
+        .map_err(|e| TreeError::Storage(format!("cannot create {}: {e}", path.display())))
 }
 
 /// Runs the OpenMLS storage migrations (idempotent).
@@ -322,7 +372,8 @@ fn open_connection(path: &Path, key: Option<&DbKey>) -> Result<Connection, TreeE
     let conn = Connection::open_with_flags(path, flags).map_err(storage_err)?;
     // SQLCipher would otherwise write its own error log to stderr / logcat
     // (e.g. on every wrong passphrase). Errors still reach the caller.
-    conn.pragma_update(None, "cipher_log_level", "NONE").map_err(storage_err)?;
+    conn.pragma_update(None, "cipher_log_level", "NONE")
+        .map_err(storage_err)?;
     if let Some(key) = key {
         apply_key(&conn, key)?;
     }
@@ -334,14 +385,20 @@ fn open_connection(path: &Path, key: Option<&DbKey>) -> Result<Connection, TreeE
         .optional()
         .map_err(storage_err)?;
     if cipher.is_none() {
-        return Err(TreeError::Storage("SQLite was built without SQLCipher".into()));
+        return Err(TreeError::Storage(
+            "SQLite was built without SQLCipher".into(),
+        ));
     }
 
     // Reading the schema decrypts and authenticates page 1: a wrong key or a
     // modified file fails here.
-    match conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0)) {
+    match conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| {
+        r.get::<_, i64>(0)
+    }) {
         Ok(_) => {}
-        Err(rusqlite::Error::SqliteFailure(e, _)) if e.code == rusqlite::ErrorCode::NotADatabase => {
+        Err(rusqlite::Error::SqliteFailure(e, _))
+            if e.code == rusqlite::ErrorCode::NotADatabase =>
+        {
             return Err(TreeError::WrongKey)
         }
         Err(e) => return Err(storage_err(e)),
@@ -370,7 +427,11 @@ fn apply_key(conn: &Connection, key: &DbKey) -> Result<(), TreeError> {
     // SQLCipher copies the key bytes before returning and does not keep the
     // pointer. `spec` outlives the call.
     let rc = unsafe {
-        ffi::sqlite3_key(conn.handle(), spec.as_ptr().cast(), spec.len() as std::os::raw::c_int)
+        ffi::sqlite3_key(
+            conn.handle(),
+            spec.as_ptr().cast(),
+            spec.len() as std::os::raw::c_int,
+        )
     };
     if rc != ffi::SQLITE_OK {
         return Err(TreeError::Storage(format!("sqlite3_key failed ({rc})")));

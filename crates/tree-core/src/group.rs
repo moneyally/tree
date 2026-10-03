@@ -262,9 +262,7 @@ impl Group {
             return Err(TreeError::UnknownMember(target.to_hex()));
         }
         if !self.state.admins.contains(&target) && self.state.admins.len() >= 64 {
-            return Err(TreeError::Group(
-                "administrator limit reached".into(),
-            ));
+            return Err(TreeError::Group("administrator limit reached".into()));
         }
         self.send_control(me, Control::AddAdmin(target))
     }

@@ -43,6 +43,9 @@ const META_NAME: &str = "name";
 const META_CIPHERSUITE: &str = "ciphersuite";
 const META_SIGNATURE_KEY: &str = "signature_public_key";
 const META_CREDENTIAL: &str = "credential";
+const META_SERVER_AUTH_SEED: &str = "server_auth_seed";
+const META_SERVER_ACCOUNT: &str = "server_account_id";
+const META_SERVER_DEVICE: &str = "server_device_id";
 
 impl Client<StoredProvider> {
     /// Creates a new device identity in a new encrypted database at `path`
@@ -118,6 +121,44 @@ impl Client<StoredProvider> {
     /// (including groups it was later removed from).
     pub fn group_ids(&self) -> Result<Vec<Vec<u8>>, TreeError> {
         self.provider.group_ids()
+    }
+
+    /// Stores the 32-byte Ed25519 seed used only to authenticate HTTP
+    /// requests to a Tree server. The value is stored inside the SQLCipher
+    /// database, never in a sidecar plaintext file.
+    pub fn set_server_auth_seed(&self, seed: &[u8; 32]) -> Result<(), TreeError> {
+        self.provider.put_meta(META_SERVER_AUTH_SEED, seed)?;
+        Ok(())
+    }
+
+    /// Returns the persisted server-auth seed, if this device has been
+    /// registered with a Tree server.
+    pub fn server_auth_seed(&self) -> Result<Option<[u8; 32]>, TreeError> {
+        self.provider
+            .meta_optional(META_SERVER_AUTH_SEED)?
+            .map(|v| v.try_into().map_err(|_| TreeError::Storage("server auth seed is damaged".into())))
+            .transpose()
+    }
+
+    /// Stores the server account/device identifiers belonging to this local
+    /// profile. They are metadata, but are kept encrypted with the profile.
+    pub fn set_server_account(&self, account_id: &str, device_id: &str) -> Result<(), TreeError> {
+        self.provider.put_meta(META_SERVER_ACCOUNT, account_id.as_bytes())?;
+        self.provider.put_meta(META_SERVER_DEVICE, device_id.as_bytes())?;
+        Ok(())
+    }
+
+    pub fn server_account(&self) -> Result<Option<(String, String)>, TreeError> {
+        let account = self.provider.meta_optional(META_SERVER_ACCOUNT)?;
+        let device = self.provider.meta_optional(META_SERVER_DEVICE)?;
+        match (account, device) {
+            (None, None) => Ok(None),
+            (Some(a), Some(d)) => Ok(Some((
+                String::from_utf8(a).map_err(|_| TreeError::Storage("server account id is damaged".into()))?,
+                String::from_utf8(d).map_err(|_| TreeError::Storage("server device id is damaged".into()))?,
+            ))),
+            _ => Err(TreeError::Storage("server account metadata is incomplete".into())),
+        }
     }
 
     /// Loads a stored group. Load each group once and keep the [`Group`]:

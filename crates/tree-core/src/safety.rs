@@ -47,11 +47,31 @@ fn fingerprint_hex(fp: &[u8; 32]) -> String {
 }
 
 fn parse_fingerprint(s: &str) -> Result<[u8; 32], TreeError> {
-    let bytes = hex::decode(s)
-        .map_err(|_| TreeError::Storage("stored safety fingerprint is damaged".into()))?;
-    bytes
-        .try_into()
-        .map_err(|_| TreeError::Storage("stored safety fingerprint has wrong size".into()))
+    if s.len() != 64 {
+        return Err(TreeError::Storage(
+            "stored safety fingerprint has wrong size".into(),
+        ));
+    }
+    let mut out = [0u8; 32];
+    for (i, pair) in s.as_bytes().chunks_exact(2).enumerate() {
+        let hi = hex_nibble(pair[0]).ok_or_else(|| {
+            TreeError::Storage("stored safety fingerprint is damaged".into())
+        })?;
+        let lo = hex_nibble(pair[1]).ok_or_else(|| {
+            TreeError::Storage("stored safety fingerprint is damaged".into())
+        })?;
+        out[i] = (hi << 4) | lo;
+    }
+    Ok(out)
+}
+
+fn hex_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn load<P: TreeProvider>(provider: &P) -> Result<BTreeMap<String, StoredPeer>, TreeError> {

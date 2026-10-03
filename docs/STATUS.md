@@ -160,7 +160,7 @@ Each needs the owner's confirmation; the reasons are in PROTOCOL.md.
 3. HANDOFF 3.3 command-line client + authenticated group roster — implemented on branch; CI/local compile not yet verified.
 4. Identity basics: recovery primitive/server flow, per-device safety fingerprint, username hash, message requests, blocking, and opaque report transport — implemented on branch; multi-device safety UX and message franking remain.
 5. Next: complete identity semantics and replay/future-epoch handling, then group administration/settings.
-5. Group administration in the MLS group context: admins, kick, invite
+6. Group administration in the MLS group context: admins, kick, invite
    links, chat settings that devices enforce (disappearing, edit window,
    media, ...), the four missing stage-1 keys.
 6. Files: per-file key-committing encryption + encrypted blob service.

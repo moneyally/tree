@@ -28,6 +28,12 @@ pub trait TreeProvider: OpenMlsProvider {
         Ok(())
     }
 
+    /// Reloads Tree's persisted per-group state after a failed atomic
+    /// operation. In-memory providers have nothing to reload.
+    fn load_group_state(&self, _group_id: &[u8]) -> Result<Option<Vec<u8>>, TreeError> {
+        Ok(None)
+    }
+
     /// Stores small device-local metadata. StoredProvider encrypts it with
     /// SQLCipher; in-memory providers intentionally discard it.
     fn put_meta(&self, _key: &str, _value: &[u8]) -> Result<(), TreeError> {

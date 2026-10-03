@@ -24,7 +24,8 @@ pub const FILE_CAPABILITY_HEADER: &str = "x-tree-file-capability";
 pub struct UploadFileReq {
     pub ciphertext: String,
 }
-json_body!(UploadFileReq, |cfg| cfg.max_file_bytes.div_ceil(3) * 4 + MAX_META);
+json_body!(UploadFileReq, |cfg| cfg.max_file_bytes.div_ceil(3) * 4
+    + MAX_META);
 
 #[derive(Serialize)]
 pub struct UploadFileResp {

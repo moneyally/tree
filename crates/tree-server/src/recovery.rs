@@ -14,7 +14,7 @@ use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 
-use crate::auth::{parse_json, parse_public_key, read_body, Signed, NoBody};
+use crate::auth::{parse_json, parse_public_key, read_body, Signed};
 use crate::error::{ApiError, ApiResult};
 use crate::util::{check_id, new_id, now_secs, today, unb64};
 use crate::{json_body, AppState};
@@ -53,10 +53,7 @@ pub async fn setup(
     .await?;
 
     Ok(Json(SetupRecoveryResp {
-        recovery_pub: base64::Engine::encode(
-            &base64::engine::general_purpose::STANDARD,
-            raw,
-        ),
+        recovery_pub: crate::util::b64(&raw),
     }))
 }
 
@@ -167,7 +164,7 @@ pub async fn recover(
     }
 
     let duplicate = sqlx::query("SELECT 1 FROM devices WHERE auth_pub = ?")
-        .bind(new_auth_pub)
+        .bind(&new_auth_pub[..])
         .fetch_optional(&state.db)
         .await?
         .is_some();
@@ -197,7 +194,7 @@ pub async fn recover(
     )
     .bind(&device_id)
     .bind(&body.account_id)
-    .bind(new_auth_pub)
+    .bind(&new_auth_pub[..])
     .bind(today())
     .execute(&mut *tx)
     .await?;

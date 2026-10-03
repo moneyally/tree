@@ -576,6 +576,7 @@ impl Group {
                 .collect::<Vec<_>>();
             apply_control_state(&mut self.state, &control, &members)?;
             self.state.last_control_seq = seq;
+            self.state.last_control_author = Some(me.member_id());
             self.save(me)?;
             Ok(envelope)
         });
@@ -963,7 +964,13 @@ impl Group {
                         ));
                     }
                     let control = decode_control(&body)?;
-                    if control.seq <= self.state.last_control_seq {
+                    let stale = control.seq < self.state.last_control_seq
+                        || (control.seq == self.state.last_control_seq
+                            && self
+                                .state
+                                .last_control_author
+                                .is_some_and(|author| from <= author));
+                    if stale {
                         self.mark_processed(epoch, hash);
                         self.save(me)?;
                         return Ok(Incoming::OwnEcho);
@@ -975,6 +982,7 @@ impl Group {
                         .collect::<Vec<_>>();
                     apply_control_state(&mut self.state, &control.control, &members)?;
                     self.state.last_control_seq = control.seq;
+                    self.state.last_control_author = Some(from);
                     self.mark_processed(epoch, hash);
                     self.state.future.retain(|p| sha256(&p.bytes) != hash);
                     self.save(me)?;
@@ -1139,7 +1147,7 @@ impl Group {
         match &event {
             MessageEvent::New {
                 id,
-                sent_at: _,
+                sent_at,
                 ttl_secs,
                 view_once,
                 ..
@@ -1150,10 +1158,14 @@ impl Group {
                 if *ttl_secs > 30 * 86_400 {
                     return Err(TreeError::Group("message TTL exceeds 30 days".into()));
                 }
+                let created_at = (*sent_at).min(now);
+                if !self.state.messages.accept_sender_seq(from, event.seq()) {
+                    return Ok(Vec::new());
+                }
                 let record = MessageRecord {
                     id: *id,
                     author: from,
-                    created_at: now,
+                    created_at,
                     ttl_secs: *ttl_secs,
                     view_once: *view_once,
                     deleted: false,
@@ -1174,7 +1186,10 @@ impl Group {
                 if self.state.messages.record(*target).is_none() {
                     self.state
                         .messages
-                        .queue_pending(PendingMutation { from, event });
+                        .queue_pending(PendingMutation {
+                            from,
+                            event: event.clone(),
+                        });
                     return Ok(Vec::new());
                 }
                 if self.apply_pending_mutation(now, from, event.clone())? {
@@ -1190,9 +1205,17 @@ impl Group {
                         .queue_pending(PendingMutation { from, event });
                     return Ok(Vec::new());
                 }
+                if !self.state.messages.accept_sender_seq(from, event.seq()) {
+                    return Ok(Vec::new());
+                }
                 Ok(vec![(from, event)])
             }
-            MessageEvent::Typing { .. } => Ok(vec![(from, event)]),
+            MessageEvent::Typing { .. } => {
+                if !self.state.messages.accept_sender_seq(from, event.seq()) {
+                    return Ok(Vec::new());
+                }
+                Ok(vec![(from, event)])
+            },
         }
     }
 
@@ -1222,6 +1245,9 @@ impl Group {
                     return Ok(false);
                 }
                 if now.saturating_sub(record.created_at) as u64 > DEFAULT_EDIT_WINDOW_SECS {
+                    return Ok(false);
+                }
+                if !self.state.messages.accept_sender_seq(from, *seq) {
                     return Ok(false);
                 }
                 if *seq <= record.last_edit_seq {
@@ -1527,6 +1553,10 @@ impl ControlReader<'_> {
         Ok(u64::from_be_bytes(
             self.take(8)?.try_into().expect("length checked"),
         ))
+    }
+
+    fn array<const N: usize>(&mut self) -> Result<[u8; N], TreeError> {
+        Ok(self.take(N)?.try_into().expect("length checked"))
     }
 }
 

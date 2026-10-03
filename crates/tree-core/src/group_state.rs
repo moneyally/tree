@@ -20,7 +20,7 @@ use zeroize::Zeroizing;
 
 use crate::{error::TreeError, group::MemberId, message_state::MessageLedger};
 
-const VERSION: u8 = 6;
+const VERSION: u8 = 7;
 
 /// A commit this device created that the server has not accepted yet.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,6 +72,8 @@ pub(crate) struct GroupState {
     pub title: Option<String>,
     pub disappearing_seconds: u32,
     pub last_control_seq: u64,
+    /// Deterministic author tie-breaker for concurrent controls at the same sequence.
+    pub last_control_author: Option<MemberId>,
     /// Bounded metadata needed for structured message authorization/replay.
     pub messages: MessageLedger,
 }
@@ -152,6 +154,13 @@ impl GroupState {
         }
         out.extend_from_slice(&self.disappearing_seconds.to_be_bytes());
         out.extend_from_slice(&self.last_control_seq.to_be_bytes());
+        match self.last_control_author {
+            None => out.push(0),
+            Some(id) => {
+                out.push(1);
+                out.extend_from_slice(id.as_bytes());
+            }
+        }
         let messages = self.messages.encode()?;
         put_bytes(&mut out, &messages);
         Ok(out)
@@ -255,6 +264,21 @@ impl GroupState {
         } else {
             (None, 0, 0)
         };
+        let last_control_author = if version >= 7 {
+            match r.u8()? {
+                0 => None,
+                1 => Some(MemberId(r.array()?)),
+                _ => return Err(damaged()),
+            }
+        } else {
+            None
+        };
+        let messages = if version >= 6 {
+            let encoded = r.bytes()?;
+            crate::message_state::MessageLedger::decode(&encoded)?
+        } else {
+            crate::message_state::MessageLedger::default()
+        };
         if !r.0.is_empty() {
             return Err(damaged());
         }
@@ -269,6 +293,7 @@ impl GroupState {
             title,
             disappearing_seconds,
             last_control_seq,
+            last_control_author,
             messages,
         })
     }
@@ -351,6 +376,7 @@ mod tests {
             title: Some("Test Group".into()),
             disappearing_seconds: 86400,
             last_control_seq: 12,
+            last_control_author: Some(MemberId([2; 32])),
             messages: MessageLedger {
                 next_seq: 4,
                 sender_seq: vec![(MemberId([8; 32]), 9)],
@@ -402,7 +428,7 @@ mod tests {
         let _ = ledger_len;
         // Build a clean v5 fixture from the prefix before the version-6
         // message-ledger length/data suffix.
-        let suffix_len = 4 + sample().messages.encode().unwrap().len();
+        let suffix_len = 1 + 32 + 4 + sample().messages.encode().unwrap().len();
         v5.truncate(msg_len - suffix_len);
         v5[0] = 5;
         let decoded = GroupState::decode(&v5).unwrap();

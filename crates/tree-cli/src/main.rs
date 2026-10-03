@@ -46,6 +46,9 @@ struct ProfileArgs {
     #[arg(long)]
     profile: PathBuf,
     /// Password protecting the local profile.
+    /// Signup proof-of-work difficulty. Must match the server's POW_BITS.
+    #[arg(long, default_value_t = 20)]
+    pow_bits: u32,
     #[arg(long)]
     passphrase: Option<String>,
 }
@@ -202,13 +205,10 @@ impl Api {
         decode(resp).await
     }
 
-    async fn signup(&self, seed: [u8; 32]) -> Result<(String, String)> {
+    async fn signup(&self, seed: [u8; 32], pow_bits: u32) -> Result<(String, String)> {
         let key = SigningKey::from_bytes(&seed);
         let pubkey = key.verifying_key().to_bytes();
-        // Tree's current production default is 20 bits. If an operator changes
-        // POW_BITS, the server rejects an insufficient nonce and names the
-        // required difficulty; rerun signup with the updated value.
-        let nonce = solve_pow(&pubkey, 20);
+        let nonce = solve_pow(&pubkey, pow_bits);
 
         let body = json!({
             "auth_pub": STANDARD.encode(pubkey),
@@ -386,7 +386,7 @@ async fn signup(args: NetworkArgs) -> Result<()> {
     client.set_server_auth_seed(&seed)?;
 
     let api = Api::new(&args.server)?;
-    let (account_id, device_id) = api.signup(seed).await?;
+    let (account_id, device_id) = api.signup(seed, args.pow_bits).await?;
     client.set_server_account(&account_id, &device_id)?;
 
     println!("account_id={account_id}");

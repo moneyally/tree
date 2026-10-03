@@ -20,7 +20,7 @@ use zeroize::Zeroizing;
 
 use crate::{error::TreeError, group::MemberId};
 
-const VERSION: u8 = 1;
+const VERSION: u8 = 2;
 
 /// A commit this device created that the server has not accepted yet.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -132,7 +132,8 @@ impl GroupState {
 
     pub fn decode(bytes: &[u8]) -> Result<Self, TreeError> {
         let mut r = Reader(bytes);
-        if r.u8()? != VERSION {
+        let version = r.u8()?;
+        if version != 1 && version != VERSION {
             return Err(damaged());
         }
         let pending = match r.u8()? {
@@ -170,15 +171,17 @@ impl GroupState {
             sent.push((r.u64()?, r.array()?));
         }
         let mut processed = Vec::new();
-        for _ in 0..r.u16()? {
-            processed.push((r.u64()?, r.array()?));
-        }
         let mut future = Vec::new();
-        for _ in 0..r.u16()? {
-            let epoch = r.u64()?;
-            let received_at = i64::from_be_bytes(r.array()?);
-            let bytes = r.bytes()?;
-            future.push(PendingEnvelope { epoch, received_at, bytes });
+        if version >= 2 {
+            for _ in 0..r.u16()? {
+                processed.push((r.u64()?, r.array()?));
+            }
+            for _ in 0..r.u16()? {
+                let epoch = r.u64()?;
+                let received_at = i64::from_be_bytes(r.array()?);
+                let bytes = r.bytes()?;
+                future.push(PendingEnvelope { epoch, received_at, bytes });
+            }
         }
         if !r.0.is_empty() {
             return Err(damaged());

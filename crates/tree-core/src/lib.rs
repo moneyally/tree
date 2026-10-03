@@ -19,6 +19,7 @@ pub mod file;
 pub mod group;
 pub mod identity;
 pub mod message;
+pub mod message_state;
 mod group_state;
 pub mod provider;
 pub mod recovery;

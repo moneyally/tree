@@ -371,6 +371,30 @@ impl Registry {
         Ok(f)
     }
 
+    /// Restore only user-scope persistent state. Unknown or non-user keys
+    /// are ignored so old/new binaries can coexist across upgrades.
+    pub(crate) fn restore_user_state(
+        &mut self,
+        entries: &BTreeMap<String, (State, Option<String>)>,
+    ) {
+        for (key, (state, option)) in entries {
+            if let Ok(f) = self.def(key) {
+                if f.scope == Scope::User && f.lock == Lock::None {
+                    self.state.insert((Scope::User, f.key), (*state, option.clone()));
+                }
+            }
+        }
+    }
+
+    /// Snapshot only mutable user-scope settings for encrypted local storage.
+    pub(crate) fn user_state_snapshot(&self) -> BTreeMap<String, (State, Option<String>)> {
+        self.state
+            .iter()
+            .filter(|((scope, _), _)| *scope == Scope::User)
+            .map(|((_, key), (state, option))| ((*key).to_owned(), (*state, option.clone())))
+            .collect()
+    }
+
     /// Operator flag for a key that also exists at a lower scope.
     pub fn set_server_flag(&mut self, key: &'static str, state: State) {
         self.state.insert((Scope::Server, key), (state, None));

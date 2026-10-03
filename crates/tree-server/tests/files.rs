@@ -100,7 +100,7 @@ async fn encrypted_file_expires_and_server_purge_removes_it() {
         .await;
     assert_eq!(st, StatusCode::OK, "{v}");
     let file_id = v["file_id"].as_str().unwrap();
-    let cap = v["capability"].as_str().unwrap();
+    let _cap = v["capability"].as_str().unwrap();
     let path = format!("/v1/files/{file_id}");
 
     sqlx::query("UPDATE files SET expires_at = 0 WHERE id = ?")

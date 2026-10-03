@@ -294,6 +294,55 @@ async fn group_record_removed_with_its_last_device() {
 
 /// A commit to a few devices costs one rate token, not one per device.
 #[tokio::test]
+async fn purge_expired_messages_removes_mailbox_rows() {
+    let ts = boot(|c| {
+        c.message_ttl_secs = 10;
+        c.max_mailbox_messages = 1;
+    })
+    .await;
+    let api = &ts.api;
+    let (a, b) = (api.signup().await, api.signup().await);
+
+    let (st, v) = api.send_raw(&a, &[&b.device_id], &app(b"expired")).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(
+        sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM deliveries WHERE device_id = ?")
+            .bind(&b.device_id)
+            .fetch_one(&ts.server.state.db)
+            .await
+            .unwrap()
+            .0,
+        1
+    );
+
+    sqlx::query("UPDATE blobs SET received_at = ?")
+        .bind(now() - 20)
+        .execute(&ts.server.state.db)
+        .await
+        .unwrap();
+
+    tree_server::purge_expired(&ts.server.state, now())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM deliveries WHERE device_id = ?")
+            .bind(&b.device_id)
+            .fetch_one(&ts.server.state.db)
+            .await
+            .unwrap()
+            .0,
+        0
+    );
+
+    // The expired entry must not consume the mailbox slot.
+    let (st, v) = api.send_raw(&a, &[&b.device_id], &app(b"fresh")).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(api.fetch(&b, 0).await.len(), 1);
+    ts.stop().await;
+}
+
+#[tokio::test]
 async fn small_commits_cost_one_token() {
     let ts = boot(|c| {
         c.rate_per_sec = 0.001;

@@ -713,18 +713,6 @@ impl Group {
         )
     }
 
-    fn send_structured<P, F>(
-        &mut self,
-        me: &Client<P>,
-        event: &MessageEvent,
-    ) -> Result<Vec<u8>, TreeError>
-    where
-        P: TreeProvider,
-        F: FnOnce(&mut Self) -> Result<(), TreeError>,
-    {
-        self.send_structured_with_update(me, event, |_| Ok(()))
-    }
-
     fn send_structured_with_update<P, F>(
         &mut self,
         me: &Client<P>,

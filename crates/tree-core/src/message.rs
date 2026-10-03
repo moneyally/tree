@@ -188,13 +188,17 @@ impl MessageEvent {
                     return Err(TreeError::Group("reaction length is invalid".into()));
                 }
                 if !reaction.chars().all(|c| !c.is_control()) {
-                    return Err(TreeError::Group("reaction contains control characters".into()));
+                    return Err(TreeError::Group(
+                        "reaction contains control characters".into(),
+                    ));
                 }
                 out.extend_from_slice(target.as_bytes());
                 out.push(*add as u8);
                 put_bytes_u8(&mut out, reaction.as_bytes())?;
             }
-            Self::Read { target, read_at, .. } => {
+            Self::Read {
+                target, read_at, ..
+            } => {
                 out.extend_from_slice(target.as_bytes());
                 out.extend_from_slice(&read_at.to_be_bytes());
             }
@@ -302,7 +306,9 @@ impl MessageEvent {
         };
 
         if !r.0.is_empty() {
-            return Err(TreeError::Malformed("trailing bytes in Tree message".into()));
+            return Err(TreeError::Malformed(
+                "trailing bytes in Tree message".into(),
+            ));
         }
         Ok(event)
     }

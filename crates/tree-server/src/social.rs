@@ -13,7 +13,7 @@ use std::collections::HashMap;
 
 use crate::auth::{NoBody, Signed};
 use crate::error::{ApiError, ApiResult};
-use crate::util::{b64, check_id, now_secs, unb64, ID_LEN};
+use crate::util::{check_id, now_secs, unb64};
 use crate::{json_body, wire, AppState};
 
 const USERNAME_HASH_LEN: usize = 32;
@@ -234,6 +234,12 @@ pub async fn accept_message_request(
     req: Signed<NoBody>,
 ) -> ApiResult<Json<MessageRequest>> {
     check_id(&requester, "requester_account_id")?;
+    if is_blocked_pair(&state, &requester, &req.device.account_id).await? {
+        return Err(ApiError::forbidden(
+            "BLOCKED",
+            "message request is blocked by account policy",
+        ));
+    }
     let updated = now_secs();
     let result = sqlx::query(
         "UPDATE message_requests
@@ -247,12 +253,6 @@ pub async fn accept_message_request(
     .await?;
     if result.rows_affected() == 0 {
         return Err(ApiError::not_found("no pending message request"));
-    }
-    if is_blocked_pair(&state, &requester, &req.device.account_id).await? {
-        return Err(ApiError::forbidden(
-            "BLOCKED",
-            "message request is blocked by account policy",
-        ));
     }
     Ok(Json(MessageRequest {
         account_id: requester,

@@ -474,6 +474,11 @@ impl Group {
         if !self.mls.is_active() {
             return Err(TreeError::NotAMember);
         }
+        if body.starts_with(CONTROL_MAGIC) {
+            return Err(TreeError::Rejected(
+                "message body uses a reserved Tree control prefix".into(),
+            ));
+        }
         me.provider.atomically(|| {
             let out = self
                 .mls
@@ -593,13 +598,13 @@ impl Group {
                         self.save(me)?;
                         return Ok(Incoming::OwnEcho);
                     }
-                    self.apply_control(&control)?;
-                    self.state.last_control_seq = control.seq();
+                    apply_control_state(&mut self.state, &control.control)?;
+                    self.state.last_control_seq = control.seq;
                     self.mark_processed(epoch, hash);
                     self.state.future.retain(|p| sha256(&p.bytes) != hash);
                     self.save(me)?;
                     return Ok(Incoming::SettingsChanged {
-                        seq: control.seq(),
+                        seq: control.seq,
                         title: self.state.title.clone(),
                         disappearing_seconds: self.state.disappearing_seconds,
                     });
@@ -803,6 +808,145 @@ fn sha256(data: &[u8]) -> [u8; 32] {
     Sha256::digest(data).into()
 }
 
+
+
+const CONTROL_MAGIC: &[u8] = b"TREECTRL\x01";
+const CONTROL_TITLE: u8 = 1;
+const CONTROL_DISAPPEARING: u8 = 2;
+const MAX_TITLE_BYTES: usize = 128;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Control {
+    SetTitle(Option<String>),
+    SetDisappearingSeconds(u32),
+}
+
+
+fn encode_control(seq: u64, control: &Control) -> Result<Vec<u8>, TreeError> {
+    let mut out = Vec::with_capacity(32);
+    out.extend_from_slice(CONTROL_MAGIC);
+    out.extend_from_slice(&seq.to_be_bytes());
+    match control {
+        Control::SetTitle(title) => {
+            out.push(CONTROL_TITLE);
+            match title {
+                None => out.push(0),
+                Some(title) => {
+                    if title.len() > MAX_TITLE_BYTES {
+                        return Err(TreeError::Group("group title is too long".into()));
+                    }
+                    out.push(1);
+                    out.extend_from_slice(&(title.len() as u16).to_be_bytes());
+                    out.extend_from_slice(title.as_bytes());
+                }
+            }
+        }
+        Control::SetDisappearingSeconds(seconds) => {
+            if *seconds > 30 * 86_400 {
+                return Err(TreeError::Group(
+                    "disappearing timer is limited to 30 days".into(),
+                ));
+            }
+            out.push(CONTROL_DISAPPEARING);
+            out.extend_from_slice(&seconds.to_be_bytes());
+        }
+    }
+    Ok(out)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DecodedControl {
+    seq: u64,
+    control: Control,
+}
+
+fn decode_control(bytes: &[u8]) -> Result<DecodedControl, TreeError> {
+    if !bytes.starts_with(CONTROL_MAGIC) {
+        return Err(TreeError::Malformed("not a Tree control message".into()));
+    }
+    let mut r = ControlReader(&bytes[CONTROL_MAGIC.len()..]);
+    let seq = r.u64()?;
+    let kind = r.u8()?;
+    let control = match kind {
+        CONTROL_TITLE => match r.u8()? {
+            0 => Control::SetTitle(None),
+            1 => {
+                let len = r.u16()? as usize;
+                if len == 0 || len > MAX_TITLE_BYTES {
+                    return Err(TreeError::Malformed("invalid group title length".into()));
+                }
+                let title = String::from_utf8(r.take(len)?.to_vec())
+                    .map_err(|_| TreeError::Malformed("group title is not UTF-8".into()))?;
+                Control::SetTitle(Some(title))
+            }
+            _ => return Err(TreeError::Malformed("invalid title control".into())),
+        },
+        CONTROL_DISAPPEARING => {
+            let seconds = r.u32()?;
+            if seconds > 30 * 86_400 {
+                return Err(TreeError::Malformed("invalid disappearing timer".into()));
+            }
+            Control::SetDisappearingSeconds(seconds)
+        }
+        _ => return Err(TreeError::Malformed("unknown Tree control type".into())),
+    };
+    if !r.0.is_empty() {
+        return Err(TreeError::Malformed(
+            "trailing bytes in Tree control".into(),
+        ));
+    }
+    Ok(DecodedControl { seq, control })
+}
+
+fn apply_control_state(
+    state: &mut GroupState,
+    control: &Control,
+) -> Result<(), TreeError> {
+    match control {
+        Control::SetTitle(title) => {
+            state.title = title.clone();
+        }
+        Control::SetDisappearingSeconds(seconds) => {
+            state.disappearing_seconds = *seconds;
+        }
+    }
+    Ok(())
+}
+
+struct ControlReader<'a>(&'a [u8]);
+
+impl ControlReader<'_> {
+    fn take(&mut self, n: usize) -> Result<&[u8], TreeError> {
+        if self.0.len() < n {
+            return Err(TreeError::Malformed("truncated Tree control".into()));
+        }
+        let (head, rest) = self.0.split_at(n);
+        self.0 = rest;
+        Ok(head)
+    }
+
+    fn u8(&mut self) -> Result<u8, TreeError> {
+        Ok(self.take(1)?[0])
+    }
+
+    fn u16(&mut self) -> Result<u16, TreeError> {
+        Ok(u16::from_be_bytes(
+            self.take(2)?.try_into().expect("length checked"),
+        ))
+    }
+
+    fn u32(&mut self) -> Result<u32, TreeError> {
+        Ok(u32::from_be_bytes(
+            self.take(4)?.try_into().expect("length checked"),
+        ))
+    }
+
+    fn u64(&mut self) -> Result<u64, TreeError> {
+        Ok(u64::from_be_bytes(
+            self.take(8)?.try_into().expect("length checked"),
+        ))
+    }
+}
 
 fn unix_now() -> i64 {
     std::time::SystemTime::now()

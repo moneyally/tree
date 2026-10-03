@@ -99,10 +99,7 @@ mod tests {
     fn generated_phrase_round_trips_to_the_same_recovery_key() {
         let phrase = RecoveryPhrase::generate().unwrap();
         let parsed = RecoveryPhrase::from_phrase(phrase.phrase()).unwrap();
-        assert_eq!(
-            phrase.recovery_public_key(),
-            parsed.recovery_public_key()
-        );
+        assert_eq!(phrase.recovery_public_key(), parsed.recovery_public_key());
         assert_eq!(phrase.phrase(), parsed.phrase());
     }
 
@@ -115,13 +112,16 @@ mod tests {
 
     #[test]
     fn invalid_checksum_is_rejected() {
-        let phrase = RecoveryPhrase::from_phrase(
-            &Mnemonic::from_entropy(&[1u8; 32]).unwrap().to_string()
-        )
-        .unwrap();
+        let phrase =
+            RecoveryPhrase::from_phrase(&Mnemonic::from_entropy(&[1u8; 32]).unwrap().to_string())
+                .unwrap();
         let words: Vec<&str> = phrase.phrase().split_whitespace().collect();
         let mut invalid = words.clone();
-        invalid[23] = if words[23] == "abandon" { "ability" } else { "abandon" };
+        invalid[23] = if words[23] == "abandon" {
+            "ability"
+        } else {
+            "abandon"
+        };
         assert!(RecoveryPhrase::from_phrase(&invalid.join(" ")).is_err());
     }
 }

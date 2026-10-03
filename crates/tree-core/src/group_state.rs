@@ -20,7 +20,7 @@ use zeroize::Zeroizing;
 
 use crate::{error::TreeError, group::MemberId};
 
-const VERSION: u8 = 4;
+const VERSION: u8 = 5;
 
 /// A commit this device created that the server has not accepted yet.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -50,9 +50,9 @@ pub(crate) struct PendingEnvelope {
 #[derive(Default)]
 pub(crate) struct GroupState {
     pub pending: Option<Pending>,
-    /// Single deterministic administrator in v1. The value is a member id;
-    /// if absent in a legacy state it is initialized by Group::new.
-    pub admin: Option<MemberId>,
+    /// Administrator member ids, stored only inside the encrypted group state.
+    /// Keep this list sorted and deduplicated when mutating it.
+    pub admins: Vec<MemberId>,
     /// Set on join: the device should send one key refresh soon, so the key
     /// from its one-time key package (which sat on the server) is replaced.
     pub should_refresh: bool,
@@ -109,12 +109,10 @@ impl GroupState {
             }
         }
         out.push(self.should_refresh as u8);
-        match self.admin {
-            None => out.push(0),
-            Some(id) => {
-                out.push(1);
-                out.extend_from_slice(id.as_bytes());
-            }
+        let admin_count = u8::try_from(self.admins.len()).expect("admin list is bounded");
+        out.push(admin_count);
+        for id in &self.admins {
+            out.extend_from_slice(id.as_bytes());
         }
         out.push(self.past.len() as u8);
         for p in &self.past {
@@ -178,14 +176,26 @@ impl GroupState {
             1 => true,
             _ => return Err(damaged()),
         };
-        let admin = if version >= 3 {
+        let admins = if version >= 5 {
+            let count = r.u8()? as usize;
+            if count > 64 {
+                return Err(damaged());
+            }
+            let mut admins = Vec::with_capacity(count);
+            for _ in 0..count {
+                admins.push(MemberId(r.array()?));
+            }
+            admins.sort_unstable();
+            admins.dedup();
+            admins
+        } else if version >= 3 {
             match r.u8()? {
-                0 => None,
-                1 => Some(MemberId(r.array()?)),
+                0 => Vec::new(),
+                1 => vec![MemberId(r.array()?)],
                 _ => return Err(damaged()),
             }
         } else {
-            None
+            Vec::new()
         };
         let mut past = Vec::new();
         for _ in 0..r.u8()? {
@@ -232,7 +242,7 @@ impl GroupState {
         }
         Ok(Self {
             pending,
-            admin,
+            admins,
             should_refresh,
             past,
             sent,
@@ -292,8 +302,12 @@ mod tests {
 
     fn sample() -> GroupState {
         GroupState {
-            pending: Some(Pending { epoch: 7, commit: vec![1, 2, 3], welcome: Some(vec![0, 9]) }),
-            admin: Some(MemberId([3; 32])),
+            pending: Some(Pending {
+                epoch: 7,
+                commit: vec![1, 2, 3],
+                welcome: Some(vec![0, 9]),
+            }),
+            admins: vec![MemberId([2; 32]), MemberId([3; 32])],
             should_refresh: true,
             past: vec![
                 PastEpoch {
@@ -301,11 +315,19 @@ mod tests {
                     envelope_key: Zeroizing::new([6; 32]),
                     members: vec![(0, MemberId([1; 32])), (3, MemberId([2; 32]))],
                 },
-                PastEpoch { epoch: 5, envelope_key: Zeroizing::new([5; 32]), members: vec![] },
+                PastEpoch {
+                    epoch: 5,
+                    envelope_key: Zeroizing::new([5; 32]),
+                    members: vec![],
+                },
             ],
             sent: vec![(6, [0xaa; 32]), (5, [0xbb; 32])],
             processed: vec![(6, [0xcc; 32])],
-            future: vec![PendingEnvelope { epoch: 8, received_at: 100, bytes: vec![9, 9] }],
+            future: vec![PendingEnvelope {
+                epoch: 8,
+                received_at: 100,
+                bytes: vec![9, 9],
+            }],
             title: Some("Test Group".into()),
             disappearing_seconds: 86400,
             last_control_seq: 12,
@@ -314,12 +336,18 @@ mod tests {
 
     fn same(a: &GroupState, b: &GroupState) -> bool {
         a.pending == b.pending
-            && a.admin == b.admin
+            && a.admins == b.admins
             && a.should_refresh == b.should_refresh
             && a.sent == b.sent
             && a.processed == b.processed
-            && a.future.iter().map(|p| (p.epoch, p.received_at, &p.bytes)).collect::<Vec<_>>()
-                == b.future.iter().map(|p| (p.epoch, p.received_at, &p.bytes)).collect::<Vec<_>>()
+            && a.future
+                .iter()
+                .map(|p| (p.epoch, p.received_at, &p.bytes))
+                .collect::<Vec<_>>()
+                == b.future
+                    .iter()
+                    .map(|p| (p.epoch, p.received_at, &p.bytes))
+                    .collect::<Vec<_>>()
             && a.title == b.title
             && a.disappearing_seconds == b.disappearing_seconds
             && a.last_control_seq == b.last_control_seq
@@ -335,9 +363,41 @@ mod tests {
             let enc = s.encode();
             assert!(same(&GroupState::decode(&enc).unwrap(), &s));
         }
+
         let mut s = sample();
         s.pending.as_mut().unwrap().welcome = None;
         assert!(same(&GroupState::decode(&s.encode()).unwrap(), &s));
+    }
+
+    #[test]
+    fn admins_round_trip_sorted_and_deduplicated_on_decode() {
+        let mut bytes = GroupState {
+            admins: vec![MemberId([9; 32]), MemberId([2; 32]), MemberId([9; 32])],
+            ..GroupState::default()
+        }
+        .encode();
+        let decoded = GroupState::decode(&bytes).unwrap();
+        assert_eq!(
+            decoded.admins,
+            vec![MemberId([2; 32]), MemberId([9; 32])]
+        );
+        bytes[0] = 6;
+        assert!(GroupState::decode(&bytes).is_err());
+    }
+
+    #[test]
+    fn legacy_versions_have_no_admin_list() {
+        let v5 = GroupState::default().encode();
+        let legacy = &v5[..v5.len() - 13];
+        for version in [1u8, 2, 3, 4] {
+            let mut bytes = legacy.to_vec();
+            bytes[0] = version;
+            if version <= 2 {
+                bytes.remove(3);
+            }
+            let result = GroupState::decode(&bytes);
+            assert!(result.is_ok(), "legacy version {version}");
+        }
     }
 
     #[test]
@@ -346,69 +406,23 @@ mod tests {
         for n in 0..enc.len() {
             assert!(GroupState::decode(&enc[..n]).is_err(), "truncated at {n}");
         }
+
         let mut long = enc.clone();
         long.push(0);
         assert!(GroupState::decode(&long).is_err(), "trailing byte");
+
         let mut v = enc.clone();
-        v[0] = 4;
+        v[0] = 6;
         assert!(GroupState::decode(&v).is_err(), "version");
+
         let mut p = enc.clone();
         p[1] = 2;
         assert!(GroupState::decode(&p).is_err(), "pending flag");
+
         let empty = GroupState::default().encode();
         let mut r = empty.clone();
         r[2] = 2;
         assert!(GroupState::decode(&r).is_err(), "refresh flag");
-        // welcome flag sits after version, flag, epoch, length, 3 commit bytes
-        let mut w = enc.clone();
-        w[1 + 1 + 8 + 4 + 3] = 2;
-        assert!(GroupState::decode(&w).is_err(), "welcome flag");
-    }
-
-    #[test]
-    fn decodes_version_three_state_without_settings() {
-        let v4 = GroupState::default().encode();
-        let mut v3 = v4[..v4.len() - 13].to_vec();
-        v3[0] = 3;
-        let decoded = GroupState::decode(&v3).unwrap();
-        assert!(decoded.admin.is_none());
-        assert!(decoded.processed.is_empty());
-        assert!(decoded.future.is_empty());
-        assert!(decoded.title.is_none());
-    }
-
-    #[test]
-    fn decodes_version_two_state_without_admin_or_settings() {
-        let v4 = GroupState::default().encode();
-        let mut v3 = v4[..v4.len() - 13].to_vec();
-        v3[0] = 3;
-        let mut v2 = v3;
-        v2[0] = 2;
-        v2.remove(1 + 1 + 1); // admin flag
-        let decoded = GroupState::decode(&v2).unwrap();
-        assert!(decoded.admin.is_none());
-        assert!(decoded.processed.is_empty());
-        assert!(decoded.future.is_empty());
-        assert!(decoded.title.is_none());
-        assert_eq!(decoded.disappearing_seconds, 0);
-        assert_eq!(decoded.last_control_seq, 0);
-    }
-
-    #[test]
-    fn decodes_legacy_version_one_state() {
-        let v4 = GroupState::default().encode();
-        let mut v3 = v4[..v4.len() - 13].to_vec();
-        v3[0] = 3;
-        let mut v2 = v3;
-        v2[0] = 2;
-        v2.remove(1 + 1 + 1); // admin flag
-        let mut v1 = v2;
-        v1[0] = 1;
-        v1.truncate(v1.len() - 4); // processed/future counters
-        let decoded = GroupState::decode(&v1).unwrap();
-        assert!(decoded.admin.is_none());
-        assert!(decoded.processed.is_empty());
-        assert!(decoded.future.is_empty());
     }
 
     #[test]

@@ -35,6 +35,11 @@ serde_json = "1"
 sha2 = "0.10"
 # Constant-time comparison of envelope tags and hashes.
 subtle = "2.6"
+# Standard human-readable recovery encoding + RFC 5869 HKDF.
+bip39 = "2.2.2"
+hkdf = "0.12.4"
+ed25519-dalek = "2"
+getrandom = "0.3"
 
 [dev-dependencies]
 proptest = "1"

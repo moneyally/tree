@@ -132,8 +132,7 @@ fn validate_description(description: &str) -> ApiResult<()> {
 
 fn new_token(bot_id: &str, secret: &[u8; 32]) -> ApiResult<(String, Vec<u8>)> {
     let mut raw = [0u8; 32];
-    getrandom::getrandom(&mut raw)
-        .map_err(|_| ApiError::internal())?;
+    getrandom::getrandom(&mut raw).map_err(|_| ApiError::internal())?;
     let suffix = URL_SAFE_NO_PAD.encode(raw);
     let token = format!("{TOKEN_PREFIX}{bot_id}_{suffix}");
     let hash = token_hmac(secret, token.as_bytes())?;
@@ -141,8 +140,7 @@ fn new_token(bot_id: &str, secret: &[u8; 32]) -> ApiResult<(String, Vec<u8>)> {
 }
 
 fn token_hmac(secret: &[u8; 32], token: &[u8]) -> ApiResult<Vec<u8>> {
-    let mut mac = BotHmac::new_from_slice(secret)
-        .map_err(|_| ApiError::internal())?;
+    let mut mac = BotHmac::new_from_slice(secret).map_err(|_| ApiError::internal())?;
     mac.update(BOT_TOKEN_SECRET_LABEL);
     mac.update(token);
     Ok(mac.finalize().into_bytes().to_vec())
@@ -323,13 +321,12 @@ pub async fn delete(
     req: Signed<crate::auth::NoBody>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let _ = owner_bot(&state, &req.device.account_id, &bot_id).await?;
-    let bot_account_id: String = sqlx::query(
-        "SELECT account_id FROM bot_identities WHERE bot_id = ?",
-    )
-    .bind(&bot_id)
-    .fetch_one(&state.db)
-    .await?
-    .try_get("account_id")?;
+    let bot_account_id: String =
+        sqlx::query("SELECT account_id FROM bot_identities WHERE bot_id = ?")
+            .bind(&bot_id)
+            .fetch_one(&state.db)
+            .await?
+            .try_get("account_id")?;
 
     let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
     sqlx::query("DELETE FROM bots WHERE id = ? AND owner_account_id = ?")
@@ -362,7 +359,12 @@ pub async fn update_metadata(
     let current_name: String = row.try_get("name")?;
     let current_description: String = row.try_get("description")?;
     let name = req.body.name.as_deref().unwrap_or(&current_name).trim();
-    let description = req.body.description.as_deref().unwrap_or(&current_description).trim();
+    let description = req
+        .body
+        .description
+        .as_deref()
+        .unwrap_or(&current_description)
+        .trim();
 
     sqlx::query(
         "UPDATE bots SET name = ?, description = ?
@@ -430,7 +432,9 @@ async fn set_feature(
         "privacy_mode" => "UPDATE bots SET privacy_mode = ? WHERE id = ? AND owner_account_id = ?",
         "join_groups" => "UPDATE bots SET join_groups = ? WHERE id = ? AND owner_account_id = ?",
         "inline_mode" => "UPDATE bots SET inline_mode = ? WHERE id = ? AND owner_account_id = ?",
-        "directory_listed" => "UPDATE bots SET directory_listed = ? WHERE id = ? AND owner_account_id = ?",
+        "directory_listed" => {
+            "UPDATE bots SET directory_listed = ? WHERE id = ? AND owner_account_id = ?"
+        }
         _ => return Err(ApiError::not_found("unknown bot feature")),
     };
     sqlx::query(sql)

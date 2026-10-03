@@ -86,7 +86,9 @@ pub async fn send(
         }
         Ok(_) => return Err(ApiError::bad_request("proposals are not accepted")),
         Err(_) if wire::is_welcome(&bytes) => {
-            return Err(ApiError::bad_request("welcomes travel only with their commit"))
+            return Err(ApiError::bad_request(
+                "welcomes travel only with their commit",
+            ))
         }
         Err(why) => return Err(ApiError::bad_request(format!("body: {why}"))),
     }
@@ -164,7 +166,11 @@ pub async fn deliver(
             .execute(&mut **tx)
             .await?;
     }
-    Ok(Delivery { delivered, unknown_devices, full_devices })
+    Ok(Delivery {
+        delivered,
+        unknown_devices,
+        full_devices,
+    })
 }
 
 #[derive(Deserialize)]
@@ -273,11 +279,7 @@ json_body!(AckReq, |_cfg| MAX_ACK_IDS * (ID_LEN + 4) + 256);
 
 /// `POST /v1/messages/ack` — deletes the caller's own messages. Ids that are
 /// not in the caller's mailbox are ignored.
-pub async fn ack_ids(
-    state: &AppState,
-    device_id: &str,
-    ids: &[String],
-) -> ApiResult<usize> {
+pub async fn ack_ids(state: &AppState, device_id: &str, ids: &[String]) -> ApiResult<usize> {
     if ids.len() > MAX_ACK_IDS {
         return Err(ApiError::too_large(format!(
             "at most {MAX_ACK_IDS} ids per acknowledgement"

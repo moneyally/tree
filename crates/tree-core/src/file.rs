@@ -84,7 +84,9 @@ impl EncryptedFile {
     pub fn decode(bytes: &[u8]) -> Result<Self, TreeError> {
         let min_len = MAGIC.len() + 1 + 1 + NONCE_LEN + COMMIT_LEN + 8;
         if bytes.len() < min_len {
-            return Err(TreeError::Malformed("encrypted file header is truncated".into()));
+            return Err(TreeError::Malformed(
+                "encrypted file header is truncated".into(),
+            ));
         }
         if &bytes[..MAGIC.len()] != MAGIC {
             return Err(TreeError::Malformed("not a Tree file envelope".into()));
@@ -95,7 +97,9 @@ impl EncryptedFile {
         }
         p += 1;
         if bytes[p] != ALG_AES_256_GCM {
-            return Err(TreeError::Malformed("unsupported Tree file algorithm".into()));
+            return Err(TreeError::Malformed(
+                "unsupported Tree file algorithm".into(),
+            ));
         }
         p += 1;
         let nonce: [u8; NONCE_LEN] = bytes[p..p + NONCE_LEN]
@@ -114,7 +118,9 @@ impl EncryptedFile {
         p += 8;
         let remaining = bytes.len() - p;
         if declared_len != remaining as u64 {
-            return Err(TreeError::Malformed("file length does not match envelope".into()));
+            return Err(TreeError::Malformed(
+                "file length does not match envelope".into(),
+            ));
         }
         if remaining < 16 {
             return Err(TreeError::Malformed("file ciphertext is too short".into()));
@@ -135,7 +141,13 @@ pub fn encrypt(key: &FileKey, aad: &[u8], plaintext: &[u8]) -> Result<EncryptedF
     let cipher = Aes256Gcm::new_from_slice(key.as_bytes())
         .map_err(|_| TreeError::FileCrypto("invalid AES-256 key".into()))?;
     let ciphertext = cipher
-        .encrypt(Nonce::from_slice(&nonce), aes_gcm::aead::Payload { msg: plaintext, aad })
+        .encrypt(
+            Nonce::from_slice(&nonce),
+            aes_gcm::aead::Payload {
+                msg: plaintext,
+                aad,
+            },
+        )
         .map_err(|_| TreeError::FileCrypto("file encryption failed".into()))?;
     let key_commitment = commitment(key, &nonce, aad, &ciphertext);
     Ok(EncryptedFile {
@@ -171,7 +183,12 @@ pub fn decrypt(
     Ok(plaintext)
 }
 
-fn commitment(key: &FileKey, nonce: &[u8; NONCE_LEN], aad: &[u8], ciphertext: &[u8]) -> [u8; COMMIT_LEN] {
+fn commitment(
+    key: &FileKey,
+    nonce: &[u8; NONCE_LEN],
+    aad: &[u8],
+    ciphertext: &[u8],
+) -> [u8; COMMIT_LEN] {
     let mut h = Sha256::new();
     h.update(KEY_COMMIT_LABEL);
     h.update(key.as_bytes());

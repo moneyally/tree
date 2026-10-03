@@ -244,7 +244,7 @@ pub async fn submit(
         }
         let required_recipients: HashSet<String> = current_members
             .iter()
-            .filter(|d| *d != &sender && !removed_set.contains(*d))
+            .filter(|d| *d != &sender)
             .cloned()
             .collect();
         let recipient_set: HashSet<String> = recipients.iter().cloned().collect();

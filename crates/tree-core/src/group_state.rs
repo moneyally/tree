@@ -95,7 +95,7 @@ impl GroupState {
         }
     }
 
-    pub fn encode(&self) -> Vec<u8> {
+    pub fn encode(&self) -> Result<Vec<u8>, TreeError> {
         let mut out = vec![VERSION];
         match &self.pending {
             None => out.push(0),
@@ -154,7 +154,7 @@ impl GroupState {
         out.extend_from_slice(&self.last_control_seq.to_be_bytes());
         let messages = self.messages.encode()?;
         put_bytes(&mut out, &messages);
-        out
+        Ok(out)
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, TreeError> {

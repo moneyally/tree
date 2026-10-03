@@ -128,7 +128,7 @@ impl MessageEvent {
 
     pub fn encode(&self) -> Result<Vec<u8>, TreeError> {
         let mut out = Vec::with_capacity(128);
-        out.extend_from_slice(MAGIC);
+        out.extend_from_slice(MESSAGE_MAGIC);
         out.push(self.kind() as u8);
         out.extend_from_slice(&self.seq().to_be_bytes());
 
@@ -312,7 +312,7 @@ fn check_body(body: &[u8]) -> Result<(), TreeError> {
     if body.len() > MAX_BODY {
         return Err(TreeError::Group("message body is too large".into()));
     }
-    if body.starts_with(MAGIC) {
+    if body.starts_with(MESSAGE_MAGIC) {
         return Err(TreeError::Rejected(
             "structured Tree message uses a reserved namespace".into(),
         ));

@@ -47,7 +47,7 @@ pub async fn setup(
          DO UPDATE SET recovery_pub = excluded.recovery_pub, created_at = excluded.created_at",
     )
     .bind(&req.device.account_id)
-    .bind(raw)
+    .bind(&raw[..])
     .bind(now_secs())
     .execute(&state.db)
     .await?;

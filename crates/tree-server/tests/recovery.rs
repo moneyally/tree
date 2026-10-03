@@ -62,7 +62,7 @@ async fn recovery_adds_a_new_device_and_rejects_replay() {
         first_body["account_id"].as_str(),
         Some(alice.account_id.as_str())
     );
-    let recovered_device_id = first_body["device_id"].as_str().unwrap().to_string();
+    let _recovered_device_id = first_body["device_id"].as_str().unwrap().to_string();
 
     let second = api
         .http

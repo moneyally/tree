@@ -270,9 +270,7 @@ impl Api {
         let timestamp = now_secs();
         let nonce = random_hex::<16>();
         let new_auth_pub = auth_key.verifying_key().to_bytes();
-        let proof_msg = format!(
-            "tree-recovery-v1\n{account_id}\n{timestamp}\n{nonce}\n"
-        );
+        let proof_msg = format!("tree-recovery-v1\n{account_id}\n{timestamp}\n{nonce}\n");
         let mut proof_msg = proof_msg.into_bytes();
         proof_msg.extend_from_slice(&new_auth_pub);
 

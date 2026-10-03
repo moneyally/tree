@@ -24,6 +24,7 @@ pub mod message_state;
 mod group_state;
 pub mod provider;
 pub mod recovery;
+pub mod safety;
 pub mod storage;
 pub mod user_features;
 
@@ -36,6 +37,7 @@ pub use message::{MessageEvent, MessageId, MessageKind, DEFAULT_EDIT_WINDOW_SECS
 pub use identity::{fingerprint_hex, normalize_username, safety_fingerprint, username_hash};
 pub use provider::TreeProvider;
 pub use recovery::RecoveryPhrase;
+pub use safety::{forget as forget_safety_peer, observe as observe_safety_key, verify as verify_safety_key, KeyObservation};
 pub use file::{decrypt as decrypt_file, encrypt as encrypt_file, EncryptedFile, FileKey};
 pub use storage::{KdfParams, KeySource, Passphrase, StoredProvider};
 

@@ -132,8 +132,7 @@ fn validate_description(description: &str) -> ApiResult<()> {
 
 fn new_token(bot_id: &str, secret: &[u8; 32]) -> ApiResult<(String, Vec<u8>)> {
     let mut raw = [0u8; 32];
-    getrandom::getrandom(&mut raw)
-        .map_err(|_| ApiError::internal())?;
+    getrandom::fill(&mut raw).map_err(|_| ApiError::internal())?;
     let suffix = URL_SAFE_NO_PAD.encode(raw);
     let token = format!("{TOKEN_PREFIX}{bot_id}_{suffix}");
     let hash = token_hmac(secret, token.as_bytes())?;
@@ -426,13 +425,49 @@ async fn set_feature(
         }
     }
 
-    let sql = format!("UPDATE bots SET {column} = ? WHERE id = ? AND owner_account_id = ?");
-    sqlx::query(&sql)
-        .bind(i64::from(value))
-        .bind(bot_id)
-        .bind(account_id)
-        .execute(&state.db)
-        .await?;
+    match column {
+        "privacy_mode" => {
+            sqlx::query(
+                "UPDATE bots SET privacy_mode = ? WHERE id = ? AND owner_account_id = ?",
+            )
+            .bind(i64::from(value))
+            .bind(bot_id)
+            .bind(account_id)
+            .execute(&state.db)
+            .await?;
+        }
+        "join_groups" => {
+            sqlx::query(
+                "UPDATE bots SET join_groups = ? WHERE id = ? AND owner_account_id = ?",
+            )
+            .bind(i64::from(value))
+            .bind(bot_id)
+            .bind(account_id)
+            .execute(&state.db)
+            .await?;
+        }
+        "inline_mode" => {
+            sqlx::query(
+                "UPDATE bots SET inline_mode = ? WHERE id = ? AND owner_account_id = ?",
+            )
+            .bind(i64::from(value))
+            .bind(bot_id)
+            .bind(account_id)
+            .execute(&state.db)
+            .await?;
+        }
+        "directory_listed" => {
+            sqlx::query(
+                "UPDATE bots SET directory_listed = ? WHERE id = ? AND owner_account_id = ?",
+            )
+            .bind(i64::from(value))
+            .bind(bot_id)
+            .bind(account_id)
+            .execute(&state.db)
+            .await?;
+        }
+        _ => return Err(ApiError::not_found("unknown bot feature")),
+    }
 
     Ok(Json(FeatureResp {
         bot_id: bot_id.to_owned(),
@@ -666,11 +701,10 @@ pub async fn authenticate_token(
     .fetch_optional(&state.db)
     .await?;
     let row = row.ok_or_else(|| ApiError::unauthorized("invalid bot token"))?;
-    let stored: Vec<u8> = row.try_get("token_hmac")?
-        .ok_or_else(|| ApiError::unauthorized("invalid bot token"))?;
+    let stored: Option<Vec<u8>> = row.try_get("token_hmac")?;
+    let stored = stored.ok_or_else(|| ApiError::unauthorized("invalid bot token"))?;
     let account_id: String = row.try_get("account_id")?;
     let gateway_device_id: Option<String> = row.try_get("gateway_device_id")?;
-    let stored = stored.ok_or_else(|| ApiError::unauthorized("invalid bot token"))?;
     let expected = token_hmac(&secret, token.as_bytes())?;
     if expected.len() != stored.len() || subtle::ConstantTimeEq::ct_eq(expected.as_slice(), stored.as_slice()).unwrap_u8() != 1 {
         return Err(ApiError::unauthorized("invalid bot token"));

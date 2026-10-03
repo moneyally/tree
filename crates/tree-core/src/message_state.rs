@@ -146,7 +146,9 @@ impl MessageLedger {
             out.extend_from_slice(mutation.from.as_bytes());
             let bytes = mutation.event.encode()?;
             if bytes.len() > u32::MAX as usize {
-                return Err(TreeError::Storage("pending message operation is too large".into()));
+                return Err(TreeError::Storage(
+                    "pending message operation is too large".into(),
+                ));
             }
             out.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
             out.extend_from_slice(&bytes);
@@ -243,19 +245,27 @@ impl Reader<'_> {
     }
 
     fn u16(&mut self) -> Result<u16, TreeError> {
-        Ok(u16::from_be_bytes(self.take(2)?.try_into().expect("length checked")))
+        Ok(u16::from_be_bytes(
+            self.take(2)?.try_into().expect("length checked"),
+        ))
     }
 
     fn u32(&mut self) -> Result<u32, TreeError> {
-        Ok(u32::from_be_bytes(self.take(4)?.try_into().expect("length checked")))
+        Ok(u32::from_be_bytes(
+            self.take(4)?.try_into().expect("length checked"),
+        ))
     }
 
     fn u64(&mut self) -> Result<u64, TreeError> {
-        Ok(u64::from_be_bytes(self.take(8)?.try_into().expect("length checked")))
+        Ok(u64::from_be_bytes(
+            self.take(8)?.try_into().expect("length checked"),
+        ))
     }
 
     fn i64(&mut self) -> Result<i64, TreeError> {
-        Ok(i64::from_be_bytes(self.take(8)?.try_into().expect("length checked")))
+        Ok(i64::from_be_bytes(
+            self.take(8)?.try_into().expect("length checked"),
+        ))
     }
 
     fn array<const N: usize>(&mut self) -> Result<[u8; N], TreeError> {
@@ -296,7 +306,10 @@ mod tests {
                 deleted: false,
                 last_edit_seq: 2,
             }],
-            pending: vec![PendingMutation { from: sender, event }],
+            pending: vec![PendingMutation {
+                from: sender,
+                event,
+            }],
         };
         let bytes = ledger.encode().unwrap();
         let decoded = MessageLedger::decode(&bytes).unwrap();

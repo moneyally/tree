@@ -14,6 +14,7 @@ use crate::{
 const VERSION: u8 = 1;
 const MAX_RECORDS: usize = 4096;
 const MAX_PENDING: usize = 256;
+const MAX_SENDERS: usize = 256;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct MessageRecord {
@@ -35,6 +36,10 @@ pub(crate) struct PendingMutation {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct MessageLedger {
     pub next_seq: u64,
+    /// Highest accepted structured-message sequence per sender.
+    /// MLS sender-ratchet replay protection remains the primary transport
+    /// defence; this ledger protects Tree's structured-event semantics.
+    pub sender_seq: Vec<(MemberId, u64)>,
     pub records: Vec<MessageRecord>,
     pub pending: Vec<PendingMutation>,
 }
@@ -46,6 +51,23 @@ impl MessageLedger {
             .checked_add(1)
             .ok_or_else(|| TreeError::Group("message sequence exhausted".into()))?;
         Ok(self.next_seq)
+    }
+
+    pub fn accept_sender_seq(&mut self, sender: MemberId, seq: u64) -> bool {
+        match self.sender_seq.iter_mut().find(|(id, _)| *id == sender) {
+            Some((_, last)) if seq <= *last => false,
+            Some((_, last)) => {
+                *last = seq;
+                true
+            }
+            None => {
+                if self.sender_seq.len() >= MAX_SENDERS {
+                    self.sender_seq.remove(0);
+                }
+                self.sender_seq.push((sender, seq));
+                true
+            }
+        }
     }
 
     pub fn record_new(&mut self, record: MessageRecord) -> bool {
@@ -89,7 +111,7 @@ impl MessageLedger {
     }
 
     pub fn encode(&self) -> Result<Vec<u8>, TreeError> {
-        if self.sender_seq.len() > u16::MAX as usize
+        if self.sender_seq.len() > MAX_SENDERS
             || self.records.len() > u16::MAX as usize
             || self.pending.len() > u16::MAX as usize
         {
@@ -97,6 +119,12 @@ impl MessageLedger {
         }
         let mut out = vec![VERSION];
         out.extend_from_slice(&self.next_seq.to_be_bytes());
+
+        out.extend_from_slice(&(self.sender_seq.len() as u16).to_be_bytes());
+        for (sender, seq) in &self.sender_seq {
+            out.extend_from_slice(sender.as_bytes());
+            out.extend_from_slice(&seq.to_be_bytes());
+        }
 
         out.extend_from_slice(&(self.records.len() as u16).to_be_bytes());
         for record in &self.records {
@@ -134,6 +162,15 @@ impl MessageLedger {
             return Err(damaged());
         }
         let next_seq = r.u64()?;
+
+        let sender_count = r.u16()? as usize;
+        if sender_count > MAX_SENDERS {
+            return Err(damaged());
+        }
+        let mut sender_seq = Vec::with_capacity(sender_count);
+        for _ in 0..sender_count {
+            sender_seq.push((MemberId(r.array()?), r.u64()?));
+        }
 
         let record_count = r.u16()? as usize;
         if record_count > MAX_RECORDS {
@@ -180,6 +217,7 @@ impl MessageLedger {
         }
         Ok(Self {
             next_seq,
+            sender_seq,
             records,
             pending,
         })

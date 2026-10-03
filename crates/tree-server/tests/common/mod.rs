@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use ed25519_dalek::{Signer, SigningKey};
-use reqwest::{Method, StatusCode};
+use reqwest::{header::HeaderMap, Method, StatusCode};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tree_server::{Config, Server};
@@ -200,9 +200,20 @@ impl Api {
 
     /// Sends a signed request with an explicit signature header value.
     pub async fn send_with_sig(&self, s: &Signed, sig: &str) -> (StatusCode, Value) {
+        self.send_with_sig_and_headers(s, sig, HeaderMap::new())
+            .await
+    }
+
+    pub async fn send_with_sig_and_headers(
+        &self,
+        s: &Signed,
+        sig: &str,
+        headers: HeaderMap,
+    ) -> (StatusCode, Value) {
         let mut rb = self
             .http
             .request(s.method.clone(), self.url(&s.path))
+            .headers(headers)
             .header("X-Tree-Timestamp", s.ts.to_string())
             .header("X-Tree-Nonce", &s.nonce)
             .header("X-Tree-Signature", sig);
@@ -218,7 +229,18 @@ impl Api {
     }
 
     pub async fn send(&self, s: &Signed, key: &SigningKey) -> (StatusCode, Value) {
-        self.send_with_sig(s, &s.signature(key)).await
+        self.send_with_sig_and_headers(s, &s.signature(key), HeaderMap::new())
+            .await
+    }
+
+    pub async fn send_with_headers(
+        &self,
+        s: &Signed,
+        key: &SigningKey,
+        headers: HeaderMap,
+    ) -> (StatusCode, Value) {
+        self.send_with_sig_and_headers(s, &s.signature(key), headers)
+            .await
     }
 
     /// Authenticated call as `dev`.

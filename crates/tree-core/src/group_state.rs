@@ -93,12 +93,18 @@ impl GroupState {
 
     pub fn prune_future(&mut self, now: i64) {
         const MAX_FUTURE: usize = 64;
+        const MAX_FUTURE_BYTES: usize = 16 * 1024 * 1024;
         const MAX_AGE: i64 = 7 * 86_400;
         self.future.retain(|p| p.received_at + MAX_AGE >= now);
-        if self.future.len() > MAX_FUTURE {
-            self.future.sort_by_key(|p| p.received_at);
-            let drop_n = self.future.len() - MAX_FUTURE;
-            self.future.drain(0..drop_n);
+        self.future.sort_by_key(|p| p.received_at);
+
+        let mut total_bytes: usize = self.future.iter().map(|p| p.bytes.len()).sum();
+        while self.future.len() > MAX_FUTURE || total_bytes > MAX_FUTURE_BYTES {
+            let Some(old) = self.future.first() else {
+                break;
+            };
+            total_bytes = total_bytes.saturating_sub(old.bytes.len());
+            self.future.remove(0);
         }
     }
 
@@ -472,6 +478,22 @@ mod tests {
         let mut v = enc.clone();
         v[0] = VERSION + 1;
         assert!(GroupState::decode(&v).is_err(), "version");
+    }
+
+    #[test]
+    fn future_queue_is_bounded_by_total_bytes() {
+        let mut state = GroupState::default();
+        for epoch in 1..=40 {
+            state.future.push(PendingEnvelope {
+                epoch,
+                received_at: 100,
+                bytes: vec![0u8; 512 * 1024],
+            });
+        }
+        state.prune_future(100);
+        assert!(state.future.len() <= 64);
+        let total: usize = state.future.iter().map(|p| p.bytes.len()).sum();
+        assert!(total <= 16 * 1024 * 1024);
     }
 
     #[test]

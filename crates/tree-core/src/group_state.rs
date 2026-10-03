@@ -6,7 +6,7 @@
 //! * envelope keys and member ids of the retained past epochs (F-002);
 //! * hashes of this device's own confirmed commits (echo recognition, F-004).
 //!
-//! Encoding (version 1), integers big-endian, `bytes` = u32 length + data:
+//! Encoding (version 2; decoder accepts version 1), integers big-endian, `bytes` = u32 length + data:
 //!
 //! ```text
 //! 0x01
@@ -287,7 +287,7 @@ mod tests {
         long.push(0);
         assert!(GroupState::decode(&long).is_err(), "trailing byte");
         let mut v = enc.clone();
-        v[0] = 2;
+        v[0] = 3;
         assert!(GroupState::decode(&v).is_err(), "version");
         let mut p = enc.clone();
         p[1] = 2;

@@ -16,7 +16,7 @@ use sqlx::Row;
 
 use crate::auth::Signed;
 use crate::error::{ApiError, ApiResult};
-use crate::util::{b64, check_id, new_id, now_secs, unb64};
+use crate::util::{check_id, new_id, now_secs};
 use crate::{json_body, AppState};
 
 type BotHmac = Hmac<Sha256>;

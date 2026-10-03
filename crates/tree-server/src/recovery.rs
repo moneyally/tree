@@ -134,7 +134,7 @@ pub async fn recover(
          WHERE account_id = ? AND recovery_pub = ?",
     )
     .bind(&body.account_id)
-    .bind(recovery_pub)
+     .bind(&recovery_pub[..])
     .fetch_optional(&state.db)
     .await?
     .is_some();

@@ -41,6 +41,12 @@ pub(crate) struct PastEpoch {
     pub members: Vec<(u32, MemberId)>,
 }
 
+pub(crate) struct PendingEnvelope {
+    pub epoch: u64,
+    pub received_at: i64,
+    pub bytes: Vec<u8>,
+}
+
 #[derive(Default)]
 pub(crate) struct GroupState {
     pub pending: Option<Pending>,
@@ -52,6 +58,10 @@ pub(crate) struct GroupState {
     /// SHA-256 of own confirmed commit envelopes with the epoch they were
     /// sealed in. Dropped together with that epoch.
     pub sent: Vec<(u64, [u8; 32])>,
+    /// SHA-256 of envelopes successfully processed, dropped with their epoch.
+    pub processed: Vec<(u64, [u8; 32])>,
+    /// Future-epoch envelopes held locally until the corresponding commit is merged.
+    pub future: Vec<PendingEnvelope>,
 }
 
 impl GroupState {
@@ -59,6 +69,18 @@ impl GroupState {
     pub fn prune(&mut self, oldest: u64) {
         self.past.retain(|p| p.epoch >= oldest);
         self.sent.retain(|(e, _)| *e >= oldest);
+        self.processed.retain(|(e, _)| *e >= oldest);
+    }
+
+    pub fn prune_future(&mut self, now: i64) {
+        const MAX_FUTURE: usize = 64;
+        const MAX_AGE: i64 = 7 * 86_400;
+        self.future.retain(|p| p.received_at + MAX_AGE >= now);
+        if self.future.len() > MAX_FUTURE {
+            self.future.sort_by_key(|p| p.received_at);
+            let drop_n = self.future.len() - MAX_FUTURE;
+            self.future.drain(0..drop_n);
+        }
     }
 
     pub fn encode(&self) -> Vec<u8> {
@@ -93,6 +115,17 @@ impl GroupState {
         for (e, h) in &self.sent {
             out.extend_from_slice(&e.to_be_bytes());
             out.extend_from_slice(h);
+        }
+        out.extend_from_slice(&(self.processed.len() as u16).to_be_bytes());
+        for (e, h) in &self.processed {
+            out.extend_from_slice(&e.to_be_bytes());
+            out.extend_from_slice(h);
+        }
+        out.extend_from_slice(&(self.future.len() as u16).to_be_bytes());
+        for p in &self.future {
+            out.extend_from_slice(&p.epoch.to_be_bytes());
+            out.extend_from_slice(&p.received_at.to_be_bytes());
+            put_bytes(&mut out, &p.bytes);
         }
         out
     }
@@ -136,10 +169,21 @@ impl GroupState {
         for _ in 0..r.u16()? {
             sent.push((r.u64()?, r.array()?));
         }
+        let mut processed = Vec::new();
+        for _ in 0..r.u16()? {
+            processed.push((r.u64()?, r.array()?));
+        }
+        let mut future = Vec::new();
+        for _ in 0..r.u16()? {
+            let epoch = r.u64()?;
+            let received_at = i64::from_be_bytes(r.array()?);
+            let bytes = r.bytes()?;
+            future.push(PendingEnvelope { epoch, received_at, bytes });
+        }
         if !r.0.is_empty() {
             return Err(damaged());
         }
-        Ok(Self { pending, should_refresh, past, sent })
+        Ok(Self { pending, should_refresh, past, sent, processed, future })
     }
 }
 
@@ -201,6 +245,8 @@ mod tests {
                 PastEpoch { epoch: 5, envelope_key: Zeroizing::new([5; 32]), members: vec![] },
             ],
             sent: vec![(6, [0xaa; 32]), (5, [0xbb; 32])],
+            processed: vec![(6, [0xcc; 32])],
+            future: vec![PendingEnvelope { epoch: 8, received_at: 100, bytes: vec![9, 9] }],
         }
     }
 
@@ -208,6 +254,9 @@ mod tests {
         a.pending == b.pending
             && a.should_refresh == b.should_refresh
             && a.sent == b.sent
+            && a.processed == b.processed
+            && a.future.iter().map(|p| (p.epoch, p.received_at, &p.bytes)).collect::<Vec<_>>()
+                == b.future.iter().map(|p| (p.epoch, p.received_at, &p.bytes)).collect::<Vec<_>>()
             && a.past.len() == b.past.len()
             && a.past.iter().zip(&b.past).all(|(x, y)| {
                 x.epoch == y.epoch && *x.envelope_key == *y.envelope_key && x.members == y.members
@@ -257,5 +306,6 @@ mod tests {
         assert_eq!(s.past.len(), 1);
         assert_eq!(s.past[0].epoch, 6);
         assert_eq!(s.sent, vec![(6, [0xaa; 32])]);
+        assert_eq!(s.processed.len(), 1);
     }
 }

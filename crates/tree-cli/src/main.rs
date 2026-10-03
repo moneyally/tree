@@ -25,7 +25,7 @@ enum Command {
     /// Create a new encrypted local profile.
     Init(InitArgs),
     /// Register the profile as a new Tree account.
-    Signup(NetworkArgs),
+    Signup(SignupArgs),
     /// Upload fresh one-time MLS key packages.
     UploadKeys(UploadKeysArgs),
     /// Print local/server identity information.
@@ -52,9 +52,6 @@ struct ProfileArgs {
     #[arg(long)]
     profile: PathBuf,
     /// Password protecting the local profile.
-    /// Signup proof-of-work difficulty. Must match the server's POW_BITS.
-    #[arg(long, default_value_t = 20)]
-    pow_bits: u32,
     #[arg(long)]
     passphrase: Option<String>,
 }
@@ -66,6 +63,20 @@ struct NetworkArgs {
     /// Tree server base URL, for example https://example.com.
     #[arg(long)]
     server: String,
+    #[arg(long)]
+    passphrase: Option<String>,
+}
+
+#[derive(Args, Debug)]
+struct SignupArgs {
+    #[arg(long)]
+    profile: PathBuf,
+    /// Tree server base URL, for example https://example.com.
+    #[arg(long)]
+    server: String,
+    /// Signup proof-of-work difficulty. Must match the server's POW_BITS.
+    #[arg(long, default_value_t = 20)]
+    pow_bits: u32,
     #[arg(long)]
     passphrase: Option<String>,
 }
@@ -87,8 +98,9 @@ struct RecoverArgs {
     server: String,
     #[arg(long)]
     account: String,
+    /// Leave empty to enter the phrase without putting it in shell history.
     #[arg(long)]
-    phrase: String,
+    phrase: Option<String>,
     #[arg(long)]
     profile: PathBuf,
     #[arg(long)]
@@ -465,7 +477,7 @@ async fn init(args: InitArgs) -> Result<()> {
     Ok(())
 }
 
-async fn signup(args: NetworkArgs) -> Result<()> {
+async fn signup(args: SignupArgs) -> Result<()> {
     let client = open_profile(&args.profile, &args.passphrase)?;
     if client.server_account()?.is_some() {
         bail!("profile is already registered");
@@ -558,7 +570,11 @@ async fn recovery_setup(args: NetworkArgs) -> Result<()> {
 
 async fn recovery(args: RecoverArgs) -> Result<()> {
     check_account_id(&args.account)?;
-    let phrase = RecoveryPhrase::from_phrase(&args.phrase)
+    let phrase_text = match args.phrase {
+        Some(phrase) => phrase,
+        None => rpassword::prompt_password("Recovery phrase: ")?,
+    };
+    let phrase = RecoveryPhrase::from_phrase(&phrase_text)
         .map_err(|e| anyhow!("invalid recovery phrase: {e}"))?;
     let password = passphrase(&args.passphrase)?;
     let client = Client::create(&args.profile, &password, &args.name)

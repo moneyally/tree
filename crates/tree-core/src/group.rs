@@ -1528,6 +1528,10 @@ impl ControlReader<'_> {
             self.take(8)?.try_into().expect("length checked"),
         ))
     }
+
+    fn array<const N: usize>(&mut self) -> Result<[u8; N], TreeError> {
+        Ok(self.take(N)?.try_into().expect("length checked"))
+    }
 }
 
 fn unix_now() -> i64 {

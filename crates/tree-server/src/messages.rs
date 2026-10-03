@@ -104,14 +104,13 @@ pub async fn send(
     // server-side group roster. This blocks cross-group mailbox injection.
     let group_id = header.group_id.to_vec();
     let sender = &req.device.device_id;
-    let sender_member = sqlx::query(
-        "SELECT 1 FROM group_devices WHERE group_id = ? AND device_id = ?",
-    )
-    .bind(&group_id)
-    .bind(sender)
-    .fetch_optional(&mut *tx)
-    .await?
-    .is_some();
+    let sender_member =
+        sqlx::query("SELECT 1 FROM group_devices WHERE group_id = ? AND device_id = ?")
+            .bind(&group_id)
+            .bind(sender)
+            .fetch_optional(&mut *tx)
+            .await?
+            .is_some();
     if !sender_member {
         return Err(ApiError::forbidden(
             "NOT_ELIGIBLE",
@@ -119,14 +118,13 @@ pub async fn send(
         ));
     }
     for recipient in &unique {
-        let member = sqlx::query(
-            "SELECT 1 FROM group_devices WHERE group_id = ? AND device_id = ?",
-        )
-        .bind(&group_id)
-        .bind(recipient)
-        .fetch_optional(&mut *tx)
-        .await?
-        .is_some();
+        let member =
+            sqlx::query("SELECT 1 FROM group_devices WHERE group_id = ? AND device_id = ?")
+                .bind(&group_id)
+                .bind(recipient)
+                .fetch_optional(&mut *tx)
+                .await?
+                .is_some();
         if !member {
             return Err(ApiError::forbidden(
                 "NOT_ELIGIBLE",

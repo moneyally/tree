@@ -41,7 +41,9 @@ async fn device_link_requires_both_sides_and_is_idempotent() {
     let api = &ts.api;
     let alice = api.signup().await;
 
-    let (st, created) = api.call(&alice, Method::POST, "/v1/device-links", None).await;
+    let (st, created) = api
+        .call(&alice, Method::POST, "/v1/device-links", None)
+        .await;
     assert_eq!(st, StatusCode::OK, "{created}");
 
     let link_id = created["link_id"].as_str().unwrap().to_string();
@@ -111,9 +113,7 @@ async fn device_link_requires_both_sides_and_is_idempotent() {
     assert_eq!(st, StatusCode::OK);
 
     // The new device must not exist until the existing device also confirms.
-    let devices = api
-        .call(&alice, Method::GET, "/v1/devices", None)
-        .await;
+    let devices = api.call(&alice, Method::GET, "/v1/devices", None).await;
     assert_eq!(devices.0, StatusCode::OK, "{:?}", devices.1);
     assert_eq!(devices.1["devices"].as_array().unwrap().len(), 1);
 
@@ -127,9 +127,7 @@ async fn device_link_requires_both_sides_and_is_idempotent() {
         .await;
     assert_eq!(init_confirm.0, StatusCode::OK, "{:?}", init_confirm.1);
 
-    let devices = api
-        .call(&alice, Method::GET, "/v1/devices", None)
-        .await;
+    let devices = api.call(&alice, Method::GET, "/v1/devices", None).await;
     assert_eq!(devices.0, StatusCode::OK, "{:?}", devices.1);
     assert_eq!(devices.1["devices"].as_array().unwrap().len(), 2);
 
@@ -144,9 +142,7 @@ async fn device_link_requires_both_sides_and_is_idempotent() {
         .await;
     assert_eq!(again.0, StatusCode::OK, "{again:?}");
 
-    let devices = api
-        .call(&alice, Method::GET, "/v1/devices", None)
-        .await;
+    let devices = api.call(&alice, Method::GET, "/v1/devices", None).await;
     assert_eq!(devices.1["devices"].as_array().unwrap().len(), 2);
 
     ts.stop().await;
@@ -158,7 +154,9 @@ async fn device_link_rejects_a_different_joiner_after_first_join() {
     let api = &ts.api;
     let alice = api.signup().await;
 
-    let (st, created) = api.call(&alice, Method::POST, "/v1/device-links", None).await;
+    let (st, created) = api
+        .call(&alice, Method::POST, "/v1/device-links", None)
+        .await;
     assert_eq!(st, StatusCode::OK, "{created}");
     let link_id = created["link_id"].as_str().unwrap().to_string();
     let challenge = base64::Engine::decode(
@@ -169,7 +167,11 @@ async fn device_link_rejects_a_different_joiner_after_first_join() {
 
     let key1 = new_key();
     let proof1 = key1
-        .sign(&link_join_message(&link_id, &challenge, key1.verifying_key().as_bytes()))
+        .sign(&link_join_message(
+            &link_id,
+            &challenge,
+            key1.verifying_key().as_bytes(),
+        ))
         .to_bytes();
     let first = api
         .http
@@ -185,7 +187,11 @@ async fn device_link_rejects_a_different_joiner_after_first_join() {
 
     let key2 = new_key();
     let proof2 = key2
-        .sign(&link_join_message(&link_id, &challenge, key2.verifying_key().as_bytes()))
+        .sign(&link_join_message(
+            &link_id,
+            &challenge,
+            key2.verifying_key().as_bytes(),
+        ))
         .to_bytes();
     let second = api
         .http
@@ -209,5 +215,8 @@ async fn device_link_code_binds_both_public_keys() {
     let a = [1u8; 32];
     let b = [2u8; 32];
     let c = [3u8; 32];
-    assert_ne!(verification_code(&challenge, &a, &b), verification_code(&challenge, &a, &c));
+    assert_ne!(
+        verification_code(&challenge, &a, &b),
+        verification_code(&challenge, &a, &c)
+    );
 }

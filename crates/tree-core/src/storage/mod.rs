@@ -137,11 +137,22 @@ impl TreeProvider for StoredProvider {
     }
 
     fn put_meta(&self, key: &str, value: &[u8]) -> Result<(), TreeError> {
-        self.put_meta(key, value)
+        self.storage
+            .conn
+            .execute(
+                "INSERT OR REPLACE INTO tree_meta (key, value) VALUES (?1, ?2)",
+                params![key, value],
+            )
+            .map(|_| ())
+            .map_err(storage_err)
     }
 
     fn meta_optional(&self, key: &str) -> Result<Option<Vec<u8>>, TreeError> {
-        self.meta_optional(key)
+        self.storage
+            .conn
+            .query_row("SELECT value FROM tree_meta WHERE key = ?1", params![key], |r| r.get(0))
+            .optional()
+            .map_err(storage_err)
     }
 
     fn delete_meta(&self, key: &str) -> Result<(), TreeError> {

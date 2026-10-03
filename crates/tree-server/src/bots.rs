@@ -660,6 +660,12 @@ pub async fn get_commands(
     Ok(Json(CommandsResp { commands }))
 }
 
+fn parse_bot_token_parts(token: &str) -> ApiResult<(&str, &str)> {
+    let (bot_id, suffix) = parse_bot_token_parts(token)?;
+    let raw_suffix = URL_SAFE_NO_PAD.decode(suffix).map_err(|_| ApiError::unauthorized("invalid bot token"))?;
+    Ok((bot_id, suffix))
+}
+
 /// Authenticate a bot gateway request. Tokens are accepted only via
 /// Authorization: Bot <token>; URL paths must never contain token material.
 pub async fn authenticate_token(state: &AppState, headers: &HeaderMap) -> ApiResult<BotIdentity> {
@@ -720,4 +726,21 @@ pub struct BotIdentity {
     pub id: String,
     pub account_id: String,
     pub gateway_device_id: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bot_token_parser_uses_fixed_id_boundary() {
+        let bot_id = URL_SAFE_NO_PAD.encode([0xffu8; 16]);
+        assert_eq!(bot_id.len(), crate::util::ID_LEN);
+        assert!(bot_id.contains('_'));
+        let suffix = URL_SAFE_NO_PAD.encode([0xffu8; 32]);
+        let token = format!("tb_{bot_id}_{suffix}");
+        let (parsed_id, parsed_suffix) = parse_bot_token_parts(&token).unwrap();
+        assert_eq!(parsed_id, bot_id);
+        assert_eq!(parsed_suffix, suffix);
+    }
 }

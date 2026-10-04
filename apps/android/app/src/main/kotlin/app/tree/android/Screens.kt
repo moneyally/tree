@@ -79,6 +79,8 @@ private fun SignIn(model: AppModel, profile: String) {
                 if (ok) model.startSyncLoop()
             }
         }) { Text(if (exists) Strings.t("open") else Strings.t("create")) }
+        // App lock with a PIN or biometrics (user.app_lock), when set up here.
+        if (exists) UnlockOptions(model, profile) { model.startSyncLoop() }
     }
 }
 
@@ -124,6 +126,7 @@ private fun ChatList(model: AppModel, state: UiState, requests: Boolean) {
                     TextButton(onClick = { model.showFolder(f.name) }) { Text(if (f.kind == "user") f.name else Strings.t(f.kind)) }
                 }
             }
+            SearchBar(model)
             Text(Strings.t("notes"), Modifier.fillMaxWidth().clickable { scope.launch { model.openNotes() } }.padding(14.dp))
             HorizontalDivider()
         }
@@ -255,6 +258,8 @@ private fun SettingsScreen(model: AppModel, state: UiState) {
                 SelectionContainer { Text(it, style = MaterialTheme.typography.titleMedium) }
             }
             TextButton(onClick = { confirmDelete = true }) { Text(Strings.t("delete_account")) }
+            HorizontalDivider(Modifier.padding(vertical = 8.dp))
+            AppLockSettings(model, state, (LocalContext.current.applicationContext as TreeApplication).profile)
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
         }
         items(state.features, key = { it.key }) { f ->

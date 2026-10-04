@@ -861,9 +861,7 @@ impl Group {
         // a seal mismatch is eligible for the untrusted epoch peek below.
         let (epoch, body) = match self.open_envelope(me, bytes) {
             Ok(opened) => opened,
-            Err(err @ TreeError::Rejected(reason))
-                if reason == "envelope seal mismatch" =>
-            {
+            Err(err @ TreeError::Rejected(reason)) if reason == "envelope seal mismatch" => {
                 if bytes.len() == 1 + Self::TAG_LEN {
                     return Err(err);
                 }
@@ -871,7 +869,7 @@ impl Group {
                 if announced <= self.epoch() {
                     return Err(err);
                 }
-                self.atomic(me, |this| {
+                return self.atomic(me, |this| {
                     this.state.prune_future(now);
                     if !this
                         .state
@@ -888,7 +886,7 @@ impl Group {
                         this.save(me)?;
                     }
                     Ok(Incoming::HeldForRetry { epoch: announced })
-                })?
+                });
             }
             Err(err) => return Err(err),
         };

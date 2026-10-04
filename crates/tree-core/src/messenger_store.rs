@@ -3,8 +3,11 @@
 //! This layer intentionally stores plaintext only inside the already encrypted
 //! local profile. It is not part of the network protocol.
 
+use crate::{
+    error::TreeError,
+    message::{MessageEvent, MessageId},
+};
 use rusqlite::{params, OptionalExtension};
-use crate::{error::TreeError, message::{MessageEvent, MessageId}};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OutboxState {
@@ -78,7 +81,9 @@ fn local_err(e: impl std::fmt::Display) -> TreeError {
 }
 
 fn parse_id<const N: usize>(bytes: Vec<u8>, what: &str) -> Result<[u8; N], TreeError> {
-    bytes.try_into().map_err(|_| TreeError::Storage(format!("{what} has invalid length")))
+    bytes
+        .try_into()
+        .map_err(|_| TreeError::Storage(format!("{what} has invalid length")))
 }
 
 impl crate::storage::StoredProvider {
@@ -89,10 +94,28 @@ impl crate::storage::StoredProvider {
         sender: &[u8; 32],
     ) -> Result<(), TreeError> {
         let (id, seq, created_at, ttl_secs, view_once, deleted, body) = match event {
-            MessageEvent::New { id, seq, sent_at, ttl_secs, view_once, body, .. } => {
-                (*id, *seq, *sent_at, *ttl_secs, *view_once, false, body.clone())
+            MessageEvent::New {
+                id,
+                seq,
+                sent_at,
+                ttl_secs,
+                view_once,
+                body,
+                ..
+            } => (
+                *id,
+                *seq,
+                *sent_at,
+                *ttl_secs,
+                *view_once,
+                false,
+                body.clone(),
+            ),
+            _ => {
+                return Err(TreeError::Storage(
+                    "only New events create stored messages".into(),
+                ))
             }
-            _ => return Err(TreeError::Storage("only New events create stored messages".into())),
         };
         let now = crate::message::DEFAULT_EDIT_WINDOW_SECS as i64;
         let expires_at = (ttl_secs != 0).then_some(created_at.saturating_add(ttl_secs as i64));
@@ -113,11 +136,13 @@ impl crate::storage::StoredProvider {
         edited_at: i64,
         body: &[u8],
     ) -> Result<(), TreeError> {
-        self.connection().execute(
-            "UPDATE tree_messages SET body=?3, edited_at=?4, deleted=0
+        self.connection()
+            .execute(
+                "UPDATE tree_messages SET body=?3, edited_at=?4, deleted=0
              WHERE group_id=?1 AND message_id=?2",
-            params![group_id, id.as_bytes().as_slice(), body, edited_at],
-        ).map_err(local_err)?;
+                params![group_id, id.as_bytes().as_slice(), body, edited_at],
+            )
+            .map_err(local_err)?;
         Ok(())
     }
 
@@ -126,10 +151,12 @@ impl crate::storage::StoredProvider {
         group_id: &[u8],
         id: &MessageId,
     ) -> Result<(), TreeError> {
-        self.connection().execute(
-            "UPDATE tree_messages SET deleted=1 WHERE group_id=?1 AND message_id=?2",
-            params![group_id, id.as_bytes().as_slice()],
-        ).map_err(local_err)?;
+        self.connection()
+            .execute(
+                "UPDATE tree_messages SET deleted=1 WHERE group_id=?1 AND message_id=?2",
+                params![group_id, id.as_bytes().as_slice()],
+            )
+            .map_err(local_err)?;
         Ok(())
     }
 
@@ -150,20 +177,36 @@ impl crate::storage::StoredProvider {
             },
         ).optional().map_err(local_err)?;
 
-        row.map(|(group, msg, sender, sequence, created_at, edited_at, expires_at, view_once, deleted, body)| {
-            Ok(StoredMessage {
-                group_id: group,
-                message_id: MessageId(parse_id(msg, "message_id")?),
-                sender: parse_id(sender, "sender_member_id")?,
-                sequence: sequence.try_into().map_err(|_| TreeError::Storage("negative message sequence".into()))?,
+        row.map(
+            |(
+                group,
+                msg,
+                sender,
+                sequence,
                 created_at,
                 edited_at,
                 expires_at,
-                view_once: view_once != 0,
-                deleted: deleted != 0,
+                view_once,
+                deleted,
                 body,
-            })
-        }).transpose()
+            )| {
+                Ok(StoredMessage {
+                    group_id: group,
+                    message_id: MessageId(parse_id(msg, "message_id")?),
+                    sender: parse_id(sender, "sender_member_id")?,
+                    sequence: sequence
+                        .try_into()
+                        .map_err(|_| TreeError::Storage("negative message sequence".into()))?,
+                    created_at,
+                    edited_at,
+                    expires_at,
+                    view_once: view_once != 0,
+                    deleted: deleted != 0,
+                    body,
+                })
+            },
+        )
+        .transpose()
     }
 
     pub(crate) fn list_messages(
@@ -175,39 +218,58 @@ impl crate::storage::StoredProvider {
             "SELECT group_id,message_id,sender_member_id,sequence,created_at,edited_at,expires_at,view_once,deleted,body
              FROM tree_messages WHERE group_id=?1 ORDER BY sequence,created_at LIMIT ?2",
         ).map_err(local_err)?;
-        let mapped = stmt.query_map(params![group_id, limit.min(5000) as i64], |r| {
-            Ok((
-                r.get::<_, Vec<u8>>(0)?,
-                r.get::<_, Vec<u8>>(1)?,
-                r.get::<_, Vec<u8>>(2)?,
-                r.get::<_, i64>(3)?,
-                r.get::<_, i64>(4)?,
-                r.get::<_, Option<i64>>(5)?,
-                r.get::<_, Option<i64>>(6)?,
-                r.get::<_, i64>(7)?,
-                r.get::<_, i64>(8)?,
-                r.get::<_, Vec<u8>>(9)?,
-            ))
-        }).map_err(local_err)?;
+        let mapped = stmt
+            .query_map(params![group_id, limit.min(5000) as i64], |r| {
+                Ok((
+                    r.get::<_, Vec<u8>>(0)?,
+                    r.get::<_, Vec<u8>>(1)?,
+                    r.get::<_, Vec<u8>>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, i64>(4)?,
+                    r.get::<_, Option<i64>>(5)?,
+                    r.get::<_, Option<i64>>(6)?,
+                    r.get::<_, i64>(7)?,
+                    r.get::<_, i64>(8)?,
+                    r.get::<_, Vec<u8>>(9)?,
+                ))
+            })
+            .map_err(local_err)?;
         let mut rows = Vec::new();
         for row in mapped {
             rows.push(row.map_err(local_err)?);
         }
 
-        rows.into_iter().map(|(group,msg,sender,sequence,created_at,edited_at,expires_at,view_once,deleted,body)| {
-            Ok(StoredMessage {
-                group_id: group,
-                message_id: MessageId(parse_id(msg, "message_id")?),
-                sender: parse_id(sender, "sender_member_id")?,
-                sequence: sequence.try_into().map_err(|_| TreeError::Storage("negative message sequence".into()))?,
-                created_at,
-                edited_at,
-                expires_at,
-                view_once: view_once != 0,
-                deleted: deleted != 0,
-                body,
-            })
-        }).collect()
+        rows.into_iter()
+            .map(
+                |(
+                    group,
+                    msg,
+                    sender,
+                    sequence,
+                    created_at,
+                    edited_at,
+                    expires_at,
+                    view_once,
+                    deleted,
+                    body,
+                )| {
+                    Ok(StoredMessage {
+                        group_id: group,
+                        message_id: MessageId(parse_id(msg, "message_id")?),
+                        sender: parse_id(sender, "sender_member_id")?,
+                        sequence: sequence
+                            .try_into()
+                            .map_err(|_| TreeError::Storage("negative message sequence".into()))?,
+                        created_at,
+                        edited_at,
+                        expires_at,
+                        view_once: view_once != 0,
+                        deleted: deleted != 0,
+                        body,
+                    })
+                },
+            )
+            .collect()
     }
 
     pub(crate) fn enqueue_outbox(
@@ -234,59 +296,132 @@ impl crate::storage::StoredProvider {
              FROM tree_outbox WHERE state IN ('queued','retry') AND next_retry_at<=?1
              ORDER BY created_at LIMIT ?2",
         ).map_err(local_err)?;
-        let rows = stmt.query_map(params![now, limit.min(1000) as i64], |r| {
-            Ok((
-                r.get::<_,Vec<u8>>(0)?, r.get::<_,Vec<u8>>(1)?, r.get::<_,Option<Vec<u8>>>(2)?,
-                r.get::<_,i64>(3)?, r.get::<_,Vec<u8>>(4)?, r.get::<_,String>(5)?,
-                r.get::<_,i64>(6)?, r.get::<_,i64>(7)?, r.get::<_,i64>(8)?,
-                r.get::<_,Option<String>>(9)?, r.get::<_,Option<String>>(10)?
-            ))
-        }).map_err(local_err)?;
+        let rows = stmt
+            .query_map(params![now, limit.min(1000) as i64], |r| {
+                Ok((
+                    r.get::<_, Vec<u8>>(0)?,
+                    r.get::<_, Vec<u8>>(1)?,
+                    r.get::<_, Option<Vec<u8>>>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, Vec<u8>>(4)?,
+                    r.get::<_, String>(5)?,
+                    r.get::<_, i64>(6)?,
+                    r.get::<_, i64>(7)?,
+                    r.get::<_, i64>(8)?,
+                    r.get::<_, Option<String>>(9)?,
+                    r.get::<_, Option<String>>(10)?,
+                ))
+            })
+            .map_err(local_err)?;
 
         rows.map(|row| -> Result<OutboxItem, TreeError> {
-            let (local,group,msg,kind,envelope,state,attempts,next_retry_at,created_at,last_error_code,server_id)=row.map_err(local_err)?;
-            Ok(OutboxItem{
-                local_id:parse_id(local,"outbox local_id")?,
-                group_id:group,
-                message_id:msg.map(|v|parse_id(v,"outbox message_id")).transpose()?.map(MessageId),
-                kind:kind.try_into().map_err(|_|TreeError::Storage("invalid outbox kind".into()))?,
+            let (
+                local,
+                group,
+                msg,
+                kind,
                 envelope,
-                state:OutboxState::parse(&state)?,
-                attempts:attempts.try_into().map_err(|_|TreeError::Storage("invalid outbox attempts".into()))?,
+                state,
+                attempts,
+                next_retry_at,
+                created_at,
+                last_error_code,
+                server_id,
+            ) = row.map_err(local_err)?;
+            Ok(OutboxItem {
+                local_id: parse_id(local, "outbox local_id")?,
+                group_id: group,
+                message_id: msg
+                    .map(|v| parse_id(v, "outbox message_id"))
+                    .transpose()?
+                    .map(MessageId),
+                kind: kind
+                    .try_into()
+                    .map_err(|_| TreeError::Storage("invalid outbox kind".into()))?,
+                envelope,
+                state: OutboxState::parse(&state)?,
+                attempts: attempts
+                    .try_into()
+                    .map_err(|_| TreeError::Storage("invalid outbox attempts".into()))?,
                 next_retry_at,
                 created_at,
                 last_error_code,
                 server_id,
             })
-        }).collect()
+        })
+        .collect()
     }
 
-    pub(crate) fn mark_outbox_sending(&self, local_id: &[u8;16], now:i64)->Result<(),TreeError>{
-        self.connection().execute("UPDATE tree_outbox SET state='sending', attempts=attempts+1, last_error_code=NULL WHERE local_id=?1 AND state IN ('queued','retry')",params![local_id.as_slice()]).map_err(local_err)?; Ok(())
+    pub(crate) fn mark_outbox_sending(
+        &self,
+        local_id: &[u8; 16],
+        now: i64,
+    ) -> Result<(), TreeError> {
+        self.connection().execute("UPDATE tree_outbox SET state='sending', attempts=attempts+1, last_error_code=NULL WHERE local_id=?1 AND state IN ('queued','retry')",params![local_id.as_slice()]).map_err(local_err)?;
+        Ok(())
     }
 
-    pub(crate) fn mark_outbox_sent(&self, local_id:&[u8;16], server_id:&str)->Result<(),TreeError>{
-        self.connection().execute("UPDATE tree_outbox SET state='sent',server_id=?2 WHERE local_id=?1",params![local_id.as_slice(),server_id]).map_err(local_err)?; Ok(())
+    pub(crate) fn mark_outbox_sent(
+        &self,
+        local_id: &[u8; 16],
+        server_id: &str,
+    ) -> Result<(), TreeError> {
+        self.connection()
+            .execute(
+                "UPDATE tree_outbox SET state='sent',server_id=?2 WHERE local_id=?1",
+                params![local_id.as_slice(), server_id],
+            )
+            .map_err(local_err)?;
+        Ok(())
     }
 
-    pub(crate) fn mark_outbox_retry(&self, local_id:&[u8;16], code:&str, next_retry_at:i64)->Result<(),TreeError>{
-        self.connection().execute("UPDATE tree_outbox SET state='retry',last_error_code=?2,next_retry_at=?3 WHERE local_id=?1",params![local_id.as_slice(),code,next_retry_at]).map_err(local_err)?; Ok(())
+    pub(crate) fn mark_outbox_retry(
+        &self,
+        local_id: &[u8; 16],
+        code: &str,
+        next_retry_at: i64,
+    ) -> Result<(), TreeError> {
+        self.connection().execute("UPDATE tree_outbox SET state='retry',last_error_code=?2,next_retry_at=?3 WHERE local_id=?1",params![local_id.as_slice(),code,next_retry_at]).map_err(local_err)?;
+        Ok(())
     }
 
-    pub(crate) fn mark_outbox_failed(&self, local_id:&[u8;16], code:&str)->Result<(),TreeError>{
-        self.connection().execute("UPDATE tree_outbox SET state='failed',last_error_code=?2 WHERE local_id=?1",params![local_id.as_slice(),code]).map_err(local_err)?; Ok(())
+    pub(crate) fn mark_outbox_failed(
+        &self,
+        local_id: &[u8; 16],
+        code: &str,
+    ) -> Result<(), TreeError> {
+        self.connection()
+            .execute(
+                "UPDATE tree_outbox SET state='failed',last_error_code=?2 WHERE local_id=?1",
+                params![local_id.as_slice(), code],
+            )
+            .map_err(local_err)?;
+        Ok(())
     }
 
-    pub(crate) fn outbox_count(&self)->Result<u64,TreeError>{
+    pub(crate) fn outbox_count(&self) -> Result<u64, TreeError> {
         self.connection().query_row("SELECT COUNT(*) FROM tree_outbox WHERE state NOT IN ('sent','cancelled','superseded')",[],|r|r.get::<_,i64>(0)).map(|n|n.max(0) as u64).map_err(local_err)
     }
 
-    pub(crate) fn message_count(&self,group_id:&[u8])->Result<u64,TreeError>{
-        self.connection().query_row("SELECT COUNT(*) FROM tree_messages WHERE group_id=?1",params![group_id],|r|r.get::<_,i64>(0)).map(|n|n.max(0) as u64).map_err(local_err)
+    pub(crate) fn message_count(&self, group_id: &[u8]) -> Result<u64, TreeError> {
+        self.connection()
+            .query_row(
+                "SELECT COUNT(*) FROM tree_messages WHERE group_id=?1",
+                params![group_id],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|n| n.max(0) as u64)
+            .map_err(local_err)
     }
 
-    pub(crate) fn purge_local_expired(&self,now:i64)->Result<u64,TreeError>{
-        let n=self.connection().execute("DELETE FROM tree_messages WHERE expires_at IS NOT NULL AND expires_at<=?1",params![now]).map_err(local_err)?;
+    pub(crate) fn purge_local_expired(&self, now: i64) -> Result<u64, TreeError> {
+        let n = self
+            .connection()
+            .execute(
+                "DELETE FROM tree_messages WHERE expires_at IS NOT NULL AND expires_at<=?1",
+                params![now],
+            )
+            .map_err(local_err)?;
         Ok(n as u64)
     }
 }

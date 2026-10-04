@@ -839,7 +839,8 @@ impl Group {
             update(this)?;
             let group_id = this.mls.group_id().as_slice().to_vec();
             let sender = me.member_id();
-            me.provider.store_message_event(&group_id, event, sender.as_bytes())?;
+            me.provider
+                .store_message_event(&group_id, event, sender.as_bytes())?;
             me.provider.enqueue_outbox(
                 event.mutation_id().0,
                 &group_id,

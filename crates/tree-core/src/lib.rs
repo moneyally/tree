@@ -23,7 +23,10 @@ pub mod user_features;
 
 pub use bot_lane::{BotLaneDescriptor, BotLaneEvent, BotLaneMode};
 pub use client::Client;
-pub use crypto_profile::{combine_secrets, negotiate as negotiate_crypto_profile, CryptoProfile, KemAlgorithm, SignatureAlgorithm};
+pub use crypto_profile::{
+    combine_secrets, negotiate as negotiate_crypto_profile, CryptoProfile, KemAlgorithm,
+    SignatureAlgorithm,
+};
 pub use error::TreeError;
 pub use file::{decrypt as decrypt_file, encrypt as encrypt_file, EncryptedFile, FileKey};
 pub use group::{Group, Incoming, Member, MemberId, PendingCommit};

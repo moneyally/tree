@@ -66,7 +66,13 @@ impl<P: Provider> Live<P> {
     fn new(cs: Ciphersuite, leaf: u32) -> Self {
         let provider = P::default();
         let (signer, cred) = identity(cs, leaf);
-        Self { leaf, provider, signer, cred, group: None }
+        Self {
+            leaf,
+            provider,
+            signer,
+            cred,
+            group: None,
+        }
     }
 
     fn g(&mut self) -> &mut MlsGroup {
@@ -118,7 +124,10 @@ fn cpu_ms() -> f64 {
         fn clock_gettime(clock: i32, tp: *mut Timespec) -> i32;
     }
     const CLOCK_PROCESS_CPUTIME_ID: i32 = 2;
-    let mut ts = Timespec { tv_sec: 0, tv_nsec: 0 };
+    let mut ts = Timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
     // SAFETY: valid pointer to a correctly laid out timespec (64-bit Linux).
     let rc = unsafe { clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &mut ts) };
     assert_eq!(rc, 0, "clock_gettime");
@@ -207,7 +216,8 @@ struct Bench<P: Provider> {
 
 /// What a measured commit does; the closure gets the committer and the
 /// repetition index and returns (commit, welcome, joiner provider).
-type MakeCommit<'a, P> = dyn FnMut(&mut Live<P>, usize) -> (MlsMessageOut, Option<MlsMessageOut>, Option<P>) + 'a;
+type MakeCommit<'a, P> =
+    dyn FnMut(&mut Live<P>, usize) -> (MlsMessageOut, Option<MlsMessageOut>, Option<P>) + 'a;
 
 impl<P: Provider> Bench<P> {
     /// Delivers a commit to every live member except `skip`, merging it.
@@ -220,7 +230,9 @@ impl<P: Provider> Bench<P> {
             }
             let provider = &live.provider;
             let g = live.group.as_mut().expect("joined");
-            let processed = g.process_message(provider, protocol(commit)).expect("process");
+            let processed = g
+                .process_message(provider, protocol(commit))
+                .expect("process");
             match processed.into_content() {
                 ProcessedMessageContent::StagedCommitMessage(staged) => {
                     let t = Timer::start();
@@ -252,17 +264,26 @@ impl<P: Provider> Bench<P> {
                 let w = w.to_bytes().expect("encode");
                 welcome_bytes = w.len();
                 let t = Timer::start();
-                let welcome = match MlsMessageIn::tls_deserialize_exact(&w).expect("decode").extract() {
+                let welcome = match MlsMessageIn::tls_deserialize_exact(&w)
+                    .expect("decode")
+                    .extract()
+                {
                     MlsMessageBodyIn::Welcome(w) => w,
                     _ => panic!("not a welcome"),
                 };
-                let staged = StagedWelcome::new_from_welcome(&joiner, &join_config(), welcome, None).expect("welcome");
+                let staged =
+                    StagedWelcome::new_from_welcome(&joiner, &join_config(), welcome, None)
+                        .expect("welcome");
                 let _group = staged.into_group(&joiner).expect("join");
                 joins.push(t.ms());
             }
             if r + 1 < self.reps {
                 let p = &c.provider;
-                c.group.as_mut().expect("joined").clear_pending_commit(p.storage()).expect("clear");
+                c.group
+                    .as_mut()
+                    .expect("joined")
+                    .clear_pending_commit(p.storage())
+                    .expect("clear");
             }
         }
 
@@ -274,7 +295,9 @@ impl<P: Provider> Bench<P> {
             let g = live.group.as_mut().expect("joined");
             for commit in &commits[..commits.len() - 1] {
                 let t = Timer::start();
-                let p = g.process_message(provider, protocol(commit)).expect("process");
+                let p = g
+                    .process_message(provider, protocol(commit))
+                    .expect("process");
                 process.push(t.ms());
                 drop(p);
             }
@@ -287,7 +310,9 @@ impl<P: Provider> Bench<P> {
             let provider = &live.provider;
             let g = live.group.as_mut().expect("joined");
             let t = Timer::start();
-            let processed = g.process_message(provider, protocol(&last)).expect("process");
+            let processed = g
+                .process_message(provider, protocol(&last))
+                .expect("process");
             if receivers.contains(&i) {
                 process.push(t.ms());
             }
@@ -303,7 +328,11 @@ impl<P: Provider> Bench<P> {
         let c = &mut self.lives[0];
         let t = Timer::start();
         let p = &c.provider;
-        c.group.as_mut().expect("joined").merge_pending_commit(p).expect("merge own");
+        c.group
+            .as_mut()
+            .expect("joined")
+            .merge_pending_commit(p)
+            .expect("merge own");
         let commit_merge_ms = t.ms();
 
         CommitCost {
@@ -324,7 +353,12 @@ impl<P: Provider> Bench<P> {
             let c = &mut self.lives[0];
             let t = Timer::start();
             let p = &c.provider;
-            let m = c.group.as_mut().expect("joined").create_message(p, &c.signer, MESSAGE).expect("encrypt");
+            let m = c
+                .group
+                .as_mut()
+                .expect("joined")
+                .create_message(p, &c.signer, MESSAGE)
+                .expect("encrypt");
             let m = m.to_bytes().expect("encode");
             enc.push(t.ms() * 1000.0);
             msgs.push(m);
@@ -337,7 +371,10 @@ impl<P: Provider> Bench<P> {
             for m in &msgs {
                 let t = Timer::start();
                 let p = g.process_message(provider, protocol(m)).expect("decrypt");
-                assert!(matches!(p.into_content(), ProcessedMessageContent::ApplicationMessage(_)));
+                assert!(matches!(
+                    p.into_content(),
+                    ProcessedMessageContent::ApplicationMessage(_)
+                ));
                 dec.push(t.ms() * 1000.0);
             }
         }
@@ -360,7 +397,12 @@ impl<P: Provider> Bench<P> {
 
         let update = self.measure(&mut |c: &mut Live<P>, _r| {
             let p = &c.provider;
-            let b = c.group.as_mut().expect("joined").self_update(p, &c.signer, LeafNodeParameters::default()).expect("update");
+            let b = c
+                .group
+                .as_mut()
+                .expect("joined")
+                .self_update(p, &c.signer, LeafNodeParameters::default())
+                .expect("update");
             (b.into_commit(), None, None)
         });
 
@@ -368,8 +410,12 @@ impl<P: Provider> Bench<P> {
         let add = self.measure(&mut |c: &mut Live<P>, r| {
             let (joiner, kp) = joiners[r].take().expect("joiner");
             let p = &c.provider;
-            let (commit, welcome, _) =
-                c.group.as_mut().expect("joined").add_members(p, &c.signer, &[kp]).expect("add");
+            let (commit, welcome, _) = c
+                .group
+                .as_mut()
+                .expect("joined")
+                .add_members(p, &c.signer, &[kp])
+                .expect("add");
             (commit, Some(welcome), Some(joiner))
         });
 
@@ -399,7 +445,15 @@ impl<P: Provider> Bench<P> {
             (commit, None, None)
         });
 
-        PhaseResult { update, add, add_no_path, remove, msg_bytes, enc_us, dec_us }
+        PhaseResult {
+            update,
+            add,
+            add_no_path,
+            remove,
+            msg_bytes,
+            enc_us,
+            dec_us,
+        }
     }
 }
 
@@ -425,9 +479,17 @@ fn copath_warmers(leaf: u32, n: u32, avoid: &BTreeSet<u32>) -> Vec<u32> {
 fn run_size<P: Provider>(cs: Ciphersuite, n: usize, reps: usize, batch: usize) -> SizeResult {
     assert!(n >= 2);
     let n32 = n as u32;
-    let receiver_leaves: Vec<u32> = [1, n32 / 2, n32 - 1].into_iter().collect::<BTreeSet<_>>().into_iter().collect();
+    let receiver_leaves: Vec<u32> = [1, n32 / 2, n32 - 1]
+        .into_iter()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
     let warm_phase = n >= 10;
-    let (l_cold, l_warm) = if warm_phase { (n32 / 4 + 1, 3 * n32 / 4 + 1) } else { (n32, n32) };
+    let (l_cold, l_warm) = if warm_phase {
+        (n32 / 4 + 1, 3 * n32 / 4 + 1)
+    } else {
+        (n32, n32)
+    };
     let removed: BTreeSet<u32> = [l_cold, l_warm].into_iter().collect();
     let mut warmers: BTreeSet<u32> = BTreeSet::new();
     if warm_phase {
@@ -454,7 +516,11 @@ fn run_size<P: Provider>(cs: Ciphersuite, n: usize, reps: usize, batch: usize) -
             lives[i].key_package(cs)
         } else {
             let (signer, cred) = identity(cs, leaf);
-            KeyPackage::builder().build(cs, &dummy, &signer, cred).expect("kp").key_package().clone()
+            KeyPackage::builder()
+                .build(cs, &dummy, &signer, cred)
+                .expect("kp")
+                .key_package()
+                .clone()
         };
         kp_bytes = kp.tls_serialize_detached().expect("encode").len();
         kps.push(kp);
@@ -469,9 +535,15 @@ fn run_size<P: Provider>(cs: Ciphersuite, n: usize, reps: usize, batch: usize) -
         .build();
     {
         let c = &mut lives[0];
-        c.group = Some(MlsGroup::new(&c.provider, &c.signer, &config, c.cred.clone()).expect("create"));
+        c.group =
+            Some(MlsGroup::new(&c.provider, &c.signer, &config, c.cred.clone()).expect("create"));
     }
-    let mut bench = Bench { cs, reps, lives, receivers };
+    let mut bench = Bench {
+        cs,
+        reps,
+        lives,
+        receivers,
+    };
     let mut build = Duration::ZERO;
     let mut build_cpu = 0.0;
     let (mut build_commit_max, mut build_welcome_max) = (0, 0);
@@ -498,16 +570,23 @@ fn run_size<P: Provider>(cs: Ciphersuite, n: usize, reps: usize, batch: usize) -
             if live.leaf < range.start {
                 let provider = &live.provider;
                 let g = live.group.as_mut().expect("joined");
-                let processed = g.process_message(provider, protocol(&commit)).expect("process");
+                let processed = g
+                    .process_message(provider, protocol(&commit))
+                    .expect("process");
                 if let ProcessedMessageContent::StagedCommitMessage(s) = processed.into_content() {
                     g.merge_staged_commit(provider, *s).expect("merge");
                 }
             } else if range.contains(&live.leaf) {
-                let w = match MlsMessageIn::tls_deserialize_exact(&welcome).expect("decode").extract() {
+                let w = match MlsMessageIn::tls_deserialize_exact(&welcome)
+                    .expect("decode")
+                    .extract()
+                {
                     MlsMessageBodyIn::Welcome(w) => w,
                     _ => panic!("not a welcome"),
                 };
-                let staged = StagedWelcome::new_from_welcome(&live.provider, &join_config(), w, None).expect("welcome");
+                let staged =
+                    StagedWelcome::new_from_welcome(&live.provider, &join_config(), w, None)
+                        .expect("welcome");
                 let g = staged.into_group(&live.provider).expect("join");
                 assert_eq!(g.own_leaf_index().u32(), live.leaf, "leaf position");
                 live.group = Some(g);
@@ -536,7 +615,9 @@ fn run_size<P: Provider>(cs: Ciphersuite, n: usize, reps: usize, batch: usize) -
             let live = &mut bench.lives[wi];
             let p = &live.provider;
             let g = live.group.as_mut().expect("joined");
-            let b = g.self_update(p, &live.signer, LeafNodeParameters::default()).expect("update");
+            let b = g
+                .self_update(p, &live.signer, LeafNodeParameters::default())
+                .expect("update");
             let commit = b.into_commit().to_bytes().expect("encode");
             g.merge_pending_commit(p).expect("merge");
             bench.deliver(wi, &commit);
@@ -607,10 +688,16 @@ fn print_tables(label: &str, results: &[SizeResult]) {
     println!("\n| leaves | tree | op | commit | welcome | create ms | process ms | apply ms | join ms | fan-out (commit x members) |");
     println!("|---:|---|---|---:|---:|---:|---:|---:|---:|---:|");
     for r in results {
-        let phases: Vec<(&str, &PhaseResult)> =
-            std::iter::once(("cold", &r.cold)).chain(r.warm.as_ref().map(|w| ("warm", w))).collect();
+        let phases: Vec<(&str, &PhaseResult)> = std::iter::once(("cold", &r.cold))
+            .chain(r.warm.as_ref().map(|w| ("warm", w)))
+            .collect();
         for (name, p) in phases {
-            for (op, c) in [("update", &p.update), ("add 1", &p.add), ("add 1, no path", &p.add_no_path), ("remove 1", &p.remove)] {
+            for (op, c) in [
+                ("update", &p.update),
+                ("add 1", &p.add),
+                ("add 1, no path", &p.add_no_path),
+                ("remove 1", &p.remove),
+            ] {
                 let fan = c.commit_bytes * (r.leaves - 1);
                 println!(
                     "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
@@ -618,7 +705,11 @@ fn print_tables(label: &str, results: &[SizeResult]) {
                     name,
                     op,
                     kb(c.commit_bytes),
-                    if c.welcome_bytes > 0 { kb(c.welcome_bytes) } else { "-".into() },
+                    if c.welcome_bytes > 0 {
+                        kb(c.welcome_bytes)
+                    } else {
+                        "-".into()
+                    },
                     t(c.create_ms + c.commit_merge_ms),
                     t(c.process_ms),
                     t(c.merge_ms),
@@ -632,12 +723,31 @@ fn print_tables(label: &str, results: &[SizeResult]) {
     println!("|---:|---:|---:|---:|");
     for r in results {
         let p = r.warm.as_ref().unwrap_or(&r.cold);
-        println!("| {} | {} B | {} | {} |", r.leaves, p.msg_bytes, t(p.enc_us), t(p.dec_us));
+        println!(
+            "| {} | {} B | {} | {} |",
+            r.leaves,
+            p.msg_bytes,
+            t(p.enc_us),
+            t(p.dec_us)
+        );
     }
-    println!("\n(warmers per size: {})", results.iter().map(|r| format!("{}={}", r.leaves, r.warmers)).collect::<Vec<_>>().join(", "));
+    println!(
+        "\n(warmers per size: {})",
+        results
+            .iter()
+            .map(|r| format!("{}={}", r.leaves, r.warmers))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
 }
 
-fn run_suite<P: Provider>(label: &str, cs: Ciphersuite, sizes: &[usize], reps: usize, batch: usize) {
+fn run_suite<P: Provider>(
+    label: &str,
+    cs: Ciphersuite,
+    sizes: &[usize],
+    reps: usize,
+    batch: usize,
+) {
     let mut results = Vec::new();
     for &n in sizes {
         let t0 = Instant::now();
@@ -667,7 +777,11 @@ fn loadavg() -> String {
 
 fn main() {
     let mut sizes = vec![2, 10, 100, 500, 1000, 2000];
-    let mut suites = vec!["hybrid".to_string(), "classical".to_string(), "xwing".to_string()];
+    let mut suites = vec![
+        "hybrid".to_string(),
+        "classical".to_string(),
+        "xwing".to_string(),
+    ];
     let mut reps = 5;
     let mut batch = 100;
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -685,9 +799,15 @@ fn main() {
 
     let cpu = std::fs::read_to_string("/proc/cpuinfo")
         .ok()
-        .and_then(|s| s.lines().find(|l| l.starts_with("model name")).map(|l| l.split(':').nth(1).unwrap_or("").trim().to_string()))
+        .and_then(|s| {
+            s.lines()
+                .find(|l| l.starts_with("model name"))
+                .map(|l| l.split(':').nth(1).unwrap_or("").trim().to_string())
+        })
         .unwrap_or_else(|| "unknown".into());
-    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
     println!("machine: {cpu}, {threads} hardware threads; reps={reps}, batch={batch}");
 
     for s in &suites {

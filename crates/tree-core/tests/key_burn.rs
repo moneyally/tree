@@ -16,14 +16,20 @@ fn tampered_copy_does_not_burn_genuine_message() {
         let alice = Client::new("alice").unwrap();
         let bob = Client::new("bob").unwrap();
         let mut a = alice.create_group().unwrap();
-        let w = a.add_now(&alice, &bob.key_package().unwrap()).unwrap().welcome;
+        let w = a
+            .add_now(&alice, &bob.key_package().unwrap())
+            .unwrap()
+            .welcome;
         let mut b = bob.join(&w).unwrap();
 
         let m = a.send(&alice, b"genuine").unwrap();
         let i = (m.len() * frac / 100).min(m.len() - 1);
         let mut t = m.clone();
         t[i] ^= 0x01;
-        assert!(b.receive(&bob, &t).is_err(), "tampered copy accepted at byte {i}");
+        assert!(
+            b.receive(&bob, &t).is_err(),
+            "tampered copy accepted at byte {i}"
+        );
         assert!(
             matches!(b.receive(&bob, &m), Ok(Incoming::Message { .. })),
             "genuine message lost after tamper at byte {i}"

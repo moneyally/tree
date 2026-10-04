@@ -23,7 +23,7 @@ do {
 
     _ = try alice.sendText(group: g, text: "안녕, Swift에서 보냄")
     let texts = try bob.sync(wait: 0).compactMap { e -> String? in
-        if case let .text(_, _, _, _, text, _, _, _) = e { return text } else { return nil }
+        if case let .text(_, _, _, _, text, _, _, _, _) = e { return text } else { return nil }
     }
     check(texts.last == "안녕, Swift에서 보냄", "bob got the text: \(texts)")
     print("bob got: \(texts.last!)")

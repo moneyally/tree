@@ -26,7 +26,7 @@ alice = t.TreeSession.create(f"{d}/alice.db", "alice pass", "alice", URL, BITS)
 bob = t.TreeSession.create(f"{d}/bob.db", "bob pass", "bob", URL, BITS)
 print("accounts:", alice.account_id(), bob.account_id())
 
-bob.set_username("bob_ffi", True)
+bob.set_username("bob_ffi")
 found = alice.find("@bob_ffi")
 assert found == bob.account_id(), found
 bob.add_contact(alice.account_id())

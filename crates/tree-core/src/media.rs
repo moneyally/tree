@@ -216,6 +216,62 @@ impl MediaManifest {
         Ok(Sha256::digest(self.encode()?).into())
     }
 
+    pub fn decode(bytes: &[u8]) -> Result<Self, TreeError> {
+        let mut r = Reader(bytes);
+        if r.take(DOMAIN.len())? != DOMAIN || r.u8()? != MEDIA_VERSION {
+            return Err(TreeError::Malformed("invalid media manifest header".into()));
+        }
+        let attachment_id = r.array::<16>()?;
+        let message_id = MessageId::from_bytes(r.array::<16>()?);
+        let group_id = r.bytes_u16(MAX_GROUP_ID)?;
+        let epoch = r.u64()?;
+        let media_type = r.string_u8()?;
+        let filename = r.string_u16()?;
+        let mime = r.string_u8()?;
+        let plaintext_size = r.u64()?;
+        let chunk_size = r.u32()?;
+        let chunk_count = r.u32()?;
+        let preview_mode = match r.u8()? {
+            0 => PreviewMode::None,
+            1 => PreviewMode::Blurred,
+            2 => PreviewMode::LowResolution,
+            _ => return Err(TreeError::Malformed("invalid media preview mode".into())),
+        };
+        let view_policy = match r.u8()? {
+            0 => {
+                let _ = r.take(3)?;
+                ViewPolicy::Persistent
+            }
+            1 => ViewPolicy::Timed { seconds: r.u32()? },
+            2 => {
+                let _ = r.take(3)?;
+                ViewPolicy::ViewOnce
+            }
+            _ => return Err(TreeError::Malformed("invalid media view policy".into())),
+        };
+        let base_nonce = r.array::<8>()?;
+        if !r.0.is_empty() {
+            return Err(TreeError::Malformed("trailing media manifest bytes".into()));
+        }
+        let manifest = Self {
+            attachment_id,
+            message_id,
+            group_id,
+            epoch,
+            media_type,
+            filename,
+            mime,
+            plaintext_size,
+            chunk_size,
+            chunk_count,
+            preview_mode,
+            view_policy,
+            base_nonce,
+        };
+        manifest.validate()?;
+        Ok(manifest)
+    }
+
     pub fn key_commitment(&self, key: &MediaKey) -> Result<[u8; 32], TreeError> {
         let manifest = self.commitment()?;
         let mut h = Sha256::new();
@@ -432,6 +488,55 @@ fn put_string_u16(out: &mut Vec<u8>, s: &str) -> Result<(), TreeError> {
     Ok(())
 }
 
+struct Reader<'a>(&'a [u8]);
+
+impl<'a> Reader<'a> {
+    fn take(&mut self, n: usize) -> Result<&'a [u8], TreeError> {
+        if self.0.len() < n {
+            return Err(TreeError::Malformed("truncated media manifest".into()));
+        }
+        let (head, rest) = self.0.split_at(n);
+        self.0 = rest;
+        Ok(head)
+    }
+
+    fn u8(&mut self) -> Result<u8, TreeError> {
+        Ok(self.take(1)?[0])
+    }
+
+    fn u32(&mut self) -> Result<u32, TreeError> {
+        Ok(u32::from_be_bytes(self.take(4)?.try_into().expect("length checked")))
+    }
+
+    fn u64(&mut self) -> Result<u64, TreeError> {
+        Ok(u64::from_be_bytes(self.take(8)?.try_into().expect("length checked")))
+    }
+
+    fn array<const N: usize>(&mut self) -> Result<[u8; N], TreeError> {
+        Ok(self.take(N)?.try_into().expect("length checked"))
+    }
+
+    fn bytes_u16(&mut self, max: usize) -> Result<Vec<u8>, TreeError> {
+        let n = u16::from_be_bytes(self.take(2)?.try_into().expect("length checked")) as usize;
+        if n > max {
+            return Err(TreeError::Malformed("media manifest field is too large".into()));
+        }
+        Ok(self.take(n)?.to_vec())
+    }
+
+    fn string_u8(&mut self) -> Result<String, TreeError> {
+        let n = self.u8()? as usize;
+        String::from_utf8(self.take(n)?.to_vec())
+            .map_err(|_| TreeError::Malformed("media manifest string is not UTF-8".into()))
+    }
+
+    fn string_u16(&mut self) -> Result<String, TreeError> {
+        let n = u16::from_be_bytes(self.take(2)?.try_into().expect("length checked")) as usize;
+        String::from_utf8(self.take(n)?.to_vec())
+            .map_err(|_| TreeError::Malformed("media manifest string is not UTF-8".into()))
+    }
+}
+
 fn put_bytes_u16(out: &mut Vec<u8>, b: &[u8]) -> Result<(), TreeError> {
     if b.len() > u16::MAX as usize {
         return Err(TreeError::FileCrypto("field too long".into()));
@@ -439,6 +544,88 @@ fn put_bytes_u16(out: &mut Vec<u8>, b: &[u8]) -> Result<(), TreeError> {
     out.extend_from_slice(&(b.len() as u16).to_be_bytes());
     out.extend_from_slice(b);
     Ok(())
+}
+
+pub const MEDIA_MESSAGE_MAGIC: &[u8] = b"TREEMEDIA\x01";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MediaEnvelope {
+    pub manifest: MediaManifest,
+    pub file_key: MediaKey,
+    pub preview: Option<EncryptedChunk>,
+}
+
+impl MediaEnvelope {
+    pub fn file_key_ref(&self) -> &MediaKey { &self.file_key }
+
+    pub fn new(
+        manifest: MediaManifest,
+        file_key: MediaKey,
+        preview: Option<EncryptedChunk>,
+    ) -> Result<Self, TreeError> {
+        let expected = manifest.key_commitment(&file_key)?;
+        let _ = expected;
+        if let Some(p) = &preview {
+            if p.index != u32::MAX {
+                return Err(TreeError::FileCrypto("media preview has invalid index".into()));
+            }
+        }
+        Ok(Self { manifest, file_key, preview })
+    }
+
+    pub fn encode(&self) -> Result<Vec<u8>, TreeError> {
+        let manifest = self.manifest.encode()?;
+        let key_commitment = self.manifest.key_commitment(&self.file_key)?;
+        let mut out = Vec::with_capacity(256 + manifest.len());
+        out.extend_from_slice(MEDIA_MESSAGE_MAGIC);
+        put_bytes_u16(&mut out, &manifest)?;
+        out.extend_from_slice(self.file_key.as_bytes());
+        out.extend_from_slice(&key_commitment);
+        match &self.preview {
+            None => out.push(0),
+            Some(preview) => {
+                out.push(1);
+                if preview.ciphertext.len() > u32::MAX as usize {
+                    return Err(TreeError::FileCrypto("preview is too large".into()));
+                }
+                out.extend_from_slice(&(preview.ciphertext.len() as u32).to_be_bytes());
+                out.extend_from_slice(&preview.ciphertext);
+                out.extend_from_slice(&preview.sha256);
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, TreeError> {
+        let mut r = Reader(bytes);
+        if r.take(MEDIA_MESSAGE_MAGIC.len())? != MEDIA_MESSAGE_MAGIC {
+            return Err(TreeError::Malformed("not a Tree media message".into()));
+        }
+        let manifest = MediaManifest::decode(r.bytes_u16(MAX_MANIFEST)?)?;
+        let file_key = MediaKey::from_bytes(r.take(KEY_LEN)?)?;
+        let expected = manifest.key_commitment(&file_key)?;
+        let received = r.array::<32>()?;
+        if expected != received {
+            return Err(TreeError::FileCrypto("media key commitment mismatch".into()));
+        }
+        let preview = match r.u8()? {
+            0 => None,
+            1 => {
+                let n = r.u32()? as usize;
+                if n > MAX_PREVIEW + NONCE_LEN + 16 {
+                    return Err(TreeError::Malformed("media preview is too large".into()));
+                }
+                let ciphertext = r.take(n)?.to_vec();
+                let sha256 = r.array::<32>()?;
+                Some(EncryptedChunk { index: u32::MAX, ciphertext, sha256 })
+            }
+            _ => return Err(TreeError::Malformed("invalid media preview flag".into())),
+        };
+        if !r.0.is_empty() {
+            return Err(TreeError::Malformed("trailing media message bytes".into()));
+        }
+        Self::new(manifest, file_key, preview)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -578,6 +765,17 @@ mod tests {
             PreviewMode::Blurred,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn manifest_and_media_envelope_round_trip() {
+        let (manifest, key) = sample(5, ViewPolicy::ViewOnce);
+        let preview = encrypt_preview(&key, &manifest, b"thumb").unwrap();
+        let envelope = MediaEnvelope::new(manifest.clone(), key.clone(), Some(preview)).unwrap();
+        let decoded = MediaEnvelope::decode(&envelope.encode().unwrap()).unwrap();
+        assert_eq!(decoded.manifest, manifest);
+        assert_eq!(decoded.file_key.as_bytes(), key.as_bytes());
+        assert_eq!(decrypt_preview(decoded.file_key_ref(), &decoded.manifest, decoded.preview.as_ref().unwrap()).unwrap(), b"thumb");
     }
 
     #[test]

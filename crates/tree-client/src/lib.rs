@@ -16,8 +16,9 @@ use thiserror::Error;
 use tree_core::{
     group::{Group, Incoming, MemberId, PendingCommit},
     media::{
-        decrypt_preview, encrypt_manifest, EncryptedChunk, MediaEnvelope, MediaKey, MediaLifecycle,
-        MediaManifest, MediaViewEvent, PreviewMode, SecureMediaBytes, ViewPolicy,
+        decrypt_preview, encrypt_manifest, EncryptedChunk, MediaComposerState, MediaEnvelope,
+        MediaKey, MediaLifecycle, MediaManifest, MediaViewEvent, PreviewMode, SecureMediaBytes,
+        ViewPolicy,
     },
     storage::StoredProvider,
     Client, TreeError,
@@ -393,7 +394,7 @@ impl Session {
             key,
             preview,
         )?
-        .with_caption(caption)
+        .with_caption(caption)?
         .encode()?;
         let view_once = matches!(policy, ViewPolicy::ViewOnce);
         let ttl_secs = match policy {

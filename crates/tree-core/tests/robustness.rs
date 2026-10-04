@@ -152,7 +152,10 @@ fn receive_mutated_message_never_accepted() {
         })
         .unwrap();
     let r = b.borrow_mut().receive(&bob, &genuine);
-    assert!(matches!(r, Ok(Incoming::Message { .. })), "genuine message lost: {r:?}");
+    assert!(
+        matches!(r, Ok(Incoming::Message { .. })),
+        "genuine message lost: {r:?}"
+    );
 }
 
 #[test]
@@ -319,18 +322,40 @@ fn add_random_or_mutated_key_package_never_accepted() {
 
 #[derive(Debug, Clone)]
 enum Op {
-    Apply { key: usize, option: Option<u8>, who: usize },
-    Release { key: usize, who: usize },
-    ServerFlag { key: usize, applied: bool },
+    Apply {
+        key: usize,
+        option: Option<u8>,
+        who: usize,
+    },
+    Release {
+        key: usize,
+        who: usize,
+    },
+    ServerFlag {
+        key: usize,
+        applied: bool,
+    },
     /// `release_for_chat` (release = true) or `apply_for_chat`.
     ChatLock { key: usize, release: bool, who: usize },
 }
 
 const CALLERS: [Caller; 4] = [
-    Caller { plan: Plan::Free, is_admin: false },
-    Caller { plan: Plan::Free, is_admin: true },
-    Caller { plan: Plan::Pro, is_admin: false },
-    Caller { plan: Plan::Pro, is_admin: true },
+    Caller {
+        plan: Plan::Free,
+        is_admin: false,
+    },
+    Caller {
+        plan: Plan::Free,
+        is_admin: true,
+    },
+    Caller {
+        plan: Plan::Pro,
+        is_admin: false,
+    },
+    Caller {
+        plan: Plan::Pro,
+        is_admin: true,
+    },
 ];
 
 fn all_features() -> Vec<Feature> {
@@ -409,9 +434,18 @@ impl Model {
             }
             Lock::None => {}
         }
-        let (state, option) = self.state.get(&(f.scope, f.key)).cloned().unwrap_or((f.default, None));
+        let (state, option) = self
+            .state
+            .get(&(f.scope, f.key))
+            .cloned()
+            .unwrap_or((f.default, None));
         if self.server_locked(f) {
-            Status { key: f.key, state: State::Released, option, locked_by: Some(LockReason::Server) }
+            Status {
+                key: f.key,
+                state: State::Released,
+                option,
+                locked_by: Some(LockReason::Server),
+            }
         } else if self.chat_locked(f) {
             Status { key: f.key, state: State::Released, option, locked_by: Some(LockReason::Chat) }
         } else {
@@ -517,11 +551,11 @@ fn feature_registry_random_sequences() {
                 state: Default::default(),
             };
             for o in &ops {
-                let snapshot: Vec<Status> = model
-                .defs
-                .iter()
-                .map(|f| r.status(f.key).unwrap())
-                .collect();
+                        let snapshot: Vec<Status> = model
+                    .defs
+                    .iter()
+                    .map(|f| r.status(f.key).unwrap())
+                    .collect();
                 let (got, want, touched) = match *o {
                     Op::Apply { key, option, who } => {
                         let f = &model.defs[key].clone();

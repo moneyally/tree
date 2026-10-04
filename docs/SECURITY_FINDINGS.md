@@ -597,3 +597,19 @@ Issues found by testing Tree's own design. Each one has a regression test.
   deleted on error or cancel, and any left by a crash are deleted when the
   profile is opened; only `.tree-part` files are ever deleted that way.
 - **Test:** `media::tests::partial_files_left_by_a_crash_are_deleted`.
+
+## F-035: strangers could evict genuine held messages (fixed)
+
+- **Found:** 2026-10-04, security review of wave 2 (marked uncertain there;
+  confirmed: any registered device that knows a device id can send it
+  envelopes for made-up group ids).
+- **What:** held envelopes (unknown group, future epoch) were capped at 256
+  with the oldest evicted first, so a flood of envelopes for random group
+  ids pushed out genuine messages waiting for their welcome.
+- **Severity:** low (message loss for a targeted device).
+- **Fix:** at most 32 held per group id; when 256 are held, envelopes older
+  than a day go first, and otherwise the new envelope is dropped, never an
+  older one. Residual (PROTOCOL.md 6.7): a sustained flood delays new
+  genuine envelopes for unknown groups.
+- **Test:** `requests::tests::a_flood_of_unreadable_messages_keeps_the_genuine_held_one`
+  (fails before: the genuine message was evicted).

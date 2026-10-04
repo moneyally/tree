@@ -577,6 +577,43 @@ mod tests {
         assert!(matches!(dave.group_status(&g).unwrap(), GroupStatus::Request { .. }));
     }
 
+    /// F-035: a stranger who floods this device with messages for groups it
+    /// is not in cannot push out a genuine held message (one waiting for
+    /// its welcome): at most 32 per group id, and when everything is full
+    /// the new message is dropped, not an older one.
+    #[test]
+    fn a_flood_of_unreadable_messages_keeps_the_genuine_held_one() {
+        let srv = Server::new("heldflood");
+        let mut alice = srv.device("alice");
+        let mut bob = srv.device("bob");
+        let mut mallory = srv.device("mallory");
+        let ga = alice.create_group().unwrap();
+        let genuine = alice.with(&ga, |g, c| g.send(c, b"for bob, before his welcome")).unwrap();
+        let mut events = Vec::new();
+        bob.hold(&genuine, &mut events, true, "unknown group").unwrap();
+        let held = |s: &Session| -> Vec<Vec<u8>> {
+            s.client.app_data_keys("held/").unwrap().iter().filter_map(|k| s.client.app_data(k).unwrap()).collect()
+        };
+        // One group id, many messages: only 32 are kept.
+        let gm = mallory.create_group().unwrap();
+        for i in 0..100u32 {
+            let b = mallory.with(&gm, |g, c| g.send(c, &i.to_be_bytes())).unwrap();
+            bob.hold(&b, &mut events, true, "unknown group").unwrap();
+        }
+        assert_eq!(held(&bob).len(), 1 + crate::MAX_HELD_PER_GROUP);
+        // Many group ids: the store fills up, then new ones are dropped.
+        for _ in 0..((crate::MAX_HELD / crate::MAX_HELD_PER_GROUP) + 2) {
+            let g = mallory.create_group().unwrap();
+            for i in 0..crate::MAX_HELD_PER_GROUP as u32 {
+                let b = mallory.with(&g, |g, c| g.send(c, &i.to_be_bytes())).unwrap();
+                bob.hold(&b, &mut events, true, "unknown group").unwrap();
+            }
+        }
+        assert_eq!(held(&bob).len(), crate::MAX_HELD);
+        assert!(held(&bob).contains(&genuine), "the genuine message is still held");
+        assert!(events.iter().any(|e| matches!(e, Event::Dropped { reason } if reason.contains("no room"))));
+    }
+
     /// F-018: someone else who saw a public invite link cannot pull the
     /// joiner into their own group by claiming to be the link's owner: only
     /// the owner's device learns the nonce of the join request.

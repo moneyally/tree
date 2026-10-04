@@ -102,6 +102,10 @@ pub const LAST_RESORT_ROTATE: i64 = 7 * 86400;
 pub const KEY_PACKAGE_CHECK: i64 = 3600;
 /// Messages for unknown groups or future epochs kept for a retry (PROTOCOL.md 6.7).
 pub const MAX_HELD: usize = 256;
+/// Held messages per group id (F-035).
+pub const MAX_HELD_PER_GROUP: usize = 32;
+/// A held message older than this is dropped when room is needed.
+pub const HELD_MAX_AGE: i64 = 86400;
 
 /// Something the user should see after a sync.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1333,15 +1337,42 @@ impl Session {
         Ok(())
     }
 
+    /// Keeps a message that cannot be read yet for a retry. Anyone who knows
+    /// this device's id can send such messages, so a flood must not push
+    /// out the genuine ones waiting for their welcome (F-035): at most
+    /// [`MAX_HELD_PER_GROUP`] per group id, at most [`MAX_HELD`] in all;
+    /// when full, messages older than [`HELD_MAX_AGE`] go first, and
+    /// otherwise the new message is dropped, never an older one.
     fn hold(&mut self, body: &[u8], events: &mut Vec<Event>, may_hold: bool, why: &str) -> Result<bool, Error> {
         if !may_hold {
             return Err(Error::Protocol(format!("still held: {why}")));
         }
-        let keys = self.client.app_data_keys("held/")?;
+        // Keys: `held/<20 digits>`, the arrival time in seconds times a
+        // million plus a sequence number, so they sort by age (older
+        // counters from before sort first, as the oldest).
+        let now = messages::now();
+        let group = |b: &[u8]| match peek(b) {
+            Some(Peek::Envelope { group_id, .. }) => Some(group_id),
+            _ => None,
+        };
+        let mine = group(body);
+        let mut keys = self.client.app_data_keys("held/")?;
         if keys.len() >= MAX_HELD {
-            self.client.set_app_data(&keys[0], None)?;
+            for k in keys.iter().filter(|k| k[5..].parse::<u64>().map_or(true, |n| (n / 1_000_000) as i64 + HELD_MAX_AGE < now)) {
+                self.client.set_app_data(k, None)?;
+            }
+            keys = self.client.app_data_keys("held/")?;
         }
-        let next = keys.last().and_then(|k| k[5..].parse::<u64>().ok()).map_or(0, |n| n + 1);
+        let same_group = keys
+            .iter()
+            .filter(|k| self.client.app_data(k).ok().flatten().is_some_and(|b| group(&b) == mine))
+            .count();
+        if keys.len() >= MAX_HELD || same_group >= MAX_HELD_PER_GROUP {
+            events.push(Event::Dropped { reason: format!("not readable yet ({why}) and no room to hold it") });
+            return Ok(false);
+        }
+        let base = (now.max(0) as u64) * 1_000_000;
+        let next = keys.last().and_then(|k| k[5..].parse::<u64>().ok()).map_or(base, |n| (n + 1).max(base));
         self.client.set_app_data(&format!("held/{next:020}"), Some(body))?;
         events.push(Event::Held);
         Ok(false)

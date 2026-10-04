@@ -574,9 +574,14 @@ An envelope sealed with `K_{N+1}` that arrives before the commit creating
 this does not normally happen: an accepted commit (and its welcome) is
 inserted into every recipient's mailbox before any message of the new epoch
 can be sent, and mailboxes are delivered in insertion order. As a safety net
-a client SHOULD hold up to 64 such envelopes per group (and per unknown group
-id, for a device waiting for its welcome) for up to 7 days and retry them
-after each merged commit or join **(in progress)**.
+the client holds such envelopes (and envelopes for an unknown group id, for
+a device waiting for its welcome) and retries them after each merged commit
+or join: at most 32 per group id and 256 in all. Anyone who knows the
+device id can send envelopes for made-up group ids, so a full store never
+evicts an older held envelope for a newer one (F-035): when full, envelopes
+held longer than a day go first, and otherwise the new one is dropped.
+Residual: a sender that keeps the store full delays new genuine envelopes
+for unknown groups (they are dropped, not held), never ones already held.
 
 ### 6.8 Padding
 

@@ -200,12 +200,7 @@ impl Session {
         self.send_control(gid, &body)
     }
 
-    pub fn make_admin(
-        &self,
-        gid: &[u8],
-        member: MemberId,
-        admin: bool,
-    ) -> Result<String, Error> {
+    pub fn make_admin(&self, gid: &[u8], member: MemberId, admin: bool) -> Result<String, Error> {
         let body = self.with_group(gid, |group| {
             if admin {
                 group.add_admin(&self.client, member)
@@ -226,7 +221,9 @@ impl Session {
         if recipients.is_empty() {
             return Err(Error::Usage("group has no other devices".into()));
         }
-        let (_, body) = self.with_group(gid, |group| group.send_message(&self.client, text.as_bytes()))?;
+        let (_, body) = self.with_group(gid, |group| {
+            group.send_message(&self.client, text.as_bytes())
+        })?;
         let reply = self.api.send(&self.creds, &recipients, &body)?;
         let id = reply.body["id"]
             .as_str()

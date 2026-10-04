@@ -347,10 +347,8 @@ mod tests {
         assert!(recipe.validate().is_ok());
         assert_eq!(recipe.output_dimensions(), (600, 800));
         assert!(!recipe.encode().unwrap().is_empty());
-        assert_eq!(
-            recipe.edit_script_hash().unwrap(),
-            Sha256::digest(recipe.encode().unwrap()).into()
-        );
+        let expected: [u8; 32] = Sha256::digest(recipe.encode().unwrap()).into();
+        assert_eq!(recipe.edit_script_hash().unwrap(), expected);
     }
 
     #[test]

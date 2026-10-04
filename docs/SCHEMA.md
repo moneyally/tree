@@ -44,9 +44,9 @@ CREATE TABLE tree_messages (
     id          TEXT NOT NULL,       -- sender-chosen random id (hex)
     sender      TEXT NOT NULL,       -- member id (hex)
     received_at INTEGER NOT NULL,    -- this device's clock
-    kind        TEXT NOT NULL,       -- text | file
+    kind        TEXT NOT NULL,       -- text | file | left | removed (a member went; sender = that member)
     text        TEXT,                -- NULL once deleted for everyone
-    data        BLOB,                -- e.g. the file reference; NULL after a view-once download
+    data        BLOB,                -- e.g. the file reference (NULL after a view-once download); JSON {fmt, preview, silent} of a text; {name} of a left/removed line
     edited_at   INTEGER,
     deleted     INTEGER NOT NULL DEFAULT 0,
     expires_at  INTEGER,             -- disappearing messages
@@ -281,3 +281,16 @@ CREATE TABLE account_recovery (
     pending_since  INTEGER
 );
 ```
+
+### 2.8 Username links (migration `0013_username_links.sql`, PROTOCOL.md 8.4)
+
+```sql
+CREATE TABLE username_links (
+    account_id  TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+    hash        BLOB NOT NULL UNIQUE,        -- SHA-256("tree/ulink/v1" || token)
+    created_day INTEGER NOT NULL
+);
+```
+
+One link per account; a reset replaces the row. Deleted with the account
+and when the account releases its @username.

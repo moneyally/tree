@@ -28,6 +28,9 @@ pub enum Payload {
         /// A link preview the sender's device made (`user.link_preview`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         preview: Option<LinkPreview>,
+        /// Silent send: receivers' apps do not notify for this message.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        silent: bool,
     },
     /// The sender replaces the text of its own message `id` (chat.edit).
     Edit { id: String, text: String },
@@ -62,8 +65,13 @@ pub enum Payload {
     /// The sender's own display name. Names never go to the server (F-009);
     /// they travel only inside the group, end-to-end encrypted.
     Profile { name: String },
-    /// The sender asks to be removed (PROTOCOL.md 6.5).
-    Leave,
+    /// The sender asks to be removed (PROTOCOL.md 6.5). `quiet`: the
+    /// other members' apps show no "left" line in the chat (the member list
+    /// still changes for everyone).
+    Leave {
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        quiet: bool,
+    },
     /// The sender read these messages (`user.read_receipts`).
     Read { ids: Vec<String> },
     /// The sender started or stopped typing (`user.typing`); not stored.
@@ -149,7 +157,7 @@ mod tests {
 
     #[test]
     fn round_trip_and_format() {
-        let t = Payload::Text { id: "01".into(), text: "안녕".into(), fmt: false, mentions: vec![], all: false, preview: None };
+        let t = Payload::Text { id: "01".into(), text: "안녕".into(), fmt: false, mentions: vec![], all: false, preview: None, silent: false };
         assert_eq!(String::from_utf8(t.encode()).unwrap(), r#"{"t":"text","id":"01","text":"안녕"}"#);
         for p in [
             Payload::Edit { id: "01".into(), text: "x".into() },
@@ -173,7 +181,14 @@ mod tests {
         assert!(Payload::decode(br#"{"t":"roster","devices":{}}"#).is_some(), "names optional");
         let p = Payload::Profile { name: "bob".into() };
         assert_eq!(Payload::decode(&p.encode()), Some(p));
-        assert_eq!(Payload::decode(br#"{"t":"leave"}"#), Some(Payload::Leave));
+        assert_eq!(Payload::decode(br#"{"t":"leave"}"#), Some(Payload::Leave { quiet: false }));
+        assert_eq!(Payload::Leave { quiet: false }.encode(), br#"{"t":"leave"}"#.to_vec(), "older apps read it");
+        let q = Payload::Leave { quiet: true };
+        assert_eq!(q.encode(), br#"{"t":"leave","quiet":true}"#.to_vec());
+        assert_eq!(Payload::decode(&q.encode()), Some(q));
+        let s = Payload::Text { id: "02".into(), text: "shh".into(), fmt: false, mentions: vec![], all: false, preview: None, silent: true };
+        assert_eq!(String::from_utf8(s.encode()).unwrap(), r#"{"t":"text","id":"02","text":"shh","silent":true}"#);
+        assert_eq!(Payload::decode(&s.encode()), Some(s));
         assert_eq!(Payload::decode(br#"{"t":"sticker"}"#), None);
         assert_eq!(Payload::decode(b"plain"), None);
     }

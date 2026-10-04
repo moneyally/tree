@@ -289,12 +289,29 @@ another account holds it (also when that account hid it).
 
 ### `POST /v1/usernames/release` — drop my name
 
-`200` → `{ "state": "released" }`, also when there was none.
+`200` → `{ "state": "released" }`, also when there was none. The name's
+link (below) is deleted with it.
 
 ### `POST /v1/usernames/lookup` — find an account
 
 `{ "hash": "<32 bytes>" }` → `200 { "account_id": "..." }`, or `404 NOT_FOUND`
 if no account holds it or it is hidden. Costs 10 rate-limit tokens.
+
+### Username links (`user.username_link`)
+
+The client makes a random 16-byte token, shares `tree://u/<token>` and sends
+only `hash` = standard base64 of `SHA-256("tree/ulink/v1" || token)`.
+
+- `POST /v1/usernames/link/apply` `{ "hash": "<32 bytes>" }` — set my link,
+  replacing the one before (reset: the old link stops working). Needs a
+  registered name: `409 NO_USERNAME` otherwise; `409 ALREADY_EXISTS` if
+  another account holds that hash. `200` → `{ "state": "applied" }`.
+- `POST /v1/usernames/link/release` — delete my link. `200` →
+  `{ "state": "released" }`, also when there was none.
+- `POST /v1/usernames/link/lookup` `{ "hash": "<32 bytes>" }` → `200
+  { "account_id": "..." }` while the link is current and the account's name
+  is registered and discoverable; otherwise `404 NOT_FOUND` (the same answer
+  as for a link nobody has). Costs 10 rate-limit tokens.
 
 ## Push wake-ups (PROTOCOL.md 8.8)
 
@@ -456,6 +473,7 @@ Errors: `UNAUTHORIZED`, `UNKNOWN_FEATURE`.
 | key packages | until claimed |
 | attachment ciphertext (file named by a random id), its size and upload minute; not the uploader | until the mailbox TTL (30 days) |
 | username hash per account (if registered), discoverable flag, day registered | until released or the account is deleted |
+| username link: hash of the link token per account, day set | until reset, released, the name is released, or the account is deleted |
 | per group: last accepted epoch, the device ids that may commit next, SHA-256 and id of the last 64 accepted commits | while one of its devices exists |
 | message ciphertext + recipient device + arrival minute | until acknowledged, at most 30 days |
 | message sender | **no** |

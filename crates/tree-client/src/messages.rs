@@ -48,6 +48,8 @@ pub struct TextOptions {
     /// A preview of a link in the text, made by this device's app
     /// (`user.link_preview`).
     pub preview: Option<crate::payload::LinkPreview>,
+    /// Silent send: the receivers' apps do not notify (APP_PROTOCOL.md 1).
+    pub silent: bool,
 }
 
 pub(crate) fn now() -> i64 {
@@ -64,14 +66,18 @@ fn screenshot_key(gid: &[u8]) -> String {
     format!("screenshot/{}", hex::encode(gid))
 }
 
-/// What a stored text keeps besides its text: formatting and a preview.
-fn text_data(formatted: bool, preview: Option<&crate::payload::LinkPreview>) -> Option<Vec<u8>> {
-    if !formatted && preview.is_none() {
+/// What a stored text keeps besides its text: formatting, a preview and
+/// the silent flag.
+fn text_data(formatted: bool, preview: Option<&crate::payload::LinkPreview>, silent: bool) -> Option<Vec<u8>> {
+    if !formatted && preview.is_none() && !silent {
         return None;
     }
     let mut v = serde_json::json!({});
     if formatted {
         v["fmt"] = true.into();
+    }
+    if silent {
+        v["silent"] = true.into();
     }
     if let Some(p) = preview {
         v["preview"] = serde_json::to_value(p).expect("JSON");
@@ -137,7 +143,7 @@ impl Session {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn store(
+    pub(crate) fn store(
         &mut self,
         gid: &[u8],
         id: &str,
@@ -192,9 +198,11 @@ impl Session {
         };
         let id = new_id();
         let mentions = o.mentions.iter().map(|m| m.to_hex()).collect();
-        let data = text_data(fmt, preview.as_ref());
-        self.send_payload(gid, &Payload::Text { id: id.clone(), text: text.to_string(), fmt, mentions, all: o.all, preview })?;
+        let data = text_data(fmt, preview.as_ref(), o.silent);
+        let silent = o.silent;
+        self.send_payload(gid, &Payload::Text { id: id.clone(), text: text.to_string(), fmt, mentions, all: o.all, preview, silent })?;
         self.store(gid, &id, &me, "text", Some(text.to_string()), data, None)?;
+        self.set_draft(gid, "")?;
         Ok(id)
     }
 
@@ -389,7 +397,7 @@ impl Session {
         let request = matches!(self.group_status(gid)?, GroupStatus::Request { .. });
         let name = self.names(gid)?.get(&from.to_hex()).cloned();
         match p {
-            Payload::Text { id, text, fmt, mentions, all, preview } => {
+            Payload::Text { id, text, fmt, mentions, all, preview, silent } => {
                 // A preview is shown only while this user wants previews.
                 let preview = match preview {
                     Some(p) if p.is_valid() && self.is_applied("user.link_preview")? => Some(p),
@@ -401,12 +409,12 @@ impl Session {
                 let me = self.member_id().to_hex();
                 let all = all && self.may_mention_all(gid, &from)?;
                 let mentions_me = all || mentions.iter().take(MAX_MENTIONS).any(|m| *m == me);
-                if !self.store(gid, &id, &from, "text", Some(text.clone()), text_data(formatted, preview.as_ref()), franking)? {
+                if !self.store(gid, &id, &from, "text", Some(text.clone()), text_data(formatted, preview.as_ref(), silent), franking)? {
                     refuse(events, "duplicate message id");
                     return Ok(());
                 }
-                self.count_unread(gid)?;
-                events.push(Event::Text { group: gid.to_vec(), id, from, name, text, request, formatted, mentions_me, preview });
+                self.on_new_message(gid, silent)?;
+                events.push(Event::Text { group: gid.to_vec(), id, from, name, text, request, formatted, mentions_me, preview, silent });
             }
             Payload::Edit { id, text } => match self.changeable_by(gid, &id, &from, "chat.edit")? {
                 Ok(m) if m.kind == "text" => {
@@ -460,7 +468,7 @@ impl Session {
                 }
                 let stored = StoredFile { group: hex::encode(gid), info: file.clone() };
                 self.client.set_app_data(&format!("file/{}", file.id), Some(&serde_json::to_vec(&stored).expect("JSON")))?;
-                self.count_unread(gid)?;
+                self.on_new_message(gid, false)?;
                 events.push(Event::File { group: gid.to_vec(), from, name, file, request });
             }
             _ => refuse(events, "not a message"),

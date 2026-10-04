@@ -18,6 +18,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -137,12 +140,18 @@ private fun Chats(model: AppModel, state: UiState, requests: Boolean) {
                 }
                 Text(Strings.t("notes"), Modifier.fillMaxWidth().clickable { scope.launch { model.openNotes() } }.padding(8.dp))
             }
+            if (!requests) {
+                // The archive is its own list; archived chats leave the main one.
+                val archived = state.chats.count { it.archived && it.status != "declined" }
+                if (state.showArchived) {
+                    TextButton(onClick = { model.showArchived(false) }) { Text("← " + Strings.t("back_to_list")) }
+                } else if (archived > 0) {
+                    TextButton(onClick = { model.showArchived(true) }) { Text("${Strings.t("archived")} ($archived)") }
+                }
+            }
             LazyColumn {
                 items(shown, key = { it.id }) { c ->
-                    Text(
-                        c.title + if (c.unread > 0) "  (${c.unread})" else "",
-                        Modifier.fillMaxWidth().clickable { scope.launch { model.openChat(c.id) } }.padding(8.dp),
-                    )
+                    ChatRow(model, c, requests)
                     HorizontalDivider()
                 }
             }
@@ -150,6 +159,60 @@ private fun Chats(model: AppModel, state: UiState, requests: Boolean) {
         val open = state.open
         val chat = state.chats.firstOrNull { it.id == open }
         if (chat != null && (chat.status == "request") == requests) ChatView(model, state, chat)
+    }
+}
+
+/** "Muted", "muted until <time>", for the list and the chat header. */
+private fun muteNote(c: Chat): String? = when {
+    !c.muted -> null
+    c.mutedUntil == null -> Strings.t("muted")
+    else -> {
+        val t = java.time.Instant.ofEpochSecond(c.mutedUntil!!).atZone(java.time.ZoneId.systemDefault())
+        "${Strings.t("muted")} (${Strings.t("until")} ${java.time.format.DateTimeFormatter.ofPattern("MM-dd HH:mm").format(t)})"
+    }
+}
+
+/** Stranger labels as text ("not a contact · no groups in common · ..."). */
+private fun labelText(c: Chat): String? = c.labels.takeIf { it.isNotEmpty() }?.joinToString(" · ") { Strings.t(it) }
+
+/** One chat in the list, with its menu: pin, mute, archive, unread, leave. */
+@Composable
+private fun ChatRow(model: AppModel, c: Chat, requests: Boolean) {
+    val scope = rememberCoroutineScope()
+    var menu by remember { mutableStateOf(false) }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f).clickable { scope.launch { model.openChat(c.id) } }.padding(8.dp)) {
+            val marks = listOfNotNull(
+                "^".takeIf { c.pinned },
+                "(${c.unread})".takeIf { c.unread > 0 },
+                "•".takeIf { c.markedUnread && c.unread == 0 },
+            ).joinToString(" ")
+            Text(c.title + if (marks.isEmpty()) "" else "  $marks")
+            muteNote(c)?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+            c.draft?.let { Text("${Strings.t("draft")}: ${it.take(30)}", style = MaterialTheme.typography.bodySmall) }
+            if (requests) labelText(c)?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+        }
+        if (!requests) {
+            Box {
+                TextButton(onClick = { menu = true }) { Text("⋮") }
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    val items = buildList<Pair<String, suspend () -> Unit>> {
+                        if (!c.archived) add(Strings.t(if (c.pinned) "unpin" else "pin") to { model.pin(c.id, !c.pinned) })
+                        if (c.muted) add(Strings.t("unmute") to { model.unmute(c.id) })
+                        else model.muteChoices().forEach { (label, secs) ->
+                            add("${Strings.t("mute")}: ${if (secs == null) Strings.t("forever") else label}" to { model.mute(c.id, secs) })
+                        }
+                        add(Strings.t(if (c.archived) "unarchive" else "archive") to { model.archive(c.id, !c.archived) })
+                        add(Strings.t(if (c.markedUnread) "mark_read" else "mark_unread") to { model.markUnread(c.id, !c.markedUnread) })
+                        add(Strings.t("leave") to { model.leave(c.id, false) })
+                        add(Strings.t("leave_quietly") to { model.leave(c.id, true) })
+                    }
+                    items.forEach { (label, act) ->
+                        DropdownMenuItem(text = { Text(label) }, onClick = { menu = false; scope.launch { act() } })
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -232,11 +295,16 @@ private fun GroupSettingsPanel(model: AppModel, state: UiState, group: String) {
 private fun ChatView(model: AppModel, state: UiState, chat: Chat) {
     val scope = rememberCoroutineScope()
     var settingsOpen by remember(chat.id) { mutableStateOf(false) }
-    var draft by remember(chat.id) { mutableStateOf("") }
+    // The chat's draft comes back when it opens (user.drafts).
+    var draft by remember(chat.id) { mutableStateOf(chat.draft ?: "") }
+    var silent by remember(chat.id) { mutableStateOf(false) }
     var who by remember(chat.id) { mutableStateOf("") }
     var link by remember(chat.id) { mutableStateOf<String?>(null) }
     Column(Modifier.fillMaxSize().padding(8.dp)) {
         Text(chat.title, style = MaterialTheme.typography.titleLarge)
+        // Who this person is to the user (user.stranger_labels), and the mute.
+        labelText(chat)?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+        muteNote(chat)?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
         if (chat.status == "request") {
             Text(Strings.t("request_from") + ": " + (chat.requestFrom ?: "?"))
             Row {
@@ -263,6 +331,7 @@ private fun ChatView(model: AppModel, state: UiState, chat: Chat) {
         LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
             items(state.messages, key = { it.id }) { m ->
                 val body = when {
+                    m.kind == "left" || m.kind == "removed" -> "${m.who ?: m.sender.take(6)} ${Strings.t(m.kind)}"
                     m.deleted -> Strings.t("deleted")
                     else -> (m.text ?: "") + if (m.edited) " (${Strings.t("edited")})" else ""
                 }
@@ -296,8 +365,11 @@ private fun ChatView(model: AppModel, state: UiState, chat: Chat) {
             OutlinedTextField(draft, { v ->
                 if (draft.isEmpty() != v.isEmpty()) scope.launch { model.typing(chat.id, v.isNotEmpty()) }
                 draft = v
+                scope.launch { model.saveDraft(chat.id, v) }
             }, label = { Text(Strings.t("message")) }, modifier = Modifier.weight(1f))
-            Button(onClick = { scope.launch { if (model.send(chat.id, draft)) { model.typing(chat.id, false); draft = "" } } }) { Text(Strings.t("send")) }
+            Checkbox(silent, { silent = it })
+            Text(Strings.t("silent"), style = MaterialTheme.typography.bodySmall)
+            Button(onClick = { scope.launch { if (model.send(chat.id, draft, silent)) { model.typing(chat.id, false); draft = "" } } }) { Text(Strings.t("send")) }
         }
     }
 }
@@ -316,12 +388,27 @@ private fun Settings(model: AppModel, state: UiState) {
             text = { Text(Strings.t("delete_confirm")) },
         )
     }
-    remember { scope.launch { model.loadFeatures() } }
+    var friendLink by remember { mutableStateOf("") }
+    remember { scope.launch { model.loadFeatures(); model.loadUsernameLink() } }
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         Text("${state.name}  ·  ${state.account}")
         Row(verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(username, { username = it }, label = { Text(Strings.t("username")) }, singleLine = true)
             TextButton(onClick = { scope.launch { model.setUsername(username) } }) { Text("✓") }
+        }
+        // Username link and QR code (user.username_link below turns it on).
+        // The QR image is drawn from this text; until a QR library is part of
+        // the build, the link itself is shown to copy.
+        state.usernameLink?.let { l ->
+            Text(Strings.t("username_link"), style = MaterialTheme.typography.bodySmall)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SelectionContainer { Text(l) }
+                TextButton(onClick = { scope.launch { model.resetUsernameLink() } }) { Text(Strings.t("reset_link")) }
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(friendLink, { friendLink = it }, label = { Text(Strings.t("add_by_link")) }, singleLine = true)
+            TextButton(onClick = { scope.launch { if (model.addByLink(friendLink) != null) friendLink = "" } }) { Text("+") }
         }
         Button(onClick = { scope.launch { phrase = model.recoveryPhrase(Strings.lang == Lang.KO) } }) { Text(Strings.t("recovery")) }
         phrase?.let {

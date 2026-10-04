@@ -115,7 +115,7 @@ fn three_devices_chat_through_the_server() {
     // carol asks to leave; alice removes her.
     carol.leave(&g).unwrap();
     let ev = alice.sync(0).unwrap();
-    assert!(ev.contains(&Event::LeaveRequested { group: g.clone(), member: carol.member_id() }), "{ev:?}");
+    assert!(ev.contains(&Event::LeaveRequested { group: g.clone(), member: carol.member_id(), quiet: false }), "{ev:?}");
     assert_eq!(alice.remove(&g, &[carol.member_id()]).unwrap(), CommitOutcome::Accepted { epoch: 5 });
     assert!(carol.sync(0).unwrap().contains(&Event::RemovedFromGroup { group: g.clone() }));
     let members = alice.members(&g).unwrap();

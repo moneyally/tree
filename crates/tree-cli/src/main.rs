@@ -476,8 +476,15 @@ fn print_event(ev: &Event) {
         ),
         Event::Profile { group, member, name } => println!("[{}] {} is {name}", &hex(group)[..8], &member.to_hex()[..8]),
         Event::RosterUpdated { group } => println!("[{}] member list updated", &hex(group)[..8]),
-        Event::LeaveRequested { group, member } => {
-            println!("[{}] {} asks to leave: tree remove {} {}", &hex(group)[..8], &member.to_hex()[..8], hex(group), member)
+        Event::LeaveRequested { group, member, quiet } => {
+            println!(
+                "[{}] {} asks to leave{}: tree remove {} {}",
+                &hex(group)[..8],
+                &member.to_hex()[..8],
+                if *quiet { " quietly" } else { "" },
+                hex(group),
+                member
+            )
         }
         Event::RemovedFromGroup { group } => println!("[{}] this device was removed", &hex(group)[..8]),
         Event::KeyChanged { account, new_members, was_verified } => println!(

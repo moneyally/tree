@@ -3,11 +3,13 @@
 //! `tree-core` decides what is allowed (permanent locks, server locks,
 //! option formats).
 //!
-//! Two settings are also the server's business, so applying or releasing
+//! Three settings are also the server's business, so applying or releasing
 //! them goes to the server first and is stored only once it agreed:
 //!
 //! * `user.discoverable`: the @username's registration is changed to
 //!   findable / hidden (PROTOCOL.md 8.4);
+//! * `user.username_link`: a link token's hash is registered / deleted
+//!   (PROTOCOL.md 8.4, `links.rs`);
 //! * `user.recovery_phrase`: the recovery key (PROTOCOL.md 8.6). Its state
 //!   is what the server reports: a release without the phrase stays applied
 //!   (the key still recovers the account) with a pending release until the
@@ -16,7 +18,9 @@
 use serde::{Deserialize, Serialize};
 use tree_core::features::{Caller, Plan, Registry, Scope, State, Status};
 
+use crate::links::USERNAME_LINK;
 use crate::messages::now;
+use crate::organize::DRAFTS;
 use crate::{Error, RecoveryStatus, Session};
 
 const ME: Caller = Caller { plan: Plan::Free, is_admin: false };
@@ -105,15 +109,28 @@ impl Session {
 
     /// [`Session::change`], telling the server first where it keeps a copy.
     fn change_with_server(&self, k: &str, applied: bool, option: Option<String>) -> Result<Status, Error> {
-        if k == DISCOVERABLE {
+        if k == DISCOVERABLE || k == USERNAME_LINK {
             // Refused changes (locks) must not reach the server either.
             let mut r = self.registry()?;
             let _ = (if applied { r.apply(k, option.clone(), ME) } else { r.release(k, ME) })?;
+        }
+        if k == DISCOVERABLE {
             if let Some(name) = self.username()? {
                 self.register_username(&name, applied)?;
             }
         }
-        self.change(k, applied, option)
+        if k == USERNAME_LINK {
+            if !applied {
+                self.drop_username_link()?;
+            } else if self.username_link()?.is_none() {
+                self.make_username_link()?;
+            }
+        }
+        let st = self.change(k, applied, option)?;
+        if k == DRAFTS && !applied {
+            self.delete_drafts()?;
+        }
+        Ok(st)
     }
 
     pub(crate) fn change(&self, k: &str, applied: bool, option: Option<String>) -> Result<Status, Error> {

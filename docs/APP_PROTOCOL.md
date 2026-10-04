@@ -15,13 +15,13 @@ One JSON object per application message, UTF-8, field `t` names the type:
 
 | `t` | Fields | Meaning | Who may send |
 | --- | --- | --- | --- |
-| `text` | `id` (16 random bytes, hex), `text`; optional `fmt` (true: Tree markup, 1.1), `mentions` (member ids, at most 50), `all` (@all), `preview` (`url`, `title`, `description`: made by the sender's app, which fetched the page; receivers never fetch it; shown only while the receiver's `user.link_preview` is applied) | a chat message | any member; `fmt` only while `chat.formatting` is applied; `all` as `chat.mention_all` allows |
+| `text` | `id` (16 random bytes, hex), `text`; optional `fmt` (true: Tree markup, 1.1), `mentions` (member ids, at most 50), `all` (@all), `preview` (`url`, `title`, `description`: made by the sender's app, which fetched the page; receivers never fetch it; shown only while the receiver's `user.link_preview` is applied), `silent` (true: silent send, receivers' apps do not notify, 6.1) | a chat message | any member; `fmt` only while `chat.formatting` is applied; `all` as `chat.mention_all` allows |
 | `edit` | `id`, `text` | replaces the text of the sender's own message `id` | its sender, if `chat.edit` is applied, within the window |
 | `delete` | `id` | deletes the sender's own message `id` for everyone | its sender, if `chat.delete_for_all` is applied, within the window |
 | `react` | `id`, `emoji` (1 to 8 characters), `remove` (optional) | adds or takes back a reaction | any member, if `chat.reactions` is applied |
 | `profile` | `name` | the sender's own display name | any member, about itself |
 | `roster` | `devices`: member id (hex) -> device id; `names` (optional): member id -> name; `accounts` (optional): member id -> account id; `link` (optional): the nonce (hex) the new member's device sent with its invite-link request (PROTOCOL.md 8.7) | who is reachable at which server device, the sender's view of names, and which account each device belongs to | the member that just added devices (others may too) |
-| `leave` | — | the sender asks to be removed (PROTOCOL.md 6.5) | any member |
+| `leave` | `quiet` (optional; true: quiet leave, no "left" line, 6.1) | the sender asks to be removed (PROTOCOL.md 6.5) | any member |
 | `read` | `ids` (at most 100 message ids) | the sender read these messages | any member, while its `user.read_receipts` is applied; shown only while the receiver's is applied too |
 | `typing` | `on` | the sender started or stopped typing; never stored | any member, both sides `user.typing` |
 | `seen` | — | the sender's app is open; the receiver records its own time | any member, both sides `user.last_seen` (released by default) |
@@ -33,7 +33,14 @@ One JSON object per application message, UTF-8, field `t` names the type:
 {"t":"profile","name":"bob"}
 {"t":"roster","devices":{"0678…":"TRUiLpZjKr-CUgfUf_ry8w"},"names":{"0678…":"alice"}}
 {"t":"leave"}
+{"t":"leave","quiet":true}
+{"t":"text","id":"…","text":"늦은 밤","silent":true}
 ```
+
+`silent` and `quiet` are per message: there is no setting for them, the
+sender chooses each time. Both are inside the end-to-end encrypted payload,
+so the server cannot tell a silent or quiet message from any other. Older
+apps ignore both fields (they notify, and show a "left" line).
 
 A `franked` payload whose `p` is not a `text`, `edit` or `file` is dropped,
 and so are `text`, `edit` and `file` sent without franking.
@@ -174,6 +181,26 @@ device database and checked against the registry (permanent locks such as
 Not yet: holding expiry (7 days), retry limits for commits, contacts and
 safety numbers, message history.
 
+### 6.1 The chat list (`crates/tree-client/src/organize.rs`)
+
+Everything here is kept on this device only, in the encrypted profile
+(section 7); it is not synced to the user's other devices yet, and the
+server learns none of it.
+
+| Behaviour | Rule |
+| --- | --- |
+| Mute | `mute_for(group, seconds)`: 1 hour, 8 hours, 1 week (`MUTE_CHOICES`) or until unmuted; any 1 s to a year is accepted. A timed mute ends by itself. `is_muted`, `muted_until`. A muted chat never notifies and is listed in the quiet folder (`user.quiet_folder`) |
+| Notify | apps notify for a new message only if `should_notify(group, silent)`: not muted, not a silent message, not a declined chat. The text is shown only while `user.notification_content` is applied |
+| Silent send | `TextOptions.silent`: the `silent` flag of the `text` payload. Receivers store it with the message (`message_meta`) and report it (`Event::Text.silent`); the message is unread as usual |
+| Archive | `archive_chat`: the chat leaves the main list (apps show an archive section). A new text or file brings it back if the chat is not muted, the message is not silent and `user.unarchive_on_message` is applied (default); released, archived chats stay archived until the user takes them out. Archiving drops a pin |
+| Pin | `pin_chat`: at most 5, in the order pinned, on top of the list; `move_pinned_chat` reorders. Pinning an archived chat brings it back |
+| Order | `chat_list`: pinned chats in pin order, then the others by last activity (the newest message, or when the chat started), newest first |
+| Drafts | `set_draft` keeps the unsent text per chat (at most 64 KiB), `draft` restores it when the chat opens, sending a text clears it. `user.drafts` released: nothing is kept and stored drafts are deleted |
+| Unread | `mark_unread` sets a marker (the chat is in the `unread` folder); `mark_read` (opening the chat) clears it and the count |
+| Quiet leave | `leave_quietly` sends `leave` with `quiet`. Every member's device remembers who asked to leave; when the removal arrives it stores a `left` line (kind `left`, the member's name in `data`) for a normal leave, nothing for a quiet one, and a `removed` line for a removal nobody asked for. Honest limit: MLS still removes the member in a commit every device sees, so the member list changes for everyone and a member who looks at it notices; the admin who removes sees the request; a modified app can still show a line. Quiet only means honest apps do not announce it in the chat |
+| Stranger labels | `stranger_labels(account)`: not a contact, no group in common (other than this one), name not verified; `None` while `user.stranger_labels` is released. Apps show them in a 1:1 chat's header and next to requests |
+| Username link | `user.username_link` (PROTOCOL.md 8.4): `username_link` / `username_qr` (the same text, `tree://u/<token>`), `reset_username_link`, `find_by_link`, `add_contact_by_link` |
+
 ## 7. What the client stores
 
 In the same encrypted database as the core (`tree_app` table, SCHEMA.md):
@@ -198,11 +225,17 @@ In the same encrypted database as the core (`tree_app` table, SCHEMA.md):
 | `unread/<group hex>` | messages received since the user last read the chat |
 | `seen/<group hex>` | member id -> when this device last got that member's `seen` |
 | `note/self` | the notes group (one member) |
-| `folders`, `muted` | the user's chat folders (name -> group ids) and muted chats |
+| `folders` | the user's chat folders (name -> group ids) |
+| `muted` | JSON group id (hex) -> end of the mute (unix seconds; 0 = until unmuted). Older profiles hold a list of group ids, read as muted until unmuted |
+| `archived`, `pinned` | archived chats (set of group ids); pinned chats (ordered list, at most 5) |
+| `draft/<group hex>` | the unsent text of the chat (`user.drafts`) |
+| `unreadmark/<group hex>` | present while the user marked the chat unread |
+| `leaving/<group hex>` | member id -> quiet, for members that asked to leave and are not removed yet |
+| `profile/link` | the username link token (base64url) while `user.username_link` is applied |
 | `refresh/<group hex>`, `traffic/<group hex>` | when this device last refreshed its keys in the group, and when the group last had traffic (PROTOCOL.md 6.9) |
 | `keypackages/last_resort`, `keypackages/last_resort_prev`, `keypackages/last_resort_at`, `keypackages/checked` | current and previous last-resort key package as published, when the current one was made, when the server supply was last checked (PROTOCOL.md 5.3) |
 | `invite/<link hash hex>` | a link this device made: group, expiry, use limit (PROTOCOL.md 8.7) |
 | `linkjoin/<nonce hex>` | the user opened a link of this owner and sent this nonce: owner account and time (one day, used once) |
 | `feature/user.recovery_phrase` | applied while the server holds a recovery key for the account, as last reported by the server (the phrase itself is never stored) |
 | `recovery/release_at` | when the server drops the recovery key after a release without the phrase (unix seconds) |
-| table `tree_messages` | message history with franking records (SCHEMA.md 1.2) |
+| table `tree_messages` | message history with franking records (SCHEMA.md 1.2); also `left` / `removed` lines about members who went (6.1) |

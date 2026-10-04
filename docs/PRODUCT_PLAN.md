@@ -42,10 +42,15 @@ the owner holds).
    same request: same answer; same key, other request: refused). The key
    binds the group, the sender and the content, so two events can never
    share it. Idempotency records expire with the messages.
-2. **Chat list basics.** Mute (with duration), archive, pin chats,
-   silent send, quiet leave, unread markers, drafts.
-3. **Contacts.** Username links and QR codes (reset gives a new link, the
-   name stays), QR friend add, stranger labels in the UI.
+2. **Chat list basics** — **built** (`claude/chat-basics`; APP_PROTOCOL.md
+   6.1). Mute (with duration), archive, pin chats, silent send, quiet leave,
+   unread markers, drafts. Device-local; sync to the user's own devices is
+   item 10.
+3. **Contacts** — **built** (`claude/chat-basics`; PROTOCOL.md 8.4).
+   Username links and QR codes (reset gives a new link, the name stays),
+   QR friend add (add by link), stranger labels in the UI. The desktop app
+   shows the link text; drawing the QR image waits for a QR library in the
+   app builds.
 4. **Device linking with a two-sided code.** Both devices compute the code
    from their own keys and the link transcript; the server never chooses
    it. QR alone never links.

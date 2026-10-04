@@ -118,7 +118,7 @@ impl Session {
             self.set_group_status(gid, &GroupStatus::Declined)?;
             return Ok(());
         }
-        self.send_payload(gid, &Payload::Leave)?;
+        self.send_payload(gid, &Payload::Leave { quiet: false })?;
         self.set_group_status(gid, &GroupStatus::Declined)
     }
 

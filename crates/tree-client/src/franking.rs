@@ -158,13 +158,13 @@ mod tests {
         alice.invite(&g, bob.account_id()).unwrap();
         bob.sync(0).unwrap();
         let to = alice.other_devices(&g).unwrap();
-        let raw = Payload::Text { id: "00".repeat(16), text: "not franked".into(), fmt: false, mentions: vec![], all: false, preview: None };
+        let raw = Payload::Text { id: "00".repeat(16), text: "not franked".into(), fmt: false, mentions: vec![], all: false, preview: None, silent: false };
         alice.send_encoded(&g, &to, &raw.encode()).unwrap();
         let ev = bob.sync(0).unwrap();
         assert!(ev.iter().any(|e| matches!(e, Event::Dropped { reason } if reason == "unfranked message")), "{ev:?}");
         assert!(!ev.iter().any(|e| matches!(e, Event::Text { .. })));
         // A franked payload whose inside is not a chat message is dropped too.
-        let odd = Payload::Franked { p: Payload::Leave.encode().iter().map(|b| *b as char).collect(), k: String::new(), tag: String::new(), m: 0 };
+        let odd = Payload::Franked { p: Payload::Leave { quiet: false }.encode().iter().map(|b| *b as char).collect(), k: String::new(), tag: String::new(), m: 0 };
         alice.send_encoded(&g, &to, &odd.encode()).unwrap();
         let ev = bob.sync(0).unwrap();
         assert!(ev.iter().any(|e| matches!(e, Event::Dropped { reason } if reason == "malformed franked payload")), "{ev:?}");

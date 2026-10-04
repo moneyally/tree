@@ -719,6 +719,7 @@ impl Session {
         // A commit fetched in the same batch can make an earlier held
         // envelope decryptable. A successful retry makes its mailbox copy
         // safe to acknowledge.
+        let had_held = !held.is_empty();
         let mut retry_ack = Vec::new();
         for (server_id, gid) in held {
             let retried = self.with_group(&gid, |group| group.retry_held(&self.client))?;
@@ -742,7 +743,9 @@ impl Session {
         // Advance the server cursor only after every fetched entry through
         // this cursor has been durably handled. A still-held future-epoch
         // entry intentionally prevents cursor advancement.
-        if held.is_empty() {
+        if !had_held {
+            self.api.ack_with_cursor(&self.creds, &ack, Some(cursor))?;
+        } else if !retry_ack.is_empty() {
             self.api.ack_with_cursor(&self.creds, &ack, Some(cursor))?;
         }
 

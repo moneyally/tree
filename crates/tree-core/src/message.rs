@@ -115,6 +115,38 @@ impl MessageEvent {
         }
     }
 
+    pub fn mutation_id(&self) -> MessageId {
+        use sha2::{Digest, Sha256};
+        let mut material = Vec::with_capacity(128);
+        material.extend_from_slice(b"TreeMutation/v1");
+        material.extend_from_slice(&self.seq().to_be_bytes());
+        let target = self.target().map(|id| *id.as_bytes()).unwrap_or([0u8; 16]);
+        material.extend_from_slice(&target);
+        material.push(self.kind() as u8);
+        match self {
+            Self::Reaction { reaction, add, .. } => {
+                material.push(*add as u8);
+                material.extend_from_slice(reaction.as_bytes());
+            }
+            Self::Read { read_at, .. } => material.extend_from_slice(&read_at.to_be_bytes()),
+            Self::Typing { active, .. } => material.push(*active as u8),
+            Self::New { id, sent_at, ttl_secs, view_once, body, .. } => {
+                material.extend_from_slice(id.as_bytes());
+                material.extend_from_slice(&sent_at.to_be_bytes());
+                material.extend_from_slice(&ttl_secs.to_be_bytes());
+                material.push(*view_once as u8);
+                material.extend_from_slice(body);
+            }
+            Self::Edit { edited_at, body, .. } => {
+                material.extend_from_slice(&edited_at.to_be_bytes());
+                material.extend_from_slice(body);
+            }
+            Self::Delete { deleted_at, .. } => material.extend_from_slice(&deleted_at.to_be_bytes()),
+        }
+        let digest = Sha256::digest(&material);
+        MessageId(digest[..16].try_into().expect("SHA-256 output is 32 bytes"))
+    }
+
     pub fn target(&self) -> Option<MessageId> {
         match self {
             Self::New { id, .. } => Some(*id),

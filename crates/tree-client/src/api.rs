@@ -149,10 +149,12 @@ impl Api {
         c: &Creds,
         recipients: &[String],
         body: &[u8],
+        idempotency_key: Option<&[u8; 16]>,
     ) -> Result<Reply, ClientError> {
         let request = json!({
             "recipients": recipients,
             "body": b64(body),
+            "idempotency_key": idempotency_key.map(|key| b64(key)),
         });
         self.call(c, Method::POST, "/v1/messages", Some(&request))
     }

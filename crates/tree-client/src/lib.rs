@@ -286,8 +286,13 @@ impl Session {
             (_, Some(bytes)) => Some(tree_core::media::encrypt_preview(&key, &manifest, bytes)?),
         };
         self.api.media_finalize(&self.creds, &upload.media_id, &upload.capability)?;
+        let capability: [u8; 32] = unb64(&upload.capability)?
+            .try_into()
+            .map_err(|_| Error::Usage("server returned an invalid media capability".into()))?;
 
-        let envelope = MediaEnvelope::new(manifest.clone(), key, preview)?.encode()?;
+        let envelope =
+            MediaEnvelope::new(upload.media_id.clone(), capability, manifest.clone(), key, preview)?
+                .encode()?;
         let view_once = matches!(policy, ViewPolicy::ViewOnce);
         let ttl_secs = match policy {
             ViewPolicy::Timed { seconds } => seconds,

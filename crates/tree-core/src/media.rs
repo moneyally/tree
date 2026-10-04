@@ -275,7 +275,6 @@ impl MediaEditPlan {
     pub fn edit_script_hash(&self) -> Result<[u8; 32], TreeError> {
         Ok(Sha256::digest(self.canonical_bytes()?).into())
     }
-
 }
 
 fn validate_edit_operation(op: &EditOperation) -> Result<(), TreeError> {

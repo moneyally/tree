@@ -34,7 +34,6 @@ pub struct MediaChunk {
     pub sha256: [u8; 32],
 }
 
-#[derive(Debug)]
 pub type InboxPage = (Vec<(String, Vec<u8>)>, i64);
 
 pub struct Reply {

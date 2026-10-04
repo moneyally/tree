@@ -51,7 +51,11 @@ fn restart(client: Stored, group: Group, path: &Path, pass: &str) -> (Stored, Gr
 fn says(ev: Incoming, from: &Client<impl tree_core::TreeProvider>, text: &str) {
     assert_eq!(
         ev,
-        Incoming::Message { from: from.member_id(), name: from.name().into(), body: text.as_bytes().to_vec() }
+        Incoming::Message {
+            from: from.member_id(),
+            name: from.name().into(),
+            body: text.as_bytes().to_vec()
+        }
     );
 }
 
@@ -63,7 +67,10 @@ fn conversation_survives_restarts() {
     let bob = Client::create(&pb, "bob pass", "bob").unwrap();
 
     let mut a = alice.create_group().unwrap();
-    let w = a.add_now(&alice, &bob.key_package().unwrap()).unwrap().welcome;
+    let w = a
+        .add_now(&alice, &bob.key_package().unwrap())
+        .unwrap()
+        .welcome;
     let mut b = bob.join(&w).unwrap();
     let m = a.send(&alice, b"before restart").unwrap();
     says(b.receive(&bob, &m).unwrap(), &alice, "before restart");
@@ -97,7 +104,10 @@ fn conversation_survives_restarts() {
     let charlie = Client::open(&pc, "charlie pass").unwrap();
     assert!(charlie.group_ids().unwrap().is_empty());
     let add = a.add_now(&alice, &kp).unwrap();
-    assert!(matches!(b.receive(&bob, &add.commit).unwrap(), Incoming::GroupChanged { .. }));
+    assert!(matches!(
+        b.receive(&bob, &add.commit).unwrap(),
+        Incoming::GroupChanged { .. }
+    ));
     let c = charlie.join(&add.welcome).unwrap();
 
     // Everyone restarts in the middle of the epoch.
@@ -119,7 +129,10 @@ fn conversation_survives_restarts() {
 
     // Alice removes Bob; Bob restarts and stays removed.
     let rm = a.remove_now(&alice, &[bob.member_id()]).unwrap();
-    assert!(matches!(c2.receive(&charlie, &rm).unwrap(), Incoming::GroupChanged { .. }));
+    assert!(matches!(
+        c2.receive(&charlie, &rm).unwrap(),
+        Incoming::GroupChanged { .. }
+    ));
     assert_eq!(b.receive(&bob, &rm).unwrap(), Incoming::RemovedFromGroup);
     let (alice, mut a) = restart(alice, a, &pa, "alice pass");
     let (charlie, mut c) = restart(charlie, c2, &pc, "charlie pass");
@@ -134,7 +147,11 @@ fn conversation_survives_restarts() {
     let add = a.add_now(&alice, &bob.key_package().unwrap()).unwrap();
     c.receive(&charlie, &add.commit).unwrap();
     let mut b2 = bob.join(&add.welcome).unwrap();
-    assert_eq!(bob.group_ids().unwrap().len(), 1, "same group id is listed once");
+    assert_eq!(
+        bob.group_ids().unwrap().len(),
+        1,
+        "same group id is listed once"
+    );
     drop(b);
     let m = b2.send(&bob, b"back again").unwrap();
     says(a.receive(&alice, &m).unwrap(), &bob, "back again");
@@ -151,7 +168,10 @@ fn several_groups_are_listed_and_loaded() {
     let mut peers = vec![];
     for _ in 0..3 {
         let mut g = alice.create_group().unwrap();
-        let w = g.add_now(&alice, &bob.key_package().unwrap()).unwrap().welcome;
+        let w = g
+            .add_now(&alice, &bob.key_package().unwrap())
+            .unwrap()
+            .welcome;
         peers.push(bob.join(&w).unwrap());
         ids.push(g.id());
     }
@@ -163,10 +183,17 @@ fn several_groups_are_listed_and_loaded() {
         let m = g.send(&alice, id).unwrap();
         assert_eq!(
             peer.receive(&bob, &m).unwrap(),
-            Incoming::Message { from: alice.member_id(), name: "alice".into(), body: id.clone() }
+            Incoming::Message {
+                from: alice.member_id(),
+                name: "alice".into(),
+                body: id.clone()
+            }
         );
     }
-    assert!(matches!(alice.load_group(b"no such group"), Err(TreeError::NoSuchGroup)));
+    assert!(matches!(
+        alice.load_group(b"no such group"),
+        Err(TreeError::NoSuchGroup)
+    ));
 }
 
 #[test]
@@ -177,14 +204,32 @@ fn wrong_passphrase_fails_cleanly() {
     let pk = alice.signature_public_key();
     drop(alice);
 
-    assert!(matches!(Client::open(&p, "wrong horse battery"), Err(TreeError::WrongKey)));
-    assert!(matches!(Client::open(&p, "right horse batterY"), Err(TreeError::WrongKey)));
-    assert!(matches!(Client::open(&p, ""), Err(TreeError::EmptyPassphrase)));
-    assert!(matches!(Client::create(dir.db("x"), "", "x"), Err(TreeError::EmptyPassphrase)));
-    assert!(matches!(Client::open(dir.db("missing"), "pw"), Err(TreeError::Storage(_))));
+    assert!(matches!(
+        Client::open(&p, "wrong horse battery"),
+        Err(TreeError::WrongKey)
+    ));
+    assert!(matches!(
+        Client::open(&p, "right horse batterY"),
+        Err(TreeError::WrongKey)
+    ));
+    assert!(matches!(
+        Client::open(&p, ""),
+        Err(TreeError::EmptyPassphrase)
+    ));
+    assert!(matches!(
+        Client::create(dir.db("x"), "", "x"),
+        Err(TreeError::EmptyPassphrase)
+    ));
+    assert!(matches!(
+        Client::open(dir.db("missing"), "pw"),
+        Err(TreeError::Storage(_))
+    ));
 
     // Creating over an existing identity is refused and destroys nothing.
-    assert!(matches!(Client::create(&p, "other", "mallory"), Err(TreeError::Storage(_))));
+    assert!(matches!(
+        Client::create(&p, "other", "mallory"),
+        Err(TreeError::Storage(_))
+    ));
 
     // The right passphrase still works after all the failures.
     let alice = Client::open(&p, "right horse battery").unwrap();
@@ -234,11 +279,17 @@ fn two_databases_do_not_interfere() {
     // Same passphrase on purpose: the random salt still gives different keys.
     let alice = Client::create(&pa, "same pass", "alice").unwrap();
     let bob = Client::create(&pb, "same pass", "bob").unwrap();
-    assert_ne!(std::fs::read(KeyHeader::path_for(&pa)).unwrap(), std::fs::read(KeyHeader::path_for(&pb)).unwrap());
+    assert_ne!(
+        std::fs::read(KeyHeader::path_for(&pa)).unwrap(),
+        std::fs::read(KeyHeader::path_for(&pb)).unwrap()
+    );
 
     let mut a = alice.create_group().unwrap();
     let mut a_only = alice.create_group().unwrap();
-    let w = a.add_now(&alice, &bob.key_package().unwrap()).unwrap().welcome;
+    let w = a
+        .add_now(&alice, &bob.key_package().unwrap())
+        .unwrap()
+        .welcome;
     let mut b = bob.join(&w).unwrap();
     let m = a.send(&alice, b"one").unwrap();
     says(b.receive(&bob, &m).unwrap(), &alice, "one");
@@ -246,7 +297,10 @@ fn two_databases_do_not_interfere() {
 
     assert_eq!(alice.group_ids().unwrap(), vec![a.id(), a_only.id()]);
     assert_eq!(bob.group_ids().unwrap(), vec![b.id()]);
-    assert!(matches!(bob.load_group(&a_only.id()), Err(TreeError::NoSuchGroup)));
+    assert!(matches!(
+        bob.load_group(&a_only.id()),
+        Err(TreeError::NoSuchGroup)
+    ));
     let (alice_pk, bob_pk) = (alice.signature_public_key(), bob.signature_public_key());
     assert_ne!(alice_pk, bob_pk);
     drop((alice, bob, a, b, a_only));
@@ -255,7 +309,10 @@ fn two_databases_do_not_interfere() {
     let hb = std::fs::read(KeyHeader::path_for(&pb)).unwrap();
     let ha = std::fs::read(KeyHeader::path_for(&pa)).unwrap();
     std::fs::write(KeyHeader::path_for(&pb), &ha).unwrap();
-    assert!(matches!(Client::open(&pb, "same pass"), Err(TreeError::WrongKey)));
+    assert!(matches!(
+        Client::open(&pb, "same pass"),
+        Err(TreeError::WrongKey)
+    ));
     std::fs::write(KeyHeader::path_for(&pb), &hb).unwrap();
 
     // Both open at the same time, each with its own identity and groups.
@@ -290,7 +347,10 @@ fn persistent_and_in_memory_clients_mix() {
     let alice = Client::create(&p, "pw", "alice").unwrap();
     let bob = Client::new("bob").unwrap(); // in memory
     let mut b = bob.create_group().unwrap();
-    let w = b.add_now(&bob, &alice.key_package().unwrap()).unwrap().welcome;
+    let w = b
+        .add_now(&bob, &alice.key_package().unwrap())
+        .unwrap()
+        .welcome;
     let a = alice.join(&w).unwrap();
     let (alice, mut a) = restart(alice, a, &p, "pw");
     let m = b.send(&bob, b"to disk").unwrap();
@@ -308,13 +368,23 @@ fn pending_commit_survives_restart() {
     let alice = Client::create(&pa, "pw", "alice").unwrap();
     let bob = Client::new("bob").unwrap();
     let mut a = alice.create_group().unwrap();
-    let w = a.add_now(&alice, &bob.key_package().unwrap()).unwrap().welcome;
+    let w = a
+        .add_now(&alice, &bob.key_package().unwrap())
+        .unwrap()
+        .welcome;
     let mut b = bob.join(&w).unwrap();
 
     let p = a.refresh_keys(&alice).unwrap();
     let (alice, mut a) = restart(alice, a, &pa, "pw");
-    assert_eq!(a.pending_commit(), Some(p.clone()), "same bytes after restart");
-    assert!(matches!(a.refresh_keys(&alice), Err(TreeError::CommitPending)));
+    assert_eq!(
+        a.pending_commit(),
+        Some(p.clone()),
+        "same bytes after restart"
+    );
+    assert!(matches!(
+        a.refresh_keys(&alice),
+        Err(TreeError::CommitPending)
+    ));
     a.discard_commit(&alice).unwrap();
     let (alice, mut a) = restart(alice, a, &pa, "pw");
     assert!(a.pending_commit().is_none(), "discard is stored");
@@ -340,12 +410,19 @@ fn past_epoch_message_after_restart() {
     let alice = Client::create(&pa, "pw", "alice").unwrap();
     let bob = Client::new("bob").unwrap();
     let mut a = alice.create_group().unwrap();
-    let w = a.add_now(&alice, &bob.key_package().unwrap()).unwrap().welcome;
+    let w = a
+        .add_now(&alice, &bob.key_package().unwrap())
+        .unwrap()
+        .welcome;
     let mut b = bob.join(&w).unwrap();
     let in_flight = b.send(&bob, b"sent in epoch 1").unwrap();
     a.refresh_now(&alice).unwrap();
     let (alice, mut a) = restart(alice, a, &pa, "pw");
-    says(a.receive(&alice, &in_flight).unwrap(), &bob, "sent in epoch 1");
+    says(
+        a.receive(&alice, &in_flight).unwrap(),
+        &bob,
+        "sent in epoch 1",
+    );
 }
 
 /// A joined device's "refresh your key soon" flag survives a restart.
@@ -356,7 +433,10 @@ fn should_refresh_survives_restart() {
     let alice = Client::new("alice").unwrap();
     let bob = Client::create(&pb, "pw", "bob").unwrap();
     let mut a = alice.create_group().unwrap();
-    let w = a.add_now(&alice, &bob.key_package().unwrap()).unwrap().welcome;
+    let w = a
+        .add_now(&alice, &bob.key_package().unwrap())
+        .unwrap()
+        .welcome;
     let b = bob.join(&w).unwrap();
     let (bob, mut b) = restart(bob, b, &pb, "pw");
     assert!(b.should_refresh_keys());

@@ -279,7 +279,7 @@ pub async fn confirm_initiator(
     req: Signed<InitiatorConfirmReq>,
 ) -> ApiResult<Json<LinkStatusResp>> {
     validate_code(&req.body.code)?;
-    let (initiator, challenge, joiner, init_ok, _join_ok, expires_at) =
+    let (initiator, challenge, joiner, _init_ok, _join_ok, expires_at) =
         load_session(&state, &link_id).await?;
     if initiator != req.device.device_id {
         return Err(ApiError::forbidden(

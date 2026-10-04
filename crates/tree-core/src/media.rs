@@ -53,7 +53,6 @@ pub struct ImageAdjustments {
     pub blur: u8,
 }
 
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BrushStyle {
     pub width: u16,
@@ -248,8 +247,8 @@ fn validate_edit_operation(op: &EditOperation) -> Result<(), TreeError> {
         EditOperation::RotateBy(deg) => {
             if !(-180..=180).contains(deg) {
                 return Err(TreeError::FileCrypto(
-                        "rotation angle is out of range".into(),
-                    ));
+                    "rotation angle is out of range".into(),
+                ));
             }
         }
     }
@@ -1134,7 +1133,7 @@ impl MediaEnvelope {
         if !r.0.is_empty() {
             return Err(TreeError::Malformed("trailing media message bytes".into()));
         }
-        Self::new(media_id, capability, manifest, file_key, preview)
+        Self::new(media_id, capability, manifest, file_key, preview)?.with_caption(&caption)
     }
 }
 

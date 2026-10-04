@@ -33,7 +33,7 @@ pub(crate) struct Pending {
 }
 
 /// What Tree keeps of an epoch after leaving it.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PastEpoch {
     pub epoch: u64,
     pub envelope_key: Zeroizing<[u8; 32]>,
@@ -42,14 +42,14 @@ pub(crate) struct PastEpoch {
     pub members: Vec<(u32, MemberId)>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PendingEnvelope {
     pub epoch: u64,
     pub received_at: i64,
     pub bytes: Vec<u8>,
 }
 
-#[derive(Default, Debug, PartialEq, Eq)]
+#[derive(Clone, Default, Debug, PartialEq, Eq)]
 pub(crate) struct GroupState {
     pub pending: Option<Pending>,
     /// Administrator member ids, stored only inside the encrypted group state.

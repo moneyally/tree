@@ -86,7 +86,13 @@ async fn encrypted_file_capability_controls_download() {
 
 #[tokio::test]
 async fn encrypted_file_expires_and_server_purge_removes_it() {
-    let ts = boot(|cfg| cfg.file_ttl_secs = 1).await;
+    // Keep the background purger out of this test so the explicit purge
+    // call deterministically owns the deletion being asserted.
+    let ts = boot(|cfg| {
+        cfg.file_ttl_secs = 1;
+        cfg.purge_interval_secs = 3600;
+    })
+    .await;
     let api = &ts.api;
     let alice = api.signup().await;
 

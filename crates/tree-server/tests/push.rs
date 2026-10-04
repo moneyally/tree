@@ -23,7 +23,12 @@ struct Gateway {
 
 async fn receive(State(g): State<Gateway>, Path(id): Path<String>, body: axum::body::Bytes) -> AxStatus {
     g.got.lock().unwrap().push((id.clone(), body.to_vec()));
-    if id == "gone" { AxStatus::GONE } else { AxStatus::OK }
+    match id.as_str() {
+        "gone" => AxStatus::GONE,
+        "missing" => AxStatus::NOT_FOUND,
+        "broken" => AxStatus::INTERNAL_SERVER_ERROR,
+        _ => AxStatus::OK,
+    }
 }
 
 async fn gateway() -> (Gateway, String) {
@@ -118,4 +123,77 @@ async fn push_is_off_unless_configured() {
     let (st, v) = api.call(&a, Method::POST, "/v1/push", Some(json!({ "endpoint": "https://push.example/x" }))).await;
     assert_eq!(st, StatusCode::BAD_REQUEST, "{v}");
     ts.stop().await;
+}
+
+async fn stored(ts: &TestServer, dev: &Device) -> bool {
+    let n: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM push_endpoints WHERE device_id = ?")
+        .bind(&dev.device_id)
+        .fetch_one(&ts.server.state.db)
+        .await
+        .unwrap();
+    n.0 == 1
+}
+
+#[tokio::test]
+async fn only_404_and_410_forget_the_endpoint() {
+    let (gw, base) = gateway().await;
+    let ts = boot(|c| {
+        c.push_allowed_hosts = vec![base.trim_start_matches("http://").to_string()];
+        c.push_allow_http = true;
+    })
+    .await;
+    let api = &ts.api;
+    let (a, b, c) = (api.signup().await, api.signup().await, api.signup().await);
+
+    // A failing gateway (500): the endpoint is kept.
+    assert_eq!(set(api, &b, format!("{base}/up/broken")).await.0, StatusCode::OK);
+    api.send_raw(&a, &[&b.device_id], &app(b"x")).await;
+    wait_for(&gw, "broken", 1).await;
+    // 404 Not Found: forgotten. Done after the 500 was answered, so once this
+    // one is forgotten the 500 has long been handled.
+    assert_eq!(set(api, &c, format!("{base}/up/missing")).await.0, StatusCode::OK);
+    api.send_raw(&a, &[&c.device_id], &app(b"x")).await;
+    wait_for(&gw, "missing", 1).await;
+    let mut gone = false;
+    for _ in 0..100 {
+        if !stored(&ts, &c).await {
+            gone = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(gone, "404 forgets the endpoint");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(stored(&ts, &b).await, "500 keeps the endpoint");
+    ts.stop().await;
+}
+
+#[test]
+fn endpoint_edges() {
+    use tree_server::push::{check_endpoint, MAX_ENDPOINT};
+    let not_allowed = Err("this push gateway is not allowed on this server");
+    let mut cfg = tree_server::Config { push_allowed_hosts: vec!["push.example".into()], ..Default::default() };
+
+    // Exactly the longest endpoint is accepted.
+    let base = "https://push.example/";
+    let longest = format!("{base}{}", "a".repeat(MAX_ENDPOINT - base.len()));
+    assert_eq!(check_endpoint(&cfg, &longest), Ok(longest.clone()));
+    assert_eq!(check_endpoint(&cfg, &format!("{longest}a")), Err("endpoint too long"));
+
+    // A user name alone, or a password alone, is a credential too.
+    assert_eq!(check_endpoint(&cfg, "https://u@push.example/a"), Err("endpoint must not carry credentials"));
+    assert_eq!(check_endpoint(&cfg, "https://:p@push.example/a"), Err("endpoint must not carry credentials"));
+
+    // A bare host allows its scheme's default port only.
+    for port in [0, 1, 80, 8443] {
+        assert_eq!(check_endpoint(&cfg, &format!("https://push.example:{port}/a")), not_allowed, "{port}");
+    }
+
+    // An IPv6 host without a port is a host, not "host:port".
+    cfg.push_allowed_hosts = vec!["[::1]".into()];
+    assert!(check_endpoint(&cfg, "https://[::1]/a").is_ok());
+    assert_eq!(check_endpoint(&cfg, "https://[::1]:1/a"), not_allowed);
+    cfg.push_allowed_hosts = vec!["[::1]:8443".into()];
+    assert!(check_endpoint(&cfg, "https://[::1]:8443/a").is_ok());
+    assert_eq!(check_endpoint(&cfg, "https://[::1]/a"), not_allowed);
 }

@@ -161,3 +161,146 @@ async fn recovery_rules() {
     assert_eq!(apply(api, &b, &k3, None).await.0, StatusCode::OK);
     ts.stop().await;
 }
+
+/// Runs `sql` on the server's database (fault injection with triggers).
+async fn exec(ts: &TestServer, sql: &str) {
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.to_string())).execute(&ts.server.state.db).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_wrong_signature_releases_nothing() {
+    let ts = boot(|_| {}).await;
+    let api = &ts.api;
+    let a = api.signup().await;
+    let rk = new_key();
+    assert_eq!(apply(api, &a, &rk, None).await.0, StatusCode::OK);
+
+    // Another key, and the right key over another message: both refused.
+    let (st, v) = release(api, &a, Some(&new_key())).await;
+    assert_eq!((st, code(&v)), (StatusCode::FORBIDDEN, "RECOVERY_REFUSED"), "{v}");
+    let other_msg = b64(&rk.sign(&change_message(CHANGE_CONTEXT, &a.account_id, &[1; 32])).to_bytes());
+    let (st, v) = api.call(&a, Method::POST, "/v1/recovery/release", Some(json!({ "current_signature": other_msg }))).await;
+    assert_eq!((st, code(&v)), (StatusCode::FORBIDDEN, "RECOVERY_REFUSED"), "{v}");
+
+    // Nothing changed: still applied, nothing pending, the key still recovers.
+    let (_, v) = api.call(&a, Method::GET, "/v1/recovery", None).await;
+    assert_eq!((v["state"].as_str(), &v["pending"]), (Some("applied"), &Value::Null), "{v}");
+    assert_eq!(recover(api, &rk, &new_key(), false, |_| {}).await.0, StatusCode::CREATED);
+    ts.stop().await;
+}
+
+#[tokio::test]
+async fn a_change_waits_seven_days() {
+    let ts = boot(|_| {}).await;
+    let api = &ts.api;
+    let a = api.signup().await;
+    let (rk, k2) = (new_key(), new_key());
+    apply(api, &a, &rk, None).await;
+    let (_, v) = apply(api, &a, &k2, None).await;
+    let left = v["pending"]["effective_at"].as_i64().unwrap() - now();
+    assert!((7 * 86400 - 10..=7 * 86400).contains(&left), "{left}");
+    // Six days later it is still pending: the old key recovers, the new does not.
+    sqlx::query("UPDATE account_recovery SET pending_since = pending_since - ?").bind(6 * 86400).execute(&ts.server.state.db).await.unwrap();
+    let (_, v) = api.call(&a, Method::GET, "/v1/recovery", None).await;
+    assert_eq!(v["pending"]["action"], "replace", "{v}");
+    assert_eq!(recover(api, &k2, &new_key(), false, |_| {}).await.0, StatusCode::FORBIDDEN);
+    assert_eq!(recover(api, &rk, &new_key(), false, |_| {}).await.0, StatusCode::CREATED);
+    ts.stop().await;
+}
+
+#[tokio::test]
+async fn a_key_pending_elsewhere_cannot_be_applied() {
+    let ts = boot(|_| {}).await;
+    let api = &ts.api;
+    let a = api.signup().await;
+    let a2 = api.add_device(&a).await;
+    let b = api.signup().await;
+    let (rk, k) = (new_key(), new_key());
+    apply(api, &a, &rk, None).await;
+    // a2 starts an unsigned replacement to k; another account cannot take k
+    // meanwhile, neither as its first key nor signed by its current key.
+    assert_eq!(apply(api, &a2, &k, None).await.1["pending"]["action"], "replace");
+    let (st, v) = apply(api, &b, &k, None).await;
+    assert_eq!((st, code(&v)), (StatusCode::CONFLICT, "ALREADY_EXISTS"), "{v}");
+    let bk = new_key();
+    assert_eq!(apply(api, &b, &bk, None).await.0, StatusCode::OK);
+    let (st, v) = apply(api, &b, &k, Some(&bk)).await;
+    assert_eq!((st, code(&v)), (StatusCode::CONFLICT, "ALREADY_EXISTS"), "{v}");
+    // So the change takes effect after the delay.
+    age_pending(&ts).await;
+    let (st, v) = api.call(&a, Method::GET, "/v1/recovery", None).await;
+    assert_eq!((st, v["state"].as_str(), &v["pending"]), (StatusCode::OK, Some("applied"), &Value::Null), "{v}");
+    assert_eq!(recover(api, &k, &new_key(), false, |_| {}).await.0, StatusCode::CREATED);
+    ts.stop().await;
+}
+
+#[tokio::test]
+async fn the_time_window_includes_its_edge() {
+    let ts = boot(|_| {}).await;
+    let api = &ts.api;
+    let a = api.signup().await;
+    let rk = new_key();
+    apply(api, &a, &rk, None).await;
+    let skew = ts.server.state.cfg.clock_skew_secs as i64;
+    // Exactly `skew` seconds old is accepted. Sent right after a second
+    // starts so the server reads the same second; retried if it did not.
+    let mut accepted = false;
+    for _ in 0..5 {
+        let into = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().subsec_millis();
+        tokio::time::sleep(std::time::Duration::from_millis(u64::from(1010 - into))).await;
+        let n = new_key();
+        let t = now() - skew;
+        let s = b64(&rk.sign(&recovery_message(&pk(&n), false, t)).to_bytes());
+        let (st, v) = recover(api, &rk, &n, false, |b| { b["ts"] = json!(t); b["signature"] = json!(s); }).await;
+        if st == StatusCode::CREATED {
+            accepted = true;
+            break;
+        }
+        assert_eq!(code(&v), "TIMESTAMP_SKEW", "{v}");
+    }
+    assert!(accepted, "a request exactly at the edge of the window was never accepted");
+    ts.stop().await;
+}
+
+#[tokio::test]
+async fn database_failures_are_not_reported_as_duplicates() {
+    let ts = boot(|_| {}).await;
+    let api = &ts.api;
+    let a = api.signup().await;
+    let rk = new_key();
+
+    // Setting the key fails for another reason than a duplicate: 500, not 409.
+    exec(&ts, "CREATE TRIGGER fail_recovery BEFORE INSERT ON account_recovery BEGIN SELECT RAISE(ABORT, 'injected'); END").await;
+    let (st, v) = apply(api, &a, &rk, None).await;
+    assert_eq!((st, code(&v)), (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL"), "{v}");
+    exec(&ts, "DROP TRIGGER fail_recovery").await;
+    // A key registered elsewhere by a concurrent request (simulated by a
+    // trigger) is the duplicate: 409.
+    let b = api.signup().await;
+    exec(&ts, &format!(
+        "CREATE TRIGGER race_recovery BEFORE INSERT ON account_recovery BEGIN \
+         INSERT INTO account_recovery (account_id, recovery_pub, set_day) VALUES ('{}', NEW.recovery_pub, 0); END",
+        b.account_id
+    ))
+    .await;
+    let (st, v) = apply(api, &a, &rk, None).await;
+    assert_eq!((st, code(&v)), (StatusCode::CONFLICT, "ALREADY_EXISTS"), "{v}");
+    exec(&ts, "DROP TRIGGER race_recovery").await;
+    assert_eq!(apply(api, &a, &rk, None).await.0, StatusCode::OK, "nothing of the failed attempts stayed");
+
+    // Adding the recovered device fails for another reason: 500, not 409.
+    exec(&ts, "CREATE TRIGGER fail_device BEFORE INSERT ON devices BEGIN SELECT RAISE(ABORT, 'injected'); END").await;
+    let (st, v) = recover(api, &rk, &new_key(), false, |_| {}).await;
+    assert_eq!((st, code(&v)), (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL"), "{v}");
+    exec(&ts, "DROP TRIGGER fail_device").await;
+    // The same device key registered by a concurrent request between the
+    // check and the insert (simulated by a trigger): 409, nothing revoked.
+    exec(&ts, "CREATE TRIGGER race_device BEFORE INSERT ON devices BEGIN \
+               INSERT INTO devices (id, account_id, auth_pub, created_day) VALUES ('racer', NEW.account_id, NEW.auth_pub, 0); END")
+        .await;
+    let (st, v) = recover(api, &rk, &new_key(), true, |_| {}).await;
+    assert_eq!((st, code(&v)), (StatusCode::CONFLICT, "ALREADY_EXISTS"), "{v}");
+    exec(&ts, "DROP TRIGGER race_device").await;
+    assert_eq!(api.call(&a, Method::GET, "/v1/devices", None).await.0, StatusCode::OK, "nothing revoked");
+    ts.stop().await;
+}

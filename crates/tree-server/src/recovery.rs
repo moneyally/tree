@@ -148,6 +148,16 @@ pub async fn apply(State(state): State<AppState>, req: Signed<ApplyReq>) -> ApiR
     let current_sig = req.body.current_signature.as_deref().map(|s| sig(s, "current_signature")).transpose()?;
     let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
     let row = current(&mut tx, account).await?;
+    // Active or pending elsewhere: refused for an immediate change too, or the
+    // other account's pending change could never take effect.
+    let taken = sqlx::query("SELECT 1 FROM account_recovery WHERE (recovery_pub = ?1 OR pending_pub = ?1) AND account_id != ?2")
+        .bind(&new[..])
+        .bind(account)
+        .fetch_optional(&mut *tx)
+        .await?;
+    if taken.is_some() {
+        return Err(ApiError::new(StatusCode::CONFLICT, "ALREADY_EXISTS", "this recovery key is registered elsewhere"));
+    }
     match row.as_ref().and_then(|r| r.key) {
         None => set(&mut tx, account, Some(new)).await?,
         Some(old) => match current_sig {
@@ -162,16 +172,6 @@ pub async fn apply(State(state): State<AppState>, req: Signed<ApplyReq>) -> ApiR
 }
 
 async fn pend(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>, account: &str, action: &str, key: Option<[u8; 32]>) -> ApiResult<()> {
-    if let Some(k) = key {
-        let taken = sqlx::query("SELECT 1 FROM account_recovery WHERE (recovery_pub = ?1 OR pending_pub = ?1) AND account_id != ?2")
-            .bind(&k[..])
-            .bind(account)
-            .fetch_optional(&mut **tx)
-            .await?;
-        if taken.is_some() {
-            return Err(ApiError::new(StatusCode::CONFLICT, "ALREADY_EXISTS", "this recovery key is registered elsewhere"));
-        }
-    }
     sqlx::query("UPDATE account_recovery SET pending_action = ?, pending_pub = ?, pending_since = ? WHERE account_id = ?")
         .bind(action)
         .bind(key.as_ref().map(|k| k.to_vec()))

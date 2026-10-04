@@ -109,3 +109,30 @@ async fn open_links_per_device_are_limited() {
     assert_eq!(create(api, &o, &[200; 16], 3600, 1).await.0, StatusCode::CREATED);
     ts.stop().await;
 }
+
+#[tokio::test]
+async fn ack_takes_up_to_100_ids() {
+    let ts = boot(|_| {}).await;
+    let api = &ts.api;
+    let o = api.signup().await;
+    let ids: Vec<String> = (0..100).map(|_| "A".repeat(22)).collect();
+    let (st, v) = api.call(&o, Method::POST, "/v1/invites/requests/ack", Some(json!({ "ids": ids }))).await;
+    assert_eq!((st, &v["deleted"]), (StatusCode::OK, &json!(0)), "{v}");
+    ts.stop().await;
+}
+
+#[tokio::test]
+async fn a_database_failure_is_not_reported_as_a_duplicate() {
+    let ts = boot(|_| {}).await;
+    let api = &ts.api;
+    let o = api.signup().await;
+    sqlx::raw_sql("CREATE TRIGGER fail_invite BEFORE INSERT ON invites BEGIN SELECT RAISE(ABORT, 'injected'); END")
+        .execute(&ts.server.state.db)
+        .await
+        .unwrap();
+    let (st, v) = create(api, &o, &[1; 16], 3600, 1).await;
+    assert_eq!((st, code(&v)), (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL"), "{v}");
+    sqlx::raw_sql("DROP TRIGGER fail_invite").execute(&ts.server.state.db).await.unwrap();
+    assert_eq!(create(api, &o, &[1; 16], 3600, 1).await.0, StatusCode::CREATED);
+    ts.stop().await;
+}

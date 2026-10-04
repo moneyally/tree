@@ -180,6 +180,41 @@ handled below.
   - `purge_expired`: `+` -> `-`/`*` at the orphan-blob term, which is 0
     whenever messages are deleted with their last delivery (always now).
 
+### Stage-1 stack, part 2 (`claude/push` … `claude/organize`, core and server)
+
+`cargo mutants --in-diff` over what the later branches changed in
+`tree-core` and `tree-server`: 493 mutants, 166 caught, 299 unviable, 28
+missed (2026-10-02). All 28 are handled:
+
+- fixed by new tests: `Words::language` (Korean phrases), invite lifetime
+  and use limits at the edge and the week-long keep after expiry, the cost
+  of commits reaching 100+ devices, the exact commit fan-out limit, ack of
+  up to 100 invite requests, push endpoint edge cases (exact length limit,
+  user name or password only, a bare IPv6 host, ports 0 and 1), push
+  gateways answering 404/410 versus 500, the 7-day change delay, the
+  recovery time window edge, and a wrong `current_signature` on release
+  (403, nothing released, the key still recovers);
+- unique-violation branches (unreachable in normal use: every write follows
+  a check in the same `BEGIN IMMEDIATE` transaction): tests inject a
+  concurrent insert (must give 409) or a database failure (must give 500,
+  not 409) with database triggers;
+- real bug found: `POST /v1/recovery/apply` checked "this key is active or
+  pending on another account" only for delayed changes. A key set
+  immediately could collide with another account's pending change, which
+  then failed on the unique index forever and blocked that account's
+  recovery. Fixed (the check runs on every path) with
+  `a_key_pending_elsewhere_cannot_be_applied`;
+- equivalent:
+  - `push::check_endpoint` line 50 `||` -> `&&`, and `default_port`
+    returning `None` or losing its arms: for http/https the URL parser
+    leaves the port empty exactly when it is the default, so both sides of
+    that comparison are always equal;
+  - `push::send` "2xx" guard -> false: falls into the catch-all arm, which
+    only logs;
+  - `DeviceCtx::charge_outreach` `>` -> `>=`: a cost of exactly 0 charges
+    nothing either way;
+  - `purge_expired` orphan term: as in part 1.
+
 ## Findings from this pass
 
 See `SECURITY_FINDINGS.md`. At PR #3: F-005 and F-006 fixed with regression

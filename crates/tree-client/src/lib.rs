@@ -15,11 +15,12 @@ use thiserror::Error;
 
 use tree_core::{
     group::{Group, Incoming, MemberId, PendingCommit},
+    media::{decrypt_preview, EncryptedChunk, MediaEnvelope, MediaKey, MediaLifecycle, MediaManifest, MediaViewState, PreviewMode, ViewPolicy},
     storage::StoredProvider,
     Client, TreeError,
 };
 
-pub use api::{b64, unb64, Api, Creds};
+pub use api::{b64, unb64, Api, Creds, MediaChunk, MediaUploadInfo};
 
 const POW_BITS: u32 = 10;
 const KEY_PACKAGE_TARGET: u64 = 8;
@@ -49,6 +50,19 @@ pub struct SyncEvent {
     pub group_id: Vec<u8>,
     pub incoming: Incoming,
 }
+
+pub struct SentMedia {
+    pub message_id: tree_core::MessageId,
+    pub attachment_id: [u8; 16],
+    pub media_id: String,
+    pub expires_at: i64,
+}
+
+pub struct DownloadedMediaChunk {
+    pub index: u32,
+    pub plaintext: Vec<u8>,
+}
+
 
 pub struct Session {
     client: Client<StoredProvider>,
@@ -208,6 +222,152 @@ impl Session {
             }
         })?;
         self.send_control(gid, &body)
+    }
+
+    pub fn send_media(
+        &self,
+        gid: &[u8],
+        plaintext: &[u8],
+        media_type: &str,
+        filename: &str,
+        mime: &str,
+        policy: ViewPolicy,
+        preview_mode: PreviewMode,
+        preview_plaintext: Option<&[u8]>,
+    ) -> Result<SentMedia, Error> {
+        if plaintext.is_empty() {
+            return Err(Error::Usage("media cannot be empty".into()));
+        }
+        let (epoch, message_id) = self.with_group(gid, |group| {
+            Ok((group.epoch(), tree_core::MessageId::generate()?))
+        })?;
+        let (manifest, key) = MediaManifest::generate(
+            message_id,
+            gid,
+            epoch,
+            media_type,
+            filename,
+            mime,
+            plaintext.len() as u64,
+            policy,
+            preview_mode,
+        )?;
+        let key_commitment = manifest.key_commitment(&key)?;
+        let upload = self.api.media_init(
+            &self.creds,
+            &manifest.encode()?,
+            &key_commitment,
+            manifest.plaintext_size,
+            manifest.chunk_size,
+            manifest.chunk_count,
+        )?;
+
+        for index in 0..manifest.chunk_count {
+            let start = index as usize * manifest.chunk_size as usize;
+            let end = (start + manifest.chunk_size as usize).min(plaintext.len());
+            let chunk = tree_core::media::EncryptedChunk::encrypt(
+                &key,
+                &manifest,
+                index,
+                &plaintext[start..end],
+            )?;
+            self.api.media_put_chunk(
+                &self.creds,
+                &upload.media_id,
+                &upload.capability,
+                index,
+                &chunk.ciphertext,
+            )?;
+        }
+
+        let preview = match (preview_mode, preview_plaintext) {
+            (PreviewMode::None, _) | (_, None) => None,
+            (_, Some(bytes)) => Some(tree_core::media::encrypt_preview(&key, &manifest, bytes)?),
+        };
+        self.api.media_finalize(&self.creds, &upload.media_id, &upload.capability)?;
+
+        let envelope = MediaEnvelope::new(manifest.clone(), key, preview)?.encode()?;
+        let view_once = matches!(policy, ViewPolicy::ViewOnce);
+        let ttl_secs = match policy {
+            ViewPolicy::Timed { seconds } => seconds,
+            _ => 0,
+        };
+        let recipients = self
+            .roster(gid)?
+            .values()
+            .filter(|device| device.as_str() != self.device_id())
+            .cloned()
+            .collect::<Vec<_>>();
+        if recipients.is_empty() {
+            return Err(Error::Usage("group has no other devices".into()));
+        }
+        let body = self.with_group(gid, |group| {
+            group.send_message_with_id(
+                &self.client,
+                message_id,
+                &envelope,
+                ttl_secs,
+                view_once,
+                None,
+            )
+        })?;
+        let reply = self.api.send(&self.creds, &recipients, &body)?;
+        let id = reply.body["id"]
+            .as_str()
+            .or_else(|| reply.body["message_id"].as_str())
+            .ok_or_else(|| Error::Usage("server did not return a media message id".into()))?;
+
+        Ok(SentMedia {
+            message_id,
+            attachment_id: manifest.attachment_id,
+            media_id: upload.media_id,
+            expires_at: upload.expires_at,
+        })
+    }
+
+    pub fn decode_media_message(
+        &self,
+        body: &[u8],
+    ) -> Result<MediaEnvelope, Error> {
+        Ok(MediaEnvelope::decode(body)?)
+    }
+
+    pub fn download_media_chunk(
+        &self,
+        media_id: &str,
+        capability: &str,
+        manifest: &MediaManifest,
+        key: &MediaKey,
+        index: u32,
+    ) -> Result<DownloadedMediaChunk, Error> {
+        let chunk: MediaChunk = self
+            .api
+            .media_get_chunk(&self.creds, media_id, capability, index)?;
+        let encrypted = EncryptedChunk {
+            index: chunk.index,
+            ciphertext: chunk.ciphertext,
+            sha256: chunk.sha256,
+        };
+        let plaintext = EncryptedChunk::decrypt(key, manifest, &encrypted)?;
+        Ok(DownloadedMediaChunk { index, plaintext })
+    }
+
+    pub fn decrypt_media_preview(
+        &self,
+        envelope: &MediaEnvelope,
+    ) -> Result<Option<Vec<u8>>, Error> {
+        match &envelope.preview {
+            Some(preview) => Ok(Some(decrypt_preview(
+                &envelope.file_key,
+                &envelope.manifest,
+                preview,
+            )?)),
+            None => Ok(None),
+        }
+    }
+
+    pub fn new_media_view(&self, envelope: &MediaEnvelope) -> MediaLifecycle {
+        MediaLifecycle::new(envelope.manifest.view_policy)
     }
 
     pub fn send_text(&self, gid: &[u8], text: &str) -> Result<String, Error> {

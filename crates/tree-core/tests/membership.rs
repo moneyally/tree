@@ -85,7 +85,7 @@ fn add_reported_to_existing_members() {
     assert_ne!(a.verification_code(), before, "code changes with the epoch");
     assert_eq!(
         b.receive(&bob, &add.commit).unwrap(),
-        Incoming::GroupChanged { added: vec![carol.member_id()], removed: vec![], epoch: 2, own_commit_discarded: false, settings_changed: false }
+        Incoming::GroupChanged { added: vec![carol.member_id()], removed: vec![], epoch: 2, own_commit_discarded: false, settings_changed: false, by: alice.member_id() }
     );
     let c = carol.join(&add.welcome).unwrap();
     assert_eq!(c.epoch(), 2);
@@ -130,7 +130,7 @@ fn remove_reported_and_removed_device_locked_out() {
     assert_eq!(a.members(), vec![alice.member_id(), carol.member_id()]);
     assert_eq!(
         c.receive(&carol, &rm).unwrap(),
-        Incoming::GroupChanged { added: vec![], removed: vec![bob.member_id()], epoch: 3, own_commit_discarded: false, settings_changed: false }
+        Incoming::GroupChanged { added: vec![], removed: vec![bob.member_id()], epoch: 3, own_commit_discarded: false, settings_changed: false, by: alice.member_id() }
     );
     assert_eq!(b.receive(&bob, &rm).unwrap(), Incoming::RemovedFromGroup);
     assert!(!b.is_member());
@@ -205,7 +205,7 @@ fn refresh_keys_processed() {
     let c = b.refresh_now(&bob).unwrap();
     assert_eq!(
         a.receive(&alice, &c).unwrap(),
-        Incoming::GroupChanged { added: vec![], removed: vec![], epoch: 2, own_commit_discarded: false, settings_changed: false }
+        Incoming::GroupChanged { added: vec![], removed: vec![], epoch: 2, own_commit_discarded: false, settings_changed: false, by: bob.member_id() }
     );
     assert_ne!(b.verification_code(), before);
     assert_eq!(a.verification_code(), b.verification_code());
@@ -330,7 +330,7 @@ fn insider_proposal_rejected_not_stored() {
     let c = a.refresh_now(&alice).unwrap();
     assert_eq!(
         b.receive(&bob, &c).unwrap(),
-        Incoming::GroupChanged { added: vec![], removed: vec![], epoch: 3, own_commit_discarded: false, settings_changed: false }
+        Incoming::GroupChanged { added: vec![], removed: vec![], epoch: 3, own_commit_discarded: false, settings_changed: false, by: alice.member_id() }
     );
     assert_eq!(a.verification_code(), b.verification_code());
 }
@@ -543,7 +543,7 @@ fn admins_and_settings() {
     for (g, me) in [(&mut b, &bob), (&mut c, &carol)] {
         assert_eq!(
             g.receive(me, &p.commit).unwrap(),
-            Incoming::GroupChanged { added: vec![], removed: vec![], epoch: 4, own_commit_discarded: false, settings_changed: true }
+            Incoming::GroupChanged { added: vec![], removed: vec![], epoch: 4, own_commit_discarded: false, settings_changed: true, by: alice.member_id() }
         );
         assert_eq!(g.settings(), s);
     }
@@ -782,4 +782,70 @@ fn member_id_hex_parsing() {
     assert_eq!(MemberId::from_hex(&"g".repeat(64)), None);
     // 64 bytes but not ASCII: refused, never sliced inside a character.
     assert_eq!(MemberId::from_hex(&"é".repeat(32)), None);
+}
+
+// ----- Wave 3: adds by permission, the next admin (PROTOCOL.md 6.11.1) -------
+
+/// `chat.member_adds` released: an honest non-admin's client refuses to
+/// add, and a modified one (raw MLS) gets its add commit rejected by every
+/// member; a role with `add` makes it allowed again, and applied, anyone
+/// adds.
+#[test]
+fn member_adds_follow_settings_and_roles() {
+    use openmls_traits::OpenMlsProvider;
+    use tree_core::group_settings::{perm, Role};
+    let (alice, bob, mut a, mut b, mut m) = chat_with_insider("mallory");
+    let mut s = a.settings();
+    s.features.insert("chat.member_adds".into(), ChatSetting { applied: false, option: None });
+    let p = a.change_settings(&alice, &s).unwrap();
+    a.confirm_commit(&alice).unwrap();
+    b.receive(&bob, &p.commit).unwrap();
+    m.receive_commit(&p.commit);
+    let carol = Client::new("carol").unwrap();
+    assert!(matches!(b.add(&bob, &[carol.key_package().unwrap()]), Err(TreeError::NotAdmin)));
+    // mallory adds anyway: alice and bob refuse it.
+    let kp = common::Insider::new("x").key_package();
+    let kp = openmls::prelude::KeyPackageIn::tls_deserialize_exact(&kp[..])
+        .unwrap()
+        .validate(m.provider.crypto(), openmls::prelude::ProtocolVersion::Mls10)
+        .unwrap();
+    let (pr, sg) = (&m.provider, &m.signer);
+    let (commit, _, _) = m.group.as_mut().unwrap().add_members_without_update(pr, sg, &[kp]).unwrap();
+    let sealed = m.seal(&commit.to_bytes().unwrap());
+    for r in [a.receive(&alice, &sealed), b.receive(&bob, &sealed)] {
+        assert!(matches!(r, Err(TreeError::Rejected(ref e)) if e.contains("add permission")), "{r:?}");
+    }
+    m.group.as_mut().unwrap().clear_pending_commit(m.provider.storage()).unwrap();
+    // A role with `add` lets bob add.
+    let mut s = a.settings();
+    s.roles.insert("door".into(), Role { name: "door".into(), color: "#123456".into(), perms: [perm::ADD.to_string()].into() });
+    s.member_roles.insert(bob.member_id(), ["door".to_string()].into());
+    let p = a.change_settings(&alice, &s).unwrap();
+    a.confirm_commit(&alice).unwrap();
+    b.receive(&bob, &p.commit).unwrap();
+    assert!(b.settings().may_add(&bob.member_id()));
+    let add = b.add_now(&bob, &carol.key_package().unwrap()).unwrap();
+    assert!(matches!(a.receive(&alice, &add.commit), Ok(Incoming::GroupChanged { by, .. }) if by == bob.member_id()));
+}
+
+/// The next admin is the member in the lowest leaf who is not leaving and
+/// not restricted; every member computes the same one.
+#[test]
+fn successor_is_the_same_everywhere() {
+    let (alice, bob, mut a, mut b) = two_person_chat();
+    let carol = Client::new("carol").unwrap();
+    let add = a.add_now(&alice, &carol.key_package().unwrap()).unwrap();
+    b.receive(&bob, &add.commit).unwrap();
+    let c = carol.join(&add.welcome).unwrap();
+    for g in [&a, &b, &c] {
+        assert_eq!(g.successor(&[alice.member_id()], 0), Some(bob.member_id()));
+        assert_eq!(g.successor(&[alice.member_id(), bob.member_id()], 0), Some(carol.member_id()));
+    }
+    let mut s = a.settings();
+    s.restricted.insert(bob.member_id(), i64::MAX);
+    let p = a.change_settings(&alice, &s).unwrap();
+    a.confirm_commit(&alice).unwrap();
+    b.receive(&bob, &p.commit).unwrap();
+    assert_eq!(a.successor(&[alice.member_id()], 0), Some(carol.member_id()), "restricted members are skipped");
+    assert_eq!(b.successor(&[alice.member_id()], 0), Some(carol.member_id()));
 }

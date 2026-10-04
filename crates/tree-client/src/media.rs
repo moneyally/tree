@@ -71,6 +71,8 @@ pub struct SendOptions {
     /// A round video note (`chat.video_notes`; length in `meta`).
     pub video_note: bool,
     pub meta: MediaMeta,
+    /// The topic it is sent in (`chat.topics`).
+    pub topic: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -335,6 +337,7 @@ impl Session {
         if name.chars().count() > MAX_NAME || mime.chars().count() > MAX_MIME {
             return Err(Error::Usage("file name or type too long".into()));
         }
+        self.check_send_topic(gid, o.topic.as_deref())?;
         if o.meta.thumb.as_ref().is_some_and(|t| t.len() > MAX_THUMB) {
             return Err(Error::Usage(format!("preview picture larger than {MAX_THUMB} bytes")));
         }
@@ -380,6 +383,7 @@ impl Session {
             height: o.meta.height,
             thumb: o.meta.thumb.as_deref().map(api::b64),
             fwd: false,
+            topic: o.topic.clone(),
         };
         let total = attachment::ciphertext_len(size);
         let st = UploadState { group: hex::encode(gid), msg_id: info.msg_id.clone(), total, upload_id: None, done: false, paused: false };

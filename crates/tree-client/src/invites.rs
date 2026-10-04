@@ -8,6 +8,13 @@
 //! requester through the normal MLS path if the link is still valid, the
 //! group still allows links (`chat.invite_link` applied by its admins) and
 //! this device is still an admin.
+//!
+//! With `chat.join_approval` applied (APP_PROTOCOL.md 9.6), the request is
+//! not carried out at once: it waits on the link owner's device as a join
+//! request ([`Session::join_requests`], [`Event::JoinRequest`]) until the
+//! admin approves it (the requester is then added as above) or declines it.
+//! Join requests live only on the device that made the link; the server
+//! sees the same request either way.
 
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
@@ -29,6 +36,24 @@ struct LinkJoin {
     owner: String,
     at: i64,
 }
+
+/// A join request waiting for an admin (`chat.join_approval`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JoinRequest {
+    pub account: String,
+    /// The joiner's nonce (hex), if its client sent one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nonce: Option<String>,
+    /// When this device received it.
+    pub at: i64,
+}
+
+fn join_key(gid: &[u8], account: &str) -> String {
+    format!("joinreq/{}/{account}", hex::encode(gid))
+}
+
+/// Join requests are dropped after this long.
+const JOIN_REQUEST_TTL: i64 = 30 * 86400;
 
 /// A link this device made.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -169,6 +194,16 @@ impl Session {
         // Without the joiner's nonce (an older client) the group arrives as
         // a request on its side.
         let nonce = req.nonce.as_ref().filter(|n| n.len() == 16).map(hex::encode);
+        if self.chat_feature(&gid, "chat.join_approval")?.0 {
+            if account.len() > 64 {
+                refuse(events, "bad account id");
+                return Ok(());
+            }
+            let r = JoinRequest { account: account.to_string(), nonce, at: now() };
+            self.app_put(&join_key(&gid, account), Some(&r))?;
+            events.push(Event::JoinRequest { group: gid, account: account.to_string() });
+            return Ok(());
+        }
         match self.invite_via(&gid, account, nonce)? {
             (CommitOutcome::Accepted { .. }, ev) => {
                 events.extend(ev);
@@ -177,6 +212,52 @@ impl Session {
             (CommitOutcome::Lost, _) => refuse(events, "the group changed meanwhile; ask again"),
         }
         Ok(())
+    }
+
+    /// Join requests waiting on this device for the group, oldest first
+    /// (`chat.join_approval`).
+    pub fn join_requests(&self, gid: &[u8]) -> Result<Vec<JoinRequest>, Error> {
+        let prefix = format!("joinreq/{}/", hex::encode(gid));
+        let mut out = Vec::new();
+        for k in self.client.app_data_keys(&prefix)? {
+            match self.app_get::<JoinRequest>(&k)? {
+                Some(r) if now() - r.at <= JOIN_REQUEST_TTL => out.push(r),
+                _ => self.client.set_app_data(&k, None)?,
+            }
+        }
+        out.sort_by_key(|r| r.at);
+        Ok(out)
+    }
+
+    /// An admin approves a join request: the account is added (its device
+    /// accepts the group, as for any link join).
+    pub fn approve_join(&mut self, gid: &[u8], account: &str) -> Result<CommitOutcome, Error> {
+        let me = self.member_id();
+        if !self.group(gid)?.is_admin(&me) {
+            return Err(Error::Feature("NOT_ADMIN".into()));
+        }
+        let k = join_key(gid, account);
+        let r: JoinRequest = self.app_get(&k)?.ok_or_else(|| Error::Usage("no such join request".into()))?;
+        let (o, _) = self.invite_via(gid, account, r.nonce.clone())?;
+        if let CommitOutcome::Accepted { .. } = o {
+            self.client.set_app_data(&k, None)?;
+            self.log_admin(gid, &me, "join_approve", Some(account.to_string()), None)?;
+        }
+        Ok(o)
+    }
+
+    /// An admin declines a join request; nothing is sent.
+    pub fn decline_join(&mut self, gid: &[u8], account: &str) -> Result<(), Error> {
+        let me = self.member_id();
+        if !self.group(gid)?.is_admin(&me) {
+            return Err(Error::Feature("NOT_ADMIN".into()));
+        }
+        let k = join_key(gid, account);
+        if self.client.app_data(&k)?.is_none() {
+            return Err(Error::Usage("no such join request".into()));
+        }
+        self.client.set_app_data(&k, None)?;
+        self.log_admin(gid, &me, "join_decline", Some(account.to_string()), None)
     }
 
     /// Handles join requests for this device's links (called by `sync`).

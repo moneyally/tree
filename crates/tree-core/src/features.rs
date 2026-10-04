@@ -175,6 +175,12 @@ const MODERATION_KEYS: &[&str] = &[
     "user.stranger_labels",
     "user.group_safety_notice",
     "user.group_add",
+    // Group moderation (Wave 3): log of admin actions, join approval, slow
+    // mode, restricting members.
+    "chat.admin_log",
+    "chat.join_approval",
+    "chat.slow_mode",
+    "chat.restrict",
 ];
 
 pub(crate) fn kind(f: &Feature) -> Kind {
@@ -376,6 +382,11 @@ pub enum OptionFormat {
     /// `user.auto_download`: `<network>[:<size>]` (see [`AutoDownload`]).
     /// `default` is stored when the feature is applied without one.
     AutoDownload { default: &'static str },
+    /// A text of at most `max` characters (no option: none).
+    Text { max: usize },
+    /// A whole number from `min` to `max`; `default` is stored when the
+    /// feature is applied without one.
+    Count { min: i64, max: i64, default: &'static str },
     /// A feature defined at run time with no declared format: kept as given.
     Free,
 }
@@ -404,10 +415,22 @@ pub fn option_format(key: &str) -> OptionFormat {
         // Who gets the profile photo: everyone in the user's chats (default),
         // only chats whose other members are all contacts, or nobody.
         "user.profile_photo_visibility" => OneOf(&["chats", "contacts", "nobody"]),
+        // Who may create topics: admins (and roles that manage topics), or
+        // every member.
+        "chat.topics" => OneOf(&["admins", "all"]),
+        // The text new members see once (group settings, PROTOCOL.md 6.11).
+        "chat.welcome" => Text { max: WELCOME_MAX },
+        // How many recent messages a new member receives.
+        "chat.history_share" => Count { min: 25, max: 100, default: "50" },
+        // Non-admins may send one message per this interval.
+        "chat.slow_mode" => Duration { min: 10, max: HOUR, default: Some("30s") },
         k if standard_features().iter().any(|f| f.key == k) => Nothing,
         _ => Free,
     }
 }
+
+/// Longest welcome text (`chat.welcome`), in characters.
+pub const WELCOME_MAX: usize = 500;
 
 /// Seconds in a duration option (`90`, `30s`, `5m`, `1h`, `1d`, `2w`), or
 /// `None` if it is not one.
@@ -445,6 +468,18 @@ pub fn check_option(key: &str, option: Option<String>) -> Result<Option<String>,
             None => bad("wifi, wifi+mobile or never, optionally with a size limit up to 2g (e.g. wifi:20m)".into()),
         },
         (OptionFormat::Duration { default, .. }, None) => Ok(default.map(str::to_string)),
+        (OptionFormat::Count { default, .. }, None) => Ok(Some(default.to_string())),
+        (OptionFormat::Text { max }, Some(o)) => {
+            if o.is_empty() || o.chars().count() > max || o.chars().any(|c| c.is_control() && c != '\n') {
+                bad(format!("a text of 1 to {max} characters"))
+            } else {
+                Ok(Some(o))
+            }
+        }
+        (OptionFormat::Count { min, max, .. }, Some(o)) => match o.parse::<i64>() {
+            Ok(n) if (min..=max).contains(&n) && o.bytes().all(|b| b.is_ascii_digit()) => Ok(Some(o)),
+            _ => bad(format!("a whole number from {min} to {max}")),
+        },
         (_, None) => Ok(None),
         (OptionFormat::Nothing, Some(_)) => bad("takes no option".into()),
         (OptionFormat::OneOf(words), Some(o)) => {
@@ -468,17 +503,33 @@ pub fn option_seconds(key: &str, option: Option<&str>) -> Option<i64> {
     option.or(default).and_then(parse_duration).filter(|n| (min..=max).contains(n))
 }
 
-/// Values the apps offer for a feature's option (empty: no option).
+/// The number of a count feature's option, or of its default (`None` if
+/// the feature has no count).
+pub fn option_count(key: &str, option: Option<&str>) -> Option<i64> {
+    let OptionFormat::Count { min, max, default } = option_format(key) else { return None };
+    let n = option.and_then(|o| o.parse::<i64>().ok()).filter(|n| (min..=max).contains(n));
+    n.or_else(|| default.parse().ok())
+}
+
+/// Values the apps offer for a feature's option (empty: no option, or a
+/// free text the app asks for, [`OptionFormat::Text`]).
 pub fn option_choices(key: &str) -> Vec<String> {
     let v: &[&str] = match (key, option_format(key)) {
         ("chat.disappearing", _) => &["5m", "1h", "1d", "7d", "30d"],
         ("user.storage_clean", _) => &["30d", "90d", "365d"],
+        ("chat.slow_mode", _) => &["10s", "30s", "1m", "5m", "15m", "1h"],
+        (_, OptionFormat::Count { .. }) => &["25", "50", "100"],
         (_, OptionFormat::Duration { .. }) => &["15m", "1h", "1d", "7d"],
         (_, OptionFormat::OneOf(words)) => words,
         (_, OptionFormat::AutoDownload { .. }) => &["wifi:5m", "wifi:20m", "wifi:100m", "wifi+mobile:5m", "wifi+mobile:20m", "never"],
         _ => &[],
     };
     v.iter().map(|s| s.to_string()).collect()
+}
+
+/// Whether a standard feature is applied by default (`None` for unknown keys).
+pub fn standard_default(key: &str) -> Option<bool> {
+    standard_features().into_iter().find(|f| f.key == key).map(|f| f.default == State::Applied)
 }
 
 /// The permanent lock of a standard feature (`None` for unknown keys).
@@ -609,6 +660,22 @@ pub fn standard_features() -> Vec<Feature> {
         feat("chat.events", Chat, Applied, 3),
         feat("chat.video_notes", Chat, Applied, 3),
         feat("chat.allow_per_chat_profiles", Chat, Applied, 3),
+        // Groups and communities (Wave 3, APP_PROTOCOL.md 9): topics
+        // (threads), roles with permissions, any member may add members
+        // (released: admins and roles with `add` only), a device-local log
+        // of admin actions, a welcome text for new members, recent history
+        // for new members, the next admin when the last one leaves, join
+        // approval for invite links, slow mode, restricted members.
+        feat("chat.topics", Chat, Released, 3),
+        feat("chat.roles", Chat, Applied, 3),
+        feat("chat.member_adds", Chat, Applied, 3),
+        feat("chat.admin_log", Chat, Applied, 3),
+        feat("chat.welcome", Chat, Released, 3),
+        feat("chat.history_share", Chat, Released, 3),
+        feat("chat.owner_succession", Chat, Applied, 3),
+        feat("chat.join_approval", Chat, Released, 3),
+        feat("chat.slow_mode", Chat, Released, 3),
+        feat("chat.restrict", Chat, Applied, 3),
         // user
         feat("user.read_receipts", User, Applied, 1),
         feat("user.typing", User, Applied, 1),

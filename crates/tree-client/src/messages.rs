@@ -51,6 +51,8 @@ pub struct TextOptions {
     pub preview: Option<crate::payload::LinkPreview>,
     /// Silent send: the receivers' apps do not notify (APP_PROTOCOL.md 1).
     pub silent: bool,
+    /// The topic to send it in (`chat.topics`).
+    pub topic: Option<String>,
 }
 
 pub(crate) fn now() -> i64 {
@@ -67,13 +69,20 @@ fn screenshot_key(gid: &[u8]) -> String {
     format!("screenshot/{}", hex::encode(gid))
 }
 
-/// What a stored text keeps besides its text: formatting, a preview and
-/// the silent flag.
+/// What a stored text keeps besides its text: formatting, a preview, the
+/// silent flag and its topic.
 pub(crate) fn text_data(formatted: bool, preview: Option<&crate::payload::LinkPreview>, silent: bool) -> Option<Vec<u8>> {
-    if !formatted && preview.is_none() && !silent {
+    text_data_in(formatted, preview, silent, None)
+}
+
+pub(crate) fn text_data_in(formatted: bool, preview: Option<&crate::payload::LinkPreview>, silent: bool, topic: Option<&str>) -> Option<Vec<u8>> {
+    if !formatted && preview.is_none() && !silent && topic.is_none() {
         return None;
     }
     let mut v = serde_json::json!({});
+    if let Some(t) = topic {
+        v["topic"] = t.into();
+    }
     if formatted {
         v["fmt"] = true.into();
     }
@@ -184,6 +193,7 @@ impl Session {
         if o.all && !self.may_mention_all(gid, &me)? {
             return Err(Self::locked_by_chat());
         }
+        self.check_send_topic(gid, o.topic.as_deref())?;
         let fmt = o.formatted && self.chat_allows(gid, "chat.formatting")?;
         let preview = match &o.preview {
             Some(p) if !p.is_valid() => return Err(Error::Usage("link preview too long or not a web link".into())),
@@ -192,8 +202,8 @@ impl Session {
         };
         let id = new_id();
         let mentions = o.mentions.iter().map(|m| m.to_hex()).collect();
-        let data = text_data(fmt, preview.as_ref(), o.silent);
-        let p = Payload::Text { id: id.clone(), text: text.to_string(), fmt, mentions, all: o.all, preview, silent: o.silent, fwd: false };
+        let data = text_data_in(fmt, preview.as_ref(), o.silent, o.topic.as_deref());
+        let p = Payload::Text { id: id.clone(), text: text.to_string(), fmt, mentions, all: o.all, preview, silent: o.silent, fwd: false, topic: o.topic.clone() };
         // Stored in the history with the outbox item, before it goes out.
         self.queue_payload(gid, &p, Some(&id), |s| s.store(gid, &id, &me, "text", Some(text.to_string()), data, None).map(|_| ()))?;
         self.set_draft(gid, "")?;
@@ -323,7 +333,14 @@ impl Session {
         let request = matches!(self.group_status(gid)?, GroupStatus::Request { .. });
         let name = self.names(gid)?.get(&from.to_hex()).cloned();
         match p {
-            Payload::Text { id, text, fmt, mentions, all, preview, silent, fwd } => {
+            Payload::Text { id, text, fmt, mentions, all, preview, silent, fwd, topic } => {
+                let topic = match self.receive_topic(gid, &from, topic)? {
+                    Ok(t) => t,
+                    Err(why) => {
+                        refuse(events, why);
+                        return Ok(());
+                    }
+                };
                 // A preview is shown only while this user wants previews.
                 let preview = match preview {
                     Some(p) if p.is_valid() && self.is_applied("user.link_preview")? => Some(p),
@@ -335,12 +352,15 @@ impl Session {
                 let me = self.member_id().to_hex();
                 let all = all && self.may_mention_all(gid, &from)?;
                 let mentions_me = all || mentions.iter().take(MAX_MENTIONS).any(|m| *m == me);
-                let data = crate::forward::with_fwd(text_data(formatted, preview.as_ref(), silent), fwd);
+                let data = crate::forward::with_fwd(text_data_in(formatted, preview.as_ref(), silent, topic.as_deref()), fwd);
                 if !self.store(gid, &id, &from, "text", Some(text.clone()), data, franking)? {
                     refuse(events, "duplicate message id");
                     return Ok(());
                 }
                 self.on_new_message(gid, silent)?;
+                if let Some(t) = &topic {
+                    self.note_topic_message(gid, t)?;
+                }
                 events.push(Event::Text { group: gid.to_vec(), id, from, name, text, request, formatted, mentions_me, preview, silent });
             }
             Payload::Edit { id, text } => match self.changeable_by(gid, &id, &from, "chat.edit")? {
@@ -351,6 +371,17 @@ impl Session {
                 Ok(_) => refuse(events, "only text can be edited"),
                 Err(why) => refuse(events, why),
             },
+            // Another member's message: an admin or a role that may delete
+            // (any age), APP_PROTOCOL.md 9.2.
+            Payload::Delete { id }
+                if self.client.message(gid, &id)?.is_some_and(|m| m.sender != from.to_hex() && !m.deleted)
+                    && self.member_may(gid, &from, tree_core::group_settings::perm::DELETE)? =>
+            {
+                let author = self.client.message(gid, &id)?.map(|m| m.sender);
+                self.client.delete_message(gid, &id)?;
+                self.log_admin(gid, &from, "delete", author, Some(id.clone()))?;
+                events.push(Event::Deleted { group: gid.to_vec(), id, from });
+            }
             Payload::Delete { id } => match self.changeable_by(gid, &id, &from, "chat.delete_for_all")? {
                 Ok(_) => {
                     self.client.delete_message(gid, &id)?;
@@ -381,7 +412,14 @@ impl Session {
                     _ => refuse(events, "reaction to an unknown message"),
                 }
             }
-            Payload::File(file) => {
+            Payload::File(mut file) => {
+                file.topic = match self.receive_topic(gid, &from, file.topic.take())? {
+                    Ok(t) => t,
+                    Err(why) => {
+                        refuse(events, why);
+                        return Ok(());
+                    }
+                };
                 if !self.chat_allows(gid, "chat.media")? {
                     refuse(events, "attachments are released in this group (chat.media)");
                     return Ok(());
@@ -413,6 +451,9 @@ impl Session {
                 }
                 self.remember_file(gid, &file)?;
                 self.on_new_message(gid, false)?;
+                if let Some(t) = &file.topic {
+                    self.note_topic_message(gid, t)?;
+                }
                 let auto_download = self.auto_download_allowed(gid, &from, &file)?;
                 events.push(Event::File { group: gid.to_vec(), from, name, file, request, auto_download });
             }

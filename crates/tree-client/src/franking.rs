@@ -158,7 +158,7 @@ mod tests {
         alice.invite(&g, bob.account_id()).unwrap();
         bob.sync(0).unwrap();
         let to = alice.other_devices(&g).unwrap();
-        let raw = Payload::Text { id: "00".repeat(16), text: "not franked".into(), fmt: false, mentions: vec![], all: false, preview: None, silent: false, fwd: false };
+        let raw = Payload::Text { id: "00".repeat(16), text: "not franked".into(), fmt: false, mentions: vec![], all: false, preview: None, silent: false, fwd: false, topic: None };
         alice.send_encoded(&g, &to, &raw.encode()).unwrap();
         let ev = bob.sync(0).unwrap();
         assert!(ev.iter().any(|e| matches!(e, Event::Dropped { reason } if reason == "unfranked message")), "{ev:?}");

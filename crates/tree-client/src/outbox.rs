@@ -143,6 +143,11 @@ impl Session {
         if !self.group(gid)?.is_member() {
             return Err(Error::Usage("this device is not a member of the group".into()));
         }
+        // Restricted members and slow mode (`groups.rs`).
+        let slow = self.check_sendable(gid, p)?;
+        if slow {
+            self.note_slow_send(gid)?;
+        }
         let to = self.other_devices(gid)?;
         if to.is_empty() && upload.is_none() {
             local(self)?;

@@ -6,10 +6,14 @@
 //! Apps only draw screens; everything a client must do correctly lives here
 //! or in `tree-core`.
 
+pub mod admin_log;
 pub mod api;
 pub mod chat_events;
+pub mod community;
 pub mod forward;
 pub mod franking;
+pub mod groups;
+pub mod history_share;
 pub mod invites;
 pub mod link;
 pub mod links;
@@ -31,6 +35,7 @@ pub mod schedule;
 pub mod settings;
 pub mod stickers;
 pub mod storage_clean;
+pub mod topics;
 pub mod username;
 
 pub use requests::GroupStatus;
@@ -203,6 +208,24 @@ pub enum Event {
     /// A member set (or `removed`) its profile photo in this group;
     /// [`Session::member_photo`] fetches it.
     ProfilePhoto { group: Vec<u8>, member: MemberId, removed: bool },
+    /// This device just joined a group whose admins set a welcome text
+    /// (`chat.welcome`); it is also a `welcome` line in the history.
+    Welcome { group: Vec<u8>, text: String },
+    /// The member that added this device shared `count` recent messages
+    /// (`chat.history_share`); their authors are that member's claims.
+    HistoryShared { group: Vec<u8>, by: MemberId, count: u32 },
+    /// Someone used one of this device's invite links and waits for an
+    /// admin's approval (`chat.join_approval`).
+    JoinRequest { group: Vec<u8>, account: String },
+    /// A message from `member` broke slow mode and was hidden (shown to
+    /// admins only, `chat.slow_mode`).
+    SlowModeHidden { group: Vec<u8>, member: MemberId },
+    /// A topic was created or changed (`id` empty: several, from a topic
+    /// list); read them again with [`Session::topics`].
+    TopicChanged { group: Vec<u8>, id: String, from: MemberId },
+    /// This admin device added `member` to `group` at its request through
+    /// the community `community`.
+    CommunityMemberAdded { community: Vec<u8>, group: Vec<u8>, member: MemberId },
 }
 
 /// Recovery as the server has it (PROTOCOL.md 8.6).
@@ -366,6 +389,9 @@ pub struct Session {
     /// A device link this device scanned and has not finished.
     link: Option<link::ExistingLink>,
     media: media::MediaState,
+    /// The server's arrival time (whole minutes) of the message being
+    /// handled, if it came from the mailbox now (slow mode, `groups.rs`).
+    server_time: Option<i64>,
 }
 
 impl Session {
@@ -424,7 +450,7 @@ impl Session {
 
     pub(crate) fn from_parts(client: Client<StoredProvider>, api: Api, creds: Creds, path: &str) -> Self {
         let media = media::MediaState::new(path);
-        Self { client, api, creds, groups: HashMap::new(), refresh_policy: Default::default(), link: None, media }
+        Self { client, api, creds, groups: HashMap::new(), refresh_policy: Default::default(), link: None, media, server_time: None }
     }
 
     /// Opens an existing profile and resubmits any commit that was waiting
@@ -551,11 +577,18 @@ impl Session {
         let accounts = self.map(&accounts_key(gid))?;
         let ids = self.group(gid)?.members();
         let name_of = |id: &MemberId| names.get(&id.to_hex()).cloned();
+        // Counted once (not per member: groups have up to 1,000 members).
+        let mut uses: HashMap<String, usize> = HashMap::new();
+        for id in &ids {
+            if let Some(n) = name_of(id) {
+                *uses.entry(n).or_default() += 1;
+            }
+        }
         Ok(ids
             .iter()
             .map(|id| {
                 let name = name_of(id);
-                let duplicate_name = name.is_some() && ids.iter().filter(|o| name_of(o) == name).count() > 1;
+                let duplicate_name = name.as_ref().is_some_and(|n| uses.get(n).copied().unwrap_or(0) > 1);
                 MemberInfo {
                     id: *id,
                     device: roster.get(&id.to_hex()).cloned(),
@@ -803,7 +836,10 @@ impl Session {
     /// [`Session::invite`], naming the nonce (hex) of the account's invite
     /// link request.
     pub(crate) fn invite_via(&mut self, gid: &[u8], account_id: &str, link: Option<String>) -> Result<(CommitOutcome, Vec<Event>), Error> {
-        self.group(gid)?;
+        // Before key packages are claimed (spent): `chat.member_adds`.
+        if !self.may_add(gid)? {
+            return Err(Error::Feature("NOT_ADMIN".into()));
+        }
         let claimed = self.api.claim(&self.creds, account_id)?;
         if claimed.is_empty() {
             return Err(Error::Usage("that account has no key packages left".into()));
@@ -863,6 +899,8 @@ impl Session {
     /// again (or reopen) to resubmit the same bytes.
     pub fn submit(&mut self, gid: &[u8]) -> Result<CommitOutcome, Error> {
         let p: PendingCommit = self.group(gid)?.pending_commit().ok_or_else(|| Error::Usage("nothing pending".into()))?;
+        // The settings before the commit, for the admin log.
+        let before = self.group(gid)?.settings();
         let extra: PendingExtra = match self.client.app_data(&pending_key(gid))? {
             Some(v) => serde_json::from_slice(&v).map_err(|_| Error::Protocol("damaged pending data".into()))?,
             None => PendingExtra::default(),
@@ -897,6 +935,8 @@ impl Session {
         }
         let epoch = self.with(gid, |g, c| g.confirm_commit(c))?;
         self.note_departures(gid, &p.removed)?;
+        let me = self.member_id();
+        self.log_commit(gid, &me, &before, &p.added, &p.removed)?;
         let mut roster = self.roster(gid)?;
         for id in &p.removed {
             roster.remove(&id.to_hex());
@@ -914,6 +954,10 @@ impl Session {
             accounts.retain(|m, _| members.contains(m));
             self.save_map(&accounts_key(gid), &accounts)?;
             self.send_payload(gid, &Payload::Roster { devices: roster, names, accounts, link: extra.link.clone() })?;
+            // Topic names and recent history for the new members (best
+            // effort: the add itself is done).
+            let _ = self.send_topic_list(gid);
+            let _ = self.share_history(gid, &p.added);
         }
         Ok(CommitOutcome::Accepted { epoch })
     }
@@ -974,8 +1018,11 @@ impl Session {
     }
 
 
-    /// Asks the others to remove this device (PROTOCOL.md 6.5).
+    /// Asks the others to remove this device (PROTOCOL.md 6.5). The
+    /// group's only admin first names the next one
+    /// (`chat.owner_succession`, `groups.rs`).
     pub fn leave(&mut self, gid: &[u8]) -> Result<usize, Error> {
+        self.hand_over(gid)?;
         self.send_payload(gid, &Payload::Leave { quiet: false })
     }
 
@@ -983,6 +1030,7 @@ impl Session {
     /// store no "left" line for this removal. The member list still changes
     /// for everyone (MLS), and a modified app could still announce it.
     pub fn leave_quietly(&mut self, gid: &[u8]) -> Result<usize, Error> {
+        self.hand_over(gid)?;
         self.send_payload(gid, &Payload::Leave { quiet: true })
     }
 
@@ -1001,12 +1049,15 @@ impl Session {
     /// that are due ([`Session::send_pending`]).
     pub fn sync(&mut self, wait: u64) -> Result<Vec<Event>, Error> {
         self.client.purge_expired_messages(messages::now())?;
-        let msgs = self.api.fetch(&self.creds, wait)?;
+        let msgs = self.api.fetch_timed(&self.creds, wait)?;
         let mut events = Vec::new();
         let mut ids = Vec::new();
         let mut moved = false;
-        for (id, body) in msgs {
-            moved |= self.handle_durably(&body, &mut events, true)?;
+        for (id, body, at) in msgs {
+            self.server_time = Some(at);
+            let r = self.handle_durably(&body, &mut events, true);
+            self.server_time = None;
+            moved |= r?;
             ids.push(id);
         }
         self.api.ack(&self.creds, &ids)?;
@@ -1047,9 +1098,12 @@ impl Session {
                         self.groups.insert(gid.clone(), g);
                         self.init_group_maps(&gid)?;
                         self.note_joined(&gid)?;
+                        self.set_time(&history_share::joined_key(&gid), messages::now())?;
                         self.client.set_app_data(&announce_key(&gid), Some(b"1"))?;
                         self.set_group_status(&gid, &GroupStatus::Request { from: None })?;
-                        events.push(Event::Joined { group: gid });
+                        self.accept_if_asked(&gid)?;
+                        events.push(Event::Joined { group: gid.clone() });
+                        self.on_joined(&gid, events)?;
                         Ok(true)
                     }
                     Err(e) => {
@@ -1058,18 +1112,21 @@ impl Session {
                     }
                 };
             }
-            Some(Peek::Envelope { group_id, .. }) => group_id,
+            Some(Peek::Envelope { group_id, kind, .. }) => (group_id, kind),
             None => {
                 events.push(Event::Dropped { reason: "not a Tree message".into() });
                 return Ok(false);
             }
         };
+        let (gid, kind) = gid;
         if !self.client.group_ids()?.contains(&gid) {
             return self.hold(body, events, may_hold, "unknown group");
         }
         if self.group_status(&gid)? == GroupStatus::Declined {
             return Ok(false); // ignored after declining
         }
+        // The settings before a commit, for the admin log.
+        let before = if kind == tree_core::wire::Kind::Commit { Some(self.group(&gid)?.settings()) } else { None };
         self.group(&gid)?;
         let incoming = self.groups.get_mut(&gid).expect("loaded").receive(&self.client, body);
         match incoming {
@@ -1077,8 +1134,11 @@ impl Session {
                 self.on_payload(&gid, from, &body, events)?;
                 Ok(false)
             }
-            Ok(Incoming::GroupChanged { added, removed, epoch, own_commit_discarded, settings_changed }) => {
+            Ok(Incoming::GroupChanged { added, removed, epoch, own_commit_discarded, settings_changed, by }) => {
                 self.note_departures(&gid, &removed)?;
+                if let Some(before) = &before {
+                    self.log_commit(&gid, &by, before, &added, &removed)?;
+                }
                 let mut roster = self.roster(&gid)?;
                 let mut names = self.names(&gid)?;
                 for m in &removed {
@@ -1132,6 +1192,12 @@ impl Session {
             }
             other => (other, None),
         };
+        // Restricted members and slow mode (`groups.rs`).
+        if let Some(p) = &payload {
+            if !self.gate(gid, &from, p, events)? {
+                return Ok(());
+            }
+        }
         match payload {
             Some(
                 p @ (Payload::Text { .. }
@@ -1162,6 +1228,10 @@ impl Session {
             Some(p @ (Payload::Pin { .. } | Payload::Poll(_) | Payload::Vote { .. } | Payload::PollClose { .. })) => {
                 self.on_rich(gid, from, p, franking, events)?
             }
+            Some(Payload::Topic { id, name, closed }) => self.on_topic(gid, from, id, name, closed, events)?,
+            Some(Payload::Topics { list }) => self.on_topic_list(gid, from, list, events)?,
+            Some(Payload::History { to, msgs }) => self.on_history(gid, from, to, msgs, events)?,
+            Some(Payload::JoinChat { chat, account }) => self.on_join_chat(gid, from, chat, account, events)?,
             Some(Payload::Roster { devices, names, accounts, link }) => {
                 // Only entries for current members are taken; names only as
                 // hints where the member has not announced its own.
@@ -1213,6 +1283,14 @@ impl Session {
                 // The roster's sender added us if we are still a request.
                 // Another device of this account (known from a confirmed
                 // device link, PROTOCOL.md 8.11) adds us to its own groups.
+                // The first roster after joining comes from the member that
+                // added this device (history sharing trusts only it).
+                if self.client.app_data(&history_share::adder_key(gid))?.is_none()
+                    && self.client.app_data(&history_share::joined_key(gid))?.is_some()
+                    && from != self.member_id()
+                {
+                    self.client.set_app_data(&history_share::adder_key(gid), Some(from.to_hex().as_bytes()))?;
+                }
                 if self.own_members()?.contains(&from.to_hex()) {
                     if matches!(self.group_status(gid)?, GroupStatus::Request { .. }) {
                         self.set_group_status(gid, &GroupStatus::Accepted)?;

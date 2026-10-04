@@ -157,6 +157,7 @@ mod tests {
             height: None,
             thumb: None,
             fwd: false,
+            topic: None,
         };
         assert_eq!(cache_name(&f), "etcpasswd.JPG");
     }

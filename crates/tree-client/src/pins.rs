@@ -93,11 +93,12 @@ impl Session {
         self.save_pins(gid, &v)
     }
 
-    /// May this device pin in the chat (`chat.pins` applied, and an admin
-    /// or one of two members)? Apps show the pin action only then.
+    /// May this device pin in the chat (`chat.pins` applied, and an admin,
+    /// a role with `pin`, or one of two members)? Apps show the pin action
+    /// only then.
     pub fn may_pin(&mut self, gid: &[u8]) -> Result<bool, Error> {
         let me = self.member_id();
-        Ok(self.chat_on(gid, "chat.pins")? && self.may_moderate(gid, &me)?)
+        Ok(self.chat_on(gid, "chat.pins")? && (self.may_moderate(gid, &me)? || self.may(gid, tree_core::group_settings::perm::PIN)?))
     }
 
     /// Pins message `id` for everyone, for `ttl` seconds (one of
@@ -117,7 +118,7 @@ impl Session {
             return Err(Error::Feature("LOCKED_BY_CHAT".into()));
         }
         let me = self.member_id();
-        if !self.may_moderate(gid, &me)? {
+        if !self.may_moderate(gid, &me)? && !self.may(gid, tree_core::group_settings::perm::PIN)? {
             return Err(Error::Feature("NOT_ADMIN".into()));
         }
         if !valid_ttl(ttl) {
@@ -135,6 +136,7 @@ impl Session {
         }
         let p = Payload::Pin { id: id.into(), ttl, remove };
         self.queue_payload(gid, &p, None, |s| s.apply_pin(gid, id, &me, ttl, remove))?;
+        self.log_admin(gid, &me, if remove { "unpin" } else { "pin" }, Some(id.to_string()), None)?;
         Ok(())
     }
 
@@ -177,7 +179,7 @@ impl Session {
         let drop = |events: &mut Vec<Event>, why: &str| events.push(Event::Dropped { reason: why.to_string() });
         if !self.chat_on(gid, "chat.pins")? {
             drop(events, "pins are released in this group (chat.pins)");
-        } else if !self.may_moderate(gid, &from)? {
+        } else if !self.may_moderate(gid, &from)? && !self.member_may(gid, &from, tree_core::group_settings::perm::PIN)? {
             drop(events, "only admins pin in this group");
         } else if !valid_ttl(ttl) {
             drop(events, "malformed pin");
@@ -185,6 +187,7 @@ impl Session {
             drop(events, "pin of an unknown message");
         } else {
             self.apply_pin(gid, &id, &from, ttl, remove)?;
+            self.log_admin(gid, &from, if remove { "unpin" } else { "pin" }, Some(id.clone()), None)?;
             events.push(Event::Pinned { group: gid.to_vec(), id, from, pinned: !remove });
         }
         Ok(())

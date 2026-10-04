@@ -29,6 +29,9 @@ use crate::{
 pub struct Group {
     pub(crate) mls: MlsGroup,
     pub(crate) state: GroupState,
+    /// Member ids of the current epoch (hashing every signature key again
+    /// for each settings lookup is O(n) per message in large groups).
+    members: std::cell::RefCell<Option<(u64, std::sync::Arc<Vec<MemberId>>)>>,
 }
 
 /// Identifies a member (one device) of a group:
@@ -115,8 +118,9 @@ pub enum Incoming {
     /// the same epoch, it lost and was discarded (`own_commit_discarded`);
     /// decide again in the new epoch.
     /// `settings_changed`: an admin changed the group settings (admins, name,
-    /// chat features); read them with [`Group::settings`].
-    GroupChanged { added: Vec<MemberId>, removed: Vec<MemberId>, epoch: u64, own_commit_discarded: bool, settings_changed: bool },
+    /// chat features); read them with [`Group::settings`]. `by`: the
+    /// committer, as MLS authenticated it.
+    GroupChanged { added: Vec<MemberId>, removed: Vec<MemberId>, epoch: u64, own_commit_discarded: bool, settings_changed: bool, by: MemberId },
     /// Our pending commit came back from the server, so it was accepted and
     /// is now merged (same as [`Group::confirm_commit`]).
     OwnCommitMerged { epoch: u64 },
@@ -140,7 +144,7 @@ impl Group {
     const TAG_LEN: usize = 32;
 
     pub(crate) fn new(mls: MlsGroup, state: GroupState) -> Self {
-        Self { mls, state }
+        Self { mls, state, members: Default::default() }
     }
 
     pub(crate) fn sender_ratchet() -> SenderRatchetConfiguration {
@@ -162,7 +166,32 @@ impl Group {
 
     /// Current members in leaf order.
     pub fn members(&self) -> Vec<MemberId> {
-        self.mls.members().map(|m| MemberId::of(&m.signature_key)).collect()
+        self.member_list().to_vec()
+    }
+
+    /// [`Group::members`], computed once per epoch.
+    fn member_list(&self) -> std::sync::Arc<Vec<MemberId>> {
+        let epoch = self.epoch();
+        let mut cache = self.members.borrow_mut();
+        match &*cache {
+            Some((e, v)) if *e == epoch => v.clone(),
+            _ => {
+                let v = std::sync::Arc::new(self.mls.members().map(|m| MemberId::of(&m.signature_key)).collect::<Vec<_>>());
+                *cache = Some((epoch, v.clone()));
+                v
+            }
+        }
+    }
+
+    /// The member who becomes admin when the last admin leaves
+    /// (`chat.owner_succession`, PROTOCOL.md 6.11.1): the member in the
+    /// lowest leaf, other than `leaving` and not restricted at `now`. MLS
+    /// puts each added device into the leftmost free leaf, so this is the
+    /// longest-standing member unless a removal freed an earlier leaf. Every
+    /// device computes the same answer from the same tree.
+    pub fn successor(&self, leaving: &[MemberId], now: i64) -> Option<MemberId> {
+        let s = self.settings();
+        self.member_list().iter().find(|m| !leaving.contains(m) && s.restricted_until(m, now).is_none()).copied()
     }
 
     /// The group settings every member agrees on (PROTOCOL.md 6.11). Admins
@@ -171,10 +200,7 @@ impl Group {
     /// first settings: the lock holds anyway); unknown options read as the
     /// default.
     pub fn settings(&self) -> GroupSettings {
-        let mut s = settings_of(self.mls.extensions()).unwrap_or_default().effective();
-        let members = self.members();
-        s.admins.retain(|a| members.contains(a));
-        s
+        settings_of(self.mls.extensions()).unwrap_or_default().effective().only_members(&self.member_list())
     }
 
     pub fn is_admin(&self, m: &MemberId) -> bool {
@@ -238,6 +264,9 @@ impl Group {
     ) -> Result<PendingCommit, TreeError> {
         if key_packages.is_empty() {
             return Err(TreeError::Group("nothing to add".into()));
+        }
+        if !self.settings().may_add(&me.member_id()) {
+            return Err(TreeError::NotAdmin);
         }
         let kps = key_packages
             .iter()
@@ -506,6 +535,10 @@ impl Group {
                 if (changes_settings || removes_others) && !before.is_admin(&committer_id) {
                     return Err(TreeError::Rejected("only an admin may change settings or remove members".into()));
                 }
+                // `chat.member_adds` released: admins and roles with `add` only.
+                if staged.add_proposals().next().is_some() && !before.may_add(&committer_id) {
+                    return Err(TreeError::Rejected("only admins and roles with the add permission may add members here".into()));
+                }
                 let new_members: Vec<MemberId> = {
                     let gone: Vec<LeafNodeIndex> = staged.remove_proposals().map(|p| p.remove_proposal().removed()).collect();
                     let mut v: Vec<MemberId> = self.mls.members().filter(|m| !gone.contains(&m.index)).map(|m| MemberId::of(&m.signature_key)).collect();
@@ -538,7 +571,14 @@ impl Group {
                 if !self.mls.is_active() {
                     return Ok(Incoming::RemovedFromGroup);
                 }
-                Ok(Incoming::GroupChanged { added: added_ids, removed, epoch: self.epoch(), own_commit_discarded, settings_changed })
+                Ok(Incoming::GroupChanged {
+                    added: added_ids,
+                    removed,
+                    epoch: self.epoch(),
+                    own_commit_discarded,
+                    settings_changed,
+                    by: committer_id,
+                })
             }
             ProcessedMessageContent::OwnPrivateMessage => Ok(Incoming::OwnEcho),
             _ => Err(TreeError::Rejected("message type not accepted in Tree v1".into())),

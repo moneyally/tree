@@ -463,13 +463,12 @@ pub async fn ack_ids(
             "message cursor cannot move backwards",
         ));
     }
-    let max_seq: i64 = sqlx::query(
-        "SELECT COALESCE(MAX(seq), 0) AS max_seq FROM deliveries WHERE device_id = ?",
-    )
-    .bind(device_id)
-    .fetch_one(&mut *tx)
-    .await?
-    .try_get("max_seq")?;
+    let max_seq: i64 =
+        sqlx::query("SELECT COALESCE(MAX(seq), 0) AS max_seq FROM deliveries WHERE device_id = ?")
+            .bind(device_id)
+            .fetch_one(&mut *tx)
+            .await?
+            .try_get("max_seq")?;
     if requested_cursor > max_seq {
         return Err(ApiError::conflict(
             "CURSOR_RANGE",

@@ -17,6 +17,11 @@ async fn websocket_requires_signed_upgrade_and_delivers_ciphertext_until_ack() {
     let alice = api.signup().await;
     let bob = api.signup().await;
 
+    // Establish the server-side group roster before testing message delivery.
+    // The WebSocket test uses a synthetic envelope, so the transport fixture
+    // must still satisfy the server's real membership gate.
+    api.seed_fake_group(&alice, &[&bob]).await;
+
     // A plain HTTP request is not a WebSocket upgrade and is correctly
     // rejected as malformed before authentication is evaluated. To test the
     // authentication boundary itself, send a real unsigned WebSocket
@@ -24,7 +29,9 @@ async fn websocket_requires_signed_upgrade_and_delivers_ciphertext_until_ack() {
     let unsigned = format!("ws://{}/v1/ws", ts.server.addr)
         .into_client_request()
         .unwrap();
-    let err = tokio_tungstenite::connect_async(unsigned).await.unwrap_err();
+    let err = tokio_tungstenite::connect_async(unsigned)
+        .await
+        .unwrap_err();
     match err {
         tokio_tungstenite::tungstenite::Error::Http(response) => {
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED);

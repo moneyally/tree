@@ -691,7 +691,8 @@ impl Group {
                 last_edit_seq: seq,
             });
             Ok(())
-        })
+        })?;
+        Ok(envelope)
     }
 
     pub fn edit_message<P: TreeProvider>(

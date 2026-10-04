@@ -140,6 +140,21 @@ async fn real_clients_chat_through_server_and_removed_device_is_locked_out() {
         .await;
 
     let mut c = charlie.join(p2.welcome.as_ref().unwrap()).unwrap();
+
+    // The server also retains Charlie's welcome because the test joins from
+    // the in-memory welcome. Consume that mailbox copy before later commits.
+    let charlie_welcome_msgs = api.fetch(&charlie_net, 0).await;
+    assert_eq!(charlie_welcome_msgs.len(), 1);
+    assert_eq!(
+        unb64(charlie_welcome_msgs[0]["body"].as_str().unwrap()),
+        p2.welcome.as_ref().unwrap().as_slice()
+    );
+    api.ack(
+        &charlie_net,
+        &[charlie_welcome_msgs[0]["id"].as_str().unwrap()],
+    )
+    .await;
+
     let cmsg = c.send(&charlie, b"charlie is here").unwrap();
     let (st, v) = api
         .send_raw(

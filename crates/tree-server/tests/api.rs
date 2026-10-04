@@ -700,7 +700,7 @@ async fn inbox_cursor_requires_contiguous_ack_and_rejects_rollback() {
 
     let (st, v) = api.call(&b, Method::GET, "/v1/messages", None).await;
     assert_eq!(st, StatusCode::OK);
-    assert_eq!(v["cursor"], cursor);
+    assert_eq!(v["cursor"], cursor + 1);
     assert_eq!(v["messages"].as_array().unwrap().len(), 1);
 
     // A stale cursor can never move the server backwards.

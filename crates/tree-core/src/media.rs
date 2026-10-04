@@ -601,7 +601,8 @@ impl MediaEnvelope {
         if r.take(MEDIA_MESSAGE_MAGIC.len())? != MEDIA_MESSAGE_MAGIC {
             return Err(TreeError::Malformed("not a Tree media message".into()));
         }
-        let manifest = MediaManifest::decode(r.bytes_u16(MAX_MANIFEST)?)?;
+        let manifest_bytes = r.bytes_u16(MAX_MANIFEST)?;
+        let manifest = MediaManifest::decode(&manifest_bytes)?;
         let file_key = MediaKey::from_bytes(r.take(KEY_LEN)?)?;
         let expected = manifest.key_commitment(&file_key)?;
         let received = r.array::<32>()?;

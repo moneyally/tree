@@ -17,7 +17,9 @@ async fn websocket_requires_signed_upgrade_and_delivers_ciphertext_until_ack() {
     let alice = api.signup().await;
     let bob = api.signup().await;
 
-    let unsigned = format!("ws://{}/v1/ws", ts.server.addr);
+    // reqwest performs an HTTP request for the unsigned upgrade check;
+    // the WebSocket scheme is only used by the actual WebSocket client below.
+    let unsigned = format!("http://{}/v1/ws", ts.server.addr);
     let unsigned_resp = reqwest::Client::new().get(unsigned).send().await.unwrap();
     assert_eq!(unsigned_resp.status(), StatusCode::UNAUTHORIZED);
 

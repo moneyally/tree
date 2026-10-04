@@ -43,7 +43,7 @@ pub struct CropRect {
     pub height: u32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ImageAdjustments {
     pub brightness: i16,
     pub contrast: i16,
@@ -53,18 +53,6 @@ pub struct ImageAdjustments {
     pub blur: u8,
 }
 
-impl Default for ImageAdjustments {
-    fn default() -> Self {
-        Self {
-            brightness: 0,
-            contrast: 0,
-            saturation: 0,
-            sharpness: 0,
-            warmth: 0,
-            blur: 0,
-        }
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BrushStyle {
@@ -167,7 +155,7 @@ impl MediaEditPlan {
     }
 
     pub fn set_caption(&mut self, caption: &str) -> Result<(), TreeError> {
-        if caption.as_bytes().len() > MAX_CAPTION_BYTES {
+        if caption.len() > MAX_CAPTION_BYTES {
             return Err(TreeError::FileCrypto("media caption is too long".into()));
         }
         if caption.chars().any(|c| c == '\0') {
@@ -229,7 +217,7 @@ fn validate_edit_operation(op: &EditOperation) -> Result<(), TreeError> {
             }
         }
         EditOperation::AddText(t) => {
-            if t.text.is_empty() || t.text.as_bytes().len() > MAX_OVERLAY_TEXT_BYTES {
+            if t.text.is_empty() || t.text.len() > MAX_OVERLAY_TEXT_BYTES {
                 return Err(TreeError::FileCrypto("text overlay is invalid".into()));
             }
             if t.style.size == 0 || t.style.opacity == 0 {
@@ -1021,6 +1009,14 @@ impl MediaEnvelope {
     pub fn file_key_ref(&self) -> &MediaKey {
         &self.file_key
     }
+    pub fn with_caption(mut self, caption: &str) -> Result<Self, TreeError> {
+        if caption.len() > MAX_CAPTION_BYTES || caption.chars().any(|c| c == '\0') {
+            return Err(TreeError::FileCrypto("media caption is invalid".into()));
+        }
+        self.caption = caption.to_string();
+        Ok(self)
+    }
+
 
     pub fn new(
         media_id: String,

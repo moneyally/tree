@@ -412,7 +412,12 @@ json_body!(AckReq, |_cfg| MAX_ACK_IDS * (ID_LEN + 4) + 256);
 
 /// `POST /v1/messages/ack` — deletes the caller's own messages. Ids that are
 /// not in the caller's mailbox are ignored.
-pub async fn ack_ids(state: &AppState, device_id: &str, ids: &[String]) -> ApiResult<usize> {
+pub async fn ack_ids(
+    state: &AppState,
+    device_id: &str,
+    ids: &[String],
+    cursor: Option<i64>,
+) -> ApiResult<usize> {
     if ids.len() > MAX_ACK_IDS {
         return Err(ApiError::too_large(format!(
             "at most {MAX_ACK_IDS} ids per acknowledgement"
@@ -501,6 +506,12 @@ pub async fn ack(
     State(state): State<AppState>,
     req: Signed<AckReq>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let deleted = ack_ids(&state, &req.device.device_id, &req.body.ids).await?;
+    let deleted = ack_ids(
+        &state,
+        &req.device.device_id,
+        &req.body.ids,
+        req.body.cursor,
+    )
+    .await?;
     Ok(Json(serde_json::json!({ "deleted": deleted })))
 }

@@ -51,7 +51,6 @@ pub struct SyncEvent {
     pub incoming: Incoming,
 }
 
-#[derive(Debug)]
 pub struct Session {
     client: Client<StoredProvider>,
     api: Api,
@@ -168,7 +167,7 @@ impl Session {
             .collect::<Result<_, TreeError>>()?;
 
         let pending = self.with_group(gid, |group| group.add(&self.client, &packages))?;
-        self.submit_pending(gid, pending, added, Vec::new())
+        self.submit_pending(gid, pending, added, BTreeMap::new())
     }
 
     pub fn remove_members(&self, gid: &[u8], members: &[MemberId]) -> Result<CommitOutcome, Error> {
@@ -259,20 +258,15 @@ impl Session {
                     let incoming =
                         self.with_group(&gid, |group| group.receive(&self.client, &body))?;
                     if matches!(incoming, Incoming::HeldForRetry { .. }) {
-                        held.push((server_id, gid));
+                        held.push((server_id.clone(), gid.clone()));
                     } else {
                         ack.push(server_id.clone());
                     }
-                    if let Incoming::Message {
-                        from,
-                        name,
-                        ref body,
-                    } = incoming
-                    {
+                    if let Incoming::Message { from, name, body } = &incoming {
                         let entry = HistoryEntry {
                             group_id: hex::encode(&gid),
                             from: from.to_hex(),
-                            name,
+                            name: name.clone(),
                             body: body.clone(),
                         };
                         self.client.set_app_data(
@@ -408,10 +402,10 @@ impl Session {
                 == Some(hex::encode(Sha256::digest(&pending.commit)).as_str())
         } else {
             self.with_group(gid, |group| group.discard_commit(&self.client))?;
-            return Err(Error::Server(api::Error::Server {
+            return Err(Error::Server {
                 status: reply.status.as_u16(),
                 code: reply.code().to_string(),
-            }));
+            });
         };
 
         if !winner {

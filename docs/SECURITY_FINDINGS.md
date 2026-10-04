@@ -242,3 +242,28 @@ Issues found by testing Tree's own design. Each one has a regression test.
   always acknowledged.
 - **Test:** `push::tests::endpoints_are_checked`, `wakeups_are_contentless_*`,
   `a_damaged_franking_key_is_an_error_not_a_new_key`.
+
+## F-016: a crash could lose a received message (fixed)
+
+- **Found:** 2026-10-04, comparing with another implementation's review.
+- **What:** receiving a message saved the group's new key state in one
+  write and the message in the history in a later one. A crash in between
+  left the message unacknowledged on the server, but its keys were used up,
+  so the redelivered copy could no longer be read: the message was lost.
+- **Severity:** medium (data loss, no confidentiality impact).
+- **Fix:** each mailbox entry is handled inside one savepoint
+  (`Client::begin_batch` / `end_batch`); the entry is acknowledged only
+  after it.
+- **Test:** `batch_is_all_or_nothing` (fails without the batch).
+
+## F-017: a recovery key could block another account's recovery (fixed)
+
+- **Found:** 2026-10-04, mutation testing (part 2).
+- **What:** `POST /v1/recovery/apply` refused a key already active or
+  pending on another account only for delayed changes. An account could set
+  such a key immediately; the other account's pending change then failed on
+  the unique index at every request, and its recovery was stuck.
+- **Severity:** medium (denial of recovery; needs the victim's pending
+  public key, which a thief who started the change has).
+- **Fix:** the check runs on every path.
+- **Test:** `a_key_pending_elsewhere_cannot_be_applied`.

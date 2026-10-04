@@ -90,6 +90,24 @@ pub async fn upload(
     }))
 }
 
+/// DELETE /v1/keypackages — revoke every unused key package of this device.
+///
+/// This is an explicit compromise-recovery primitive: once a device suspects
+/// its local key-package store was copied, it can invalidate every package
+/// still waiting on the server before uploading fresh ones.
+pub async fn revoke_all(
+    State(state): State<AppState>,
+    req: Signed<NoBody>,
+) -> ApiResult<Json<serde_json::Value>> {
+    state.rate_device(&req.device.device_id, 1.0)?;
+    let deleted = sqlx::query("DELETE FROM key_packages WHERE device_id = ?")
+        .bind(&req.device.device_id)
+        .execute(&state.db)
+        .await?
+        .rows_affected();
+    Ok(Json(serde_json::json!({ "revoked": deleted })))
+}
+
 #[derive(Deserialize)]
 pub struct ClaimReq {
     pub account_id: String,

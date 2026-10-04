@@ -8,7 +8,7 @@ use sqlx::Row;
 use crate::auth::{NoBody, Signed};
 use crate::error::{ApiError, ApiResult};
 use crate::util::{b64, b64_exceeds, check_id, unb64};
-use crate::{json_body, AppState};
+use crate::{json_body, social, AppState};
 
 /// Claims cost this many rate-limit tokens on top of the request itself,
 /// so one device cannot quickly drain another account's key packages.
@@ -116,6 +116,12 @@ pub async fn claim(
     req: Signed<ClaimReq>,
 ) -> ApiResult<Json<ClaimResp>> {
     check_id(&req.body.account_id, "account_id")?;
+    if social::is_blocked_pair(&state, &req.device.account_id, &req.body.account_id).await? {
+        return Err(ApiError::forbidden(
+            "BLOCKED",
+            "key package claim blocked by account policy",
+        ));
+    }
     state.rate_device(&req.device.device_id, CLAIM_EXTRA_COST)?;
 
     let devices: Vec<String> =

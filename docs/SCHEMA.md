@@ -171,3 +171,40 @@ CREATE TABLE group_winners (                     -- last 64 accepted commits
 This makes group membership (as device ids) visible in the database; the
 server already sees it through recipient lists (PROTOCOL.md 11). A group's
 rows are deleted by the purge task once none of its devices exists.
+
+
+### 2.2 Stage-1 identity/social tables
+
+The server stores relationship metadata and opaque report evidence:
+
+CREATE TABLE usernames (
+    account_id TEXT PRIMARY KEY,
+    username_hash BLOB NOT NULL UNIQUE
+);
+
+CREATE TABLE blocks (
+    blocker_account_id TEXT,
+    blocked_account_id TEXT,
+    created_at INTEGER,
+    PRIMARY KEY (blocker_account_id, blocked_account_id)
+);
+
+CREATE TABLE message_requests (
+    requester_account_id TEXT,
+    target_account_id TEXT,
+    state TEXT,
+    updated_at INTEGER,
+    PRIMARY KEY (requester_account_id, target_account_id)
+);
+
+CREATE TABLE reports (
+    id TEXT PRIMARY KEY,
+    reporter_device_id TEXT,
+    group_id BLOB,
+    ciphertext BLOB,
+    ciphertext_sha256 BLOB,
+    category TEXT,
+    created_at INTEGER
+);
+
+The clear username is never stored. Report ciphertext remains opaque to the server.

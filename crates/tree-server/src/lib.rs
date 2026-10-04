@@ -15,15 +15,22 @@
 
 pub mod accounts;
 pub mod auth;
+pub mod bots;
 pub mod commits;
 pub mod config;
+pub mod device_links;
 pub mod error;
 pub mod features;
+pub mod files;
+pub mod groups;
 pub mod keypackages;
 pub mod limits;
 pub mod messages;
+pub mod recovery;
+pub mod social;
 pub mod util;
 pub mod wire;
+pub mod ws;
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -36,7 +43,7 @@ use axum::extract::{MatchedPath, Request, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::Response;
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use serde_json::json;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
@@ -61,6 +68,7 @@ pub struct Inner {
     pub replay: ReplayCache,
     pub device_limiter: RateLimiter<String>,
     pub signup_limiter: RateLimiter<[u8; 16]>,
+    pub recovery_limiter: RateLimiter<String>,
     pub waiters: Waiters,
 }
 
@@ -76,6 +84,7 @@ impl AppState {
         Self(Arc::new(Inner {
             device_limiter: RateLimiter::new(cfg.rate_per_sec, cfg.rate_burst),
             signup_limiter: RateLimiter::new(cfg.signup_per_hour / 3600.0, cfg.signup_burst),
+            recovery_limiter: RateLimiter::new(cfg.signup_per_hour / 3600.0, cfg.signup_burst),
             replay: ReplayCache::new(),
             waiters: Waiters::default(),
             db,
@@ -181,12 +190,77 @@ pub fn router(state: AppState) -> Router {
             post(accounts::add_device).get(accounts::list_devices),
         )
         .route("/v1/devices/{device_id}", delete(accounts::remove_device))
+        .route("/v1/device-links", post(device_links::initiate))
+        .route("/v1/device-links/{link_id}", get(device_links::status))
+        .route("/v1/device-links/{link_id}/join", post(device_links::join))
+        .route(
+            "/v1/device-links/{link_id}/confirm",
+            post(device_links::confirm_initiator),
+        )
+        .route(
+            "/v1/device-links/{link_id}/confirm-join",
+            post(device_links::confirm_join),
+        )
         .route("/v1/keypackages", post(keypackages::upload))
+        .route("/v1/groups/{group_id}/devices", get(groups::list_devices))
+        .route(
+            "/v1/username",
+            put(social::set_username).delete(social::delete_username),
+        )
+        .route("/v1/username/{username_hash}", get(social::lookup_username))
+        .route(
+            "/v1/message-requests",
+            get(social::list_message_requests).post(social::create_message_request),
+        )
+        .route(
+            "/v1/message-requests/{requester_account_id}/accept",
+            post(social::accept_message_request),
+        )
+        .route(
+            "/v1/message-requests/{requester_account_id}/reject",
+            post(social::reject_message_request),
+        )
+        .route("/v1/blocks", get(social::list_blocks))
+        .route(
+            "/v1/blocks/{account_id}",
+            post(social::block_account).delete(social::unblock_account),
+        )
+        .route("/v1/reports", post(social::report))
+        .route("/v1/files", post(files::upload))
+        .route("/v1/files/{file_id}", get(files::download))
+        .route("/v1/ws", get(ws::connect))
+        .route("/v1/recovery/setup", post(recovery::setup))
+        .route("/v1/recovery", post(recovery::recover))
         .route("/v1/keypackages/claim", post(keypackages::claim))
         .route("/v1/keypackages/count", get(keypackages::count))
         .route("/v1/messages", post(messages::send).get(messages::fetch))
         .route("/v1/messages/ack", post(messages::ack))
         .route("/v1/commits", post(commits::submit))
+        .route("/v1/bots", post(bots::create).get(bots::list))
+        .route(
+            "/v1/bot/register-device",
+            post(bots::register_gateway_device),
+        )
+        .route("/v1/bot/getMe", get(bots::get_me))
+        .route("/v1/bot/commands", get(bots::bot_commands))
+        .route("/v1/bots/{bot_id}/token", post(bots::issue_token))
+        .route("/v1/bots/{bot_id}/revoke", post(bots::revoke_token))
+        .route(
+            "/v1/bots/{bot_id}",
+            patch(bots::update_metadata).delete(bots::delete),
+        )
+        .route(
+            "/v1/bots/{bot_id}/features/{feature}/apply",
+            post(bots::feature_apply),
+        )
+        .route(
+            "/v1/bots/{bot_id}/features/{feature}/release",
+            post(bots::feature_release),
+        )
+        .route(
+            "/v1/bots/{bot_id}/commands",
+            put(bots::set_commands).get(bots::get_commands),
+        )
         .route("/v1/features", get(features::list))
         .route("/v1/features/{key}/apply", post(features::apply))
         .route("/v1/features/{key}/release", post(features::release))
@@ -238,11 +312,44 @@ async fn log_requests(req: Request, next: Next) -> Response {
 /// Returns the number of bodies removed.
 pub async fn purge_expired(state: &AppState, now: i64) -> Result<u64, sqlx::Error> {
     let cutoff = now - state.cfg.message_ttl_secs as i64;
+
+    // Remove mailbox rows before their shared blob. Otherwise an expired
+    // message becomes invisible to fetch(), but its delivery row still counts
+    // toward the mailbox limit and can permanently fill the mailbox.
+    let expired_deliveries = sqlx::query(
+        "DELETE FROM deliveries
+         WHERE blob_id IN (SELECT id FROM blobs WHERE received_at < ?)",
+    )
+    .bind(cutoff)
+    .execute(&state.db)
+    .await?
+    .rows_affected();
+
     let expired = sqlx::query("DELETE FROM blobs WHERE received_at < ?")
         .bind(cutoff)
         .execute(&state.db)
         .await?
         .rows_affected();
+
+    // Heal any legacy/orphaned delivery rows left by older server versions.
+    let orphaned_deliveries = sqlx::query(
+        "DELETE FROM deliveries
+         WHERE NOT EXISTS (SELECT 1 FROM blobs b WHERE b.id = deliveries.blob_id)",
+    )
+    .execute(&state.db)
+    .await?
+    .rows_affected();
+    let expired_files = sqlx::query("DELETE FROM files WHERE expires_at <= ?")
+        .bind(now)
+        .execute(&state.db)
+        .await?
+        .rows_affected();
+    let expired_device_links =
+        sqlx::query("DELETE FROM device_link_sessions WHERE expires_at <= ? OR used = 1")
+            .bind(now)
+            .execute(&state.db)
+            .await?
+            .rows_affected();
     let orphans = sqlx::query(
         "DELETE FROM blobs WHERE NOT EXISTS (SELECT 1 FROM deliveries d WHERE d.blob_id = blobs.id)",
     )
@@ -254,7 +361,12 @@ pub async fn purge_expired(state: &AppState, now: i64) -> Result<u64, sqlx::Erro
     )
     .execute(&state.db)
     .await?;
-    Ok(expired + orphans)
+    Ok(expired
+        + expired_deliveries
+        + orphaned_deliveries
+        + orphans
+        + expired_files
+        + expired_device_links)
 }
 
 /// A running server.
@@ -298,6 +410,7 @@ pub async fn start(cfg: Config) -> Result<Server, BoxError> {
                 state.replay.prune(util::now_secs());
                 state.device_limiter.prune();
                 state.signup_limiter.prune();
+                state.recovery_limiter.prune();
             }
         }));
     }

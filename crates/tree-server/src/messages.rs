@@ -79,21 +79,60 @@ pub async fn send(
     }
     // Only application messages travel here: commits go through
     // /v1/commits, welcomes only with their commit, proposals not at all.
-    match wire::envelope_header(&bytes) {
-        Ok(h) if h.content_type == wire::APPLICATION => {}
+    let header = match wire::envelope_header(&bytes) {
+        Ok(h) if h.content_type == wire::APPLICATION => h,
         Ok(h) if h.content_type == wire::COMMIT => {
             return Err(ApiError::bad_request("commits must be sent to /v1/commits"))
         }
         Ok(_) => return Err(ApiError::bad_request("proposals are not accepted")),
         Err(_) if wire::is_welcome(&bytes) => {
-            return Err(ApiError::bad_request("welcomes travel only with their commit"))
+            return Err(ApiError::bad_request(
+                "welcomes travel only with their commit",
+            ))
         }
         Err(why) => return Err(ApiError::bad_request(format!("body: {why}"))),
-    }
-    // Fan-out to many mailboxes costs more.
-    state.rate_device(&req.device.device_id, (unique.len() / 100) as f64)?;
+    };
 
+    // Fan-out and membership authorization happen in the same write
+    // transaction. Otherwise a concurrent device removal could race the
+    // membership check and still receive one last unauthorized delivery.
+    state.rate_device(&req.device.device_id, (unique.len() / 100) as f64)?;
     let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
+
+    // The server cannot decrypt the MLS message, but it can enforce that the
+    // authenticated sender and every recipient belong to the same current
+    // server-side group roster. This blocks cross-group mailbox injection.
+    let group_id = header.group_id.to_vec();
+    let sender = &req.device.device_id;
+    let sender_member =
+        sqlx::query("SELECT 1 FROM group_devices WHERE group_id = ? AND device_id = ?")
+            .bind(&group_id)
+            .bind(sender)
+            .fetch_optional(&mut *tx)
+            .await?
+            .is_some();
+    if !sender_member {
+        return Err(ApiError::forbidden(
+            "NOT_ELIGIBLE",
+            "sender is not a member of this group",
+        ));
+    }
+    for recipient in &unique {
+        let member =
+            sqlx::query("SELECT 1 FROM group_devices WHERE group_id = ? AND device_id = ?")
+                .bind(&group_id)
+                .bind(recipient)
+                .fetch_optional(&mut *tx)
+                .await?
+                .is_some();
+        if !member {
+            return Err(ApiError::forbidden(
+                "NOT_ELIGIBLE",
+                "one or more recipients are not members of this group",
+            ));
+        }
+    }
+
     let d = deliver(&mut tx, cfg, &bytes, unique).await?;
     tx.commit().await?;
 
@@ -164,7 +203,11 @@ pub async fn deliver(
             .execute(&mut **tx)
             .await?;
     }
-    Ok(Delivery { delivered, unknown_devices, full_devices })
+    Ok(Delivery {
+        delivered,
+        unknown_devices,
+        full_devices,
+    })
 }
 
 #[derive(Deserialize)]
@@ -188,7 +231,7 @@ pub struct FetchResp {
     pub more: bool,
 }
 
-async fn load(state: &AppState, device_id: &str) -> ApiResult<FetchResp> {
+pub async fn load(state: &AppState, device_id: &str) -> ApiResult<FetchResp> {
     let limit = state.cfg.fetch_limit as i64;
     let rows = sqlx::query(
         "SELECT d.id AS id, b.body AS body, b.received_at AS received_at \
@@ -273,11 +316,7 @@ json_body!(AckReq, |_cfg| MAX_ACK_IDS * (ID_LEN + 4) + 256);
 
 /// `POST /v1/messages/ack` — deletes the caller's own messages. Ids that are
 /// not in the caller's mailbox are ignored.
-pub async fn ack(
-    State(state): State<AppState>,
-    req: Signed<AckReq>,
-) -> ApiResult<Json<serde_json::Value>> {
-    let ids = &req.body.ids;
+pub async fn ack_ids(state: &AppState, device_id: &str, ids: &[String]) -> ApiResult<usize> {
     if ids.len() > MAX_ACK_IDS {
         return Err(ApiError::too_large(format!(
             "at most {MAX_ACK_IDS} ids per acknowledgement"
@@ -287,16 +326,16 @@ pub async fn ack(
         check_id(id, "message id")?;
     }
     if ids.is_empty() {
-        return Ok(Json(serde_json::json!({ "deleted": 0 })));
+        return Ok(0);
     }
-    let ids_json = serde_json::to_string(ids).map_err(|_| ApiError::internal())?;
 
+    let ids_json = serde_json::to_string(ids).map_err(|_| ApiError::internal())?;
     let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
     let blob_ids: Vec<i64> = sqlx::query(
-        "DELETE FROM deliveries WHERE device_id = ? AND id IN (SELECT value FROM json_each(?)) \
+        "DELETE FROM deliveries WHERE device_id = ? AND id IN (SELECT value FROM json_each(?))
          RETURNING blob_id",
     )
-    .bind(&req.device.device_id)
+    .bind(device_id)
     .bind(&ids_json)
     .fetch_all(&mut *tx)
     .await?
@@ -306,7 +345,7 @@ pub async fn ack(
     if !blob_ids.is_empty() {
         let blobs_json = serde_json::to_string(&blob_ids).map_err(|_| ApiError::internal())?;
         sqlx::query(
-            "DELETE FROM blobs WHERE id IN (SELECT value FROM json_each(?)) \
+            "DELETE FROM blobs WHERE id IN (SELECT value FROM json_each(?))
              AND NOT EXISTS (SELECT 1 FROM deliveries d WHERE d.blob_id = blobs.id)",
         )
         .bind(&blobs_json)
@@ -314,5 +353,13 @@ pub async fn ack(
         .await?;
     }
     tx.commit().await?;
-    Ok(Json(serde_json::json!({ "deleted": blob_ids.len() })))
+    Ok(blob_ids.len())
+}
+
+pub async fn ack(
+    State(state): State<AppState>,
+    req: Signed<AckReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let deleted = ack_ids(&state, &req.device.device_id, &req.body.ids).await?;
+    Ok(Json(serde_json::json!({ "deleted": deleted })))
 }

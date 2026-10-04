@@ -10,7 +10,9 @@
 use openmls::prelude::{tls_codec::Deserialize, *};
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_traits::{crypto::OpenMlsCrypto, types::HashType, OpenMlsProvider};
-use tree_core::{Client, DefaultProvider, Group, MemberId, TreeError, TreeProvider, TREE_CIPHERSUITE};
+use tree_core::{
+    Client, DefaultProvider, Group, MemberId, TreeError, TreeProvider, TREE_CIPHERSUITE,
+};
 
 pub const ENVELOPE_LABEL: &str = "tree/envelope/v1";
 pub const TAG_LEN: usize = 32;
@@ -25,7 +27,11 @@ pub struct Added {
 /// commit ordering (a real client waits for acceptance, F-003).
 pub trait Now {
     fn add_now<P: TreeProvider>(&mut self, me: &Client<P>, kp: &[u8]) -> Result<Added, TreeError>;
-    fn remove_now<P: TreeProvider>(&mut self, me: &Client<P>, ids: &[MemberId]) -> Result<Vec<u8>, TreeError>;
+    fn remove_now<P: TreeProvider>(
+        &mut self,
+        me: &Client<P>,
+        ids: &[MemberId],
+    ) -> Result<Vec<u8>, TreeError>;
     fn refresh_now<P: TreeProvider>(&mut self, me: &Client<P>) -> Result<Vec<u8>, TreeError>;
 }
 
@@ -33,9 +39,16 @@ impl Now for Group {
     fn add_now<P: TreeProvider>(&mut self, me: &Client<P>, kp: &[u8]) -> Result<Added, TreeError> {
         let p = self.add(me, &[kp])?;
         self.confirm_commit(me)?;
-        Ok(Added { commit: p.commit, welcome: p.welcome.expect("add has a welcome") })
+        Ok(Added {
+            commit: p.commit,
+            welcome: p.welcome.expect("add has a welcome"),
+        })
     }
-    fn remove_now<P: TreeProvider>(&mut self, me: &Client<P>, ids: &[MemberId]) -> Result<Vec<u8>, TreeError> {
+    fn remove_now<P: TreeProvider>(
+        &mut self,
+        me: &Client<P>,
+        ids: &[MemberId],
+    ) -> Result<Vec<u8>, TreeError> {
         let p = self.remove(me, ids)?;
         self.confirm_commit(me)?;
         Ok(p.commit)
@@ -52,7 +65,10 @@ pub fn two_person_chat() -> (Client, Client, Group, Group) {
     let alice = Client::new("alice").unwrap();
     let bob = Client::new("bob").unwrap();
     let mut a = alice.create_group().unwrap();
-    let w = a.add_now(&alice, &bob.key_package().unwrap()).unwrap().welcome;
+    let w = a
+        .add_now(&alice, &bob.key_package().unwrap())
+        .unwrap()
+        .welcome;
     let b = bob.join(&w).unwrap();
     (alice, bob, a, b)
 }
@@ -73,13 +89,23 @@ impl Insider {
             credential: BasicCredential::new(name.as_bytes().to_vec()).into(),
             signature_key: signer.to_public_vec().into(),
         };
-        Self { provider, signer, credential, group: None }
+        Self {
+            provider,
+            signer,
+            credential,
+            group: None,
+        }
     }
 
     pub fn key_package(&self) -> Vec<u8> {
         use openmls::prelude::tls_codec::Serialize;
         KeyPackage::builder()
-            .build(TREE_CIPHERSUITE, &self.provider, &self.signer, self.credential.clone())
+            .build(
+                TREE_CIPHERSUITE,
+                &self.provider,
+                &self.signer,
+                self.credential.clone(),
+            )
             .unwrap()
             .key_package()
             .tls_serialize_detached()
@@ -88,7 +114,9 @@ impl Insider {
 
     pub fn join(&mut self, welcome: &[u8]) {
         let msg = MlsMessageIn::tls_deserialize_exact(welcome).unwrap();
-        let MlsMessageBodyIn::Welcome(w) = msg.extract() else { panic!("not a welcome") };
+        let MlsMessageBodyIn::Welcome(w) = msg.extract() else {
+            panic!("not a welcome")
+        };
         let cfg = MlsGroupJoinConfig::builder()
             .use_ratchet_tree_extension(true)
             .padding_size(Group::PADDING)
@@ -108,13 +136,18 @@ impl Insider {
     pub fn envelope_key(&mut self) -> Vec<u8> {
         let crypto = self.provider.crypto();
         let g = self.group.as_ref().unwrap();
-        g.export_secret(crypto, ENVELOPE_LABEL, g.group_id().as_slice(), 32).unwrap()
+        g.export_secret(crypto, ENVELOPE_LABEL, g.group_id().as_slice(), 32)
+            .unwrap()
     }
 
     /// Wraps arbitrary bytes in a valid envelope for the insider's epoch.
     pub fn seal(&mut self, body: &[u8]) -> Vec<u8> {
         let key = self.envelope_key();
-        let tag = self.provider.crypto().hmac(HashType::Sha2_256, &key, body).unwrap();
+        let tag = self
+            .provider
+            .crypto()
+            .hmac(HashType::Sha2_256, &key, body)
+            .unwrap();
         let mut out = vec![1u8];
         out.extend_from_slice(&tag.as_slice()[..TAG_LEN]);
         out.extend_from_slice(body);
@@ -124,7 +157,13 @@ impl Insider {
     /// A genuine MLS application message, NOT sealed.
     pub fn raw_message(&mut self, body: &[u8]) -> Vec<u8> {
         let (p, s) = (&self.provider, &self.signer);
-        self.group.as_mut().unwrap().create_message(p, s, body).unwrap().to_bytes().unwrap()
+        self.group
+            .as_mut()
+            .unwrap()
+            .create_message(p, s, body)
+            .unwrap()
+            .to_bytes()
+            .unwrap()
     }
 
     /// A genuine, sealed application message (what an honest client sends).
@@ -142,7 +181,9 @@ impl Insider {
         let g = self.group.as_mut().unwrap();
         let processed = g.process_message(provider, p).unwrap();
         match processed.into_content() {
-            ProcessedMessageContent::StagedCommitMessage(c) => g.merge_staged_commit(provider, *c).unwrap(),
+            ProcessedMessageContent::StagedCommitMessage(c) => {
+                g.merge_staged_commit(provider, *c).unwrap()
+            }
             _ => panic!("expected a commit"),
         }
     }
@@ -166,7 +207,9 @@ pub fn names(g: &Group) -> Vec<String> {
 /// The text of an incoming chat message, if it is one.
 pub fn text(r: &Result<tree_core::Incoming, TreeError>) -> Option<(MemberId, String, Vec<u8>)> {
     match r {
-        Ok(tree_core::Incoming::Message { from, name, body }) => Some((*from, name.clone(), body.clone())),
+        Ok(tree_core::Incoming::Message { from, name, body }) => {
+            Some((*from, name.clone(), body.clone()))
+        }
         _ => None,
     }
 }

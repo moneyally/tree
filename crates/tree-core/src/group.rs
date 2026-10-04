@@ -9,7 +9,7 @@
 //! server and then calls [`Group::confirm_commit`] (accepted) or
 //! [`Group::discard_commit`] (another commit won the epoch).
 
-use std::fmt;
+use std::{collections::HashSet, fmt};
 
 use openmls::prelude::{tls_codec::Deserialize, *};
 use openmls_traits::OpenMlsProvider;
@@ -20,7 +20,9 @@ use zeroize::Zeroizing;
 use crate::{
     client::Client,
     error::{group_err, TreeError},
-    group_state::{GroupState, PastEpoch, Pending},
+    group_state::{GroupState, PastEpoch, Pending, PendingEnvelope},
+    message::{MessageEvent, MessageId, DEFAULT_EDIT_WINDOW_SECS},
+    message_state::{MessageRecord, PendingMutation},
     provider::TreeProvider,
 };
 
@@ -43,7 +45,13 @@ impl MemberId {
 
     /// Member id of the device with this MLS signature public key.
     pub fn of(signature_key: &[u8]) -> Self {
-        Self(Sha256::new().chain_update(Self::LABEL).chain_update(signature_key).finalize().into())
+        Self(
+            Sha256::new()
+                .chain_update(Self::LABEL)
+                .chain_update(signature_key)
+                .finalize()
+                .into(),
+        )
     }
 
     pub fn as_bytes(&self) -> &[u8; 32] {
@@ -100,17 +108,41 @@ pub struct PendingCommit {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Incoming {
     /// A chat message. `from` is authenticated; `name` is not (F-008).
-    Message { from: MemberId, name: String, body: Vec<u8> },
+    Message {
+        from: MemberId,
+        name: String,
+        body: Vec<u8>,
+    },
     /// Another member's commit was merged: members joined, were removed, or
     /// someone refreshed their keys. If this device had a pending commit for
     /// the same epoch, it lost and was discarded (`own_commit_discarded`);
     /// decide again in the new epoch.
-    GroupChanged { added: Vec<Member>, removed: Vec<Member>, epoch: u64, own_commit_discarded: bool },
+    GroupChanged {
+        added: Vec<Member>,
+        removed: Vec<Member>,
+        epoch: u64,
+        own_commit_discarded: bool,
+    },
     /// Our pending commit came back from the server, so it was accepted and
     /// is now merged (same as [`Group::confirm_commit`]).
     OwnCommitMerged { epoch: u64 },
     /// This device was removed; it can no longer read or send.
     RemovedFromGroup,
+    /// A future-epoch envelope was held locally until the corresponding commit arrives.
+    HeldForRetry { epoch: u64 },
+    /// The group's E2E settings changed through an authenticated control message.
+    SettingsChanged {
+        seq: u64,
+        title: Option<String>,
+        disappearing_seconds: u32,
+    },
+    /// One or more authenticated structured message events were received.
+    StructuredMessages {
+        events: Vec<(MemberId, MessageEvent)>,
+    },
+    /// A valid encrypted event caused no visible state change (duplicate or
+    /// an out-of-order mutation waiting for its target message).
+    NoOp,
     /// Our own message or already merged commit echoed back; nothing to do.
     OwnEcho,
 }
@@ -128,7 +160,18 @@ impl Group {
     const ENVELOPE_V1: u8 = 1;
     const TAG_LEN: usize = 32;
 
-    pub(crate) fn new(mls: MlsGroup, state: GroupState) -> Self {
+    pub(crate) fn new(mls: MlsGroup, mut state: GroupState) -> Self {
+        if state.admins.is_empty() {
+            if let Some(id) = mls
+                .members()
+                .min_by_key(|m| m.index)
+                .map(|m| MemberId::of(&m.signature_key))
+            {
+                state.admins.push(id);
+            }
+        }
+        state.admins.sort_unstable();
+        state.admins.dedup();
         Self { mls, state }
     }
 
@@ -147,6 +190,103 @@ impl Group {
 
     pub fn is_member(&self) -> bool {
         self.mls.is_active()
+    }
+
+    pub fn title(&self) -> Option<String> {
+        self.state.title.clone()
+    }
+
+    pub fn disappearing_seconds(&self) -> u32 {
+        self.state.disappearing_seconds
+    }
+
+    /// Encrypt a group-settings control message. Only the v1
+    /// administrator may create settings controls.
+    pub fn set_title<P: TreeProvider>(
+        &mut self,
+        me: &Client<P>,
+        title: Option<&str>,
+    ) -> Result<Vec<u8>, TreeError> {
+        if !self.is_admin(me) {
+            return Err(TreeError::Rejected(
+                "only a group administrator may change settings".into(),
+            ));
+        }
+        let title = title.map(str::trim).filter(|s| !s.is_empty());
+        if let Some(title) = title {
+            if title.len() > 128 {
+                return Err(TreeError::Group(
+                    "group title is limited to 128 UTF-8 bytes".into(),
+                ));
+            }
+            if title.chars().any(char::is_control) {
+                return Err(TreeError::Group(
+                    "group title contains control characters".into(),
+                ));
+            }
+        }
+        self.send_control(me, Control::SetTitle(title.map(ToOwned::to_owned)))
+    }
+
+    /// Set the group disappearing timer. Zero disables it; maximum is 30 days.
+    pub fn set_disappearing_seconds<P: TreeProvider>(
+        &mut self,
+        me: &Client<P>,
+        seconds: u32,
+    ) -> Result<Vec<u8>, TreeError> {
+        if seconds > 30 * 86_400 {
+            return Err(TreeError::Group(
+                "disappearing timer is limited to 30 days".into(),
+            ));
+        }
+        if !self.is_admin(me) {
+            return Err(TreeError::Rejected(
+                "only the group administrator may change settings".into(),
+            ));
+        }
+        self.send_control(me, Control::SetDisappearingSeconds(seconds))
+    }
+
+    /// Grant administrator role to a current member.
+    pub fn add_admin<P: TreeProvider>(
+        &mut self,
+        me: &Client<P>,
+        target: MemberId,
+    ) -> Result<Vec<u8>, TreeError> {
+        if !self.is_admin(me) {
+            return Err(TreeError::Rejected(
+                "only a group administrator may change administrators".into(),
+            ));
+        }
+        if !self.members().iter().any(|member| member.id == target) {
+            return Err(TreeError::UnknownMember(target.to_hex()));
+        }
+        if !self.state.admins.contains(&target) && self.state.admins.len() >= 64 {
+            return Err(TreeError::Group("administrator limit reached".into()));
+        }
+        self.send_control(me, Control::AddAdmin(target))
+    }
+
+    /// Remove administrator role. At least one administrator must remain.
+    pub fn remove_admin<P: TreeProvider>(
+        &mut self,
+        me: &Client<P>,
+        target: MemberId,
+    ) -> Result<Vec<u8>, TreeError> {
+        if !self.is_admin(me) {
+            return Err(TreeError::Rejected(
+                "only a group administrator may change administrators".into(),
+            ));
+        }
+        if self.state.admins.contains(&target) && self.state.admins.len() == 1 {
+            return Err(TreeError::Group(
+                "a group must always retain at least one administrator".into(),
+            ));
+        }
+        if !self.members().iter().any(|member| member.id == target) {
+            return Err(TreeError::UnknownMember(target.to_hex()));
+        }
+        self.send_control(me, Control::RemoveAdmin(target))
     }
 
     /// Current members in leaf order.
@@ -180,6 +320,15 @@ impl Group {
 
     // ----- two-phase commits -------------------------------------------------
 
+    /// Returns the encrypted group administrator list.
+    pub fn admins(&self) -> Vec<MemberId> {
+        self.state.admins.clone()
+    }
+
+    pub fn is_admin(&self, me: &Client<impl TreeProvider>) -> bool {
+        self.state.admins.contains(&me.member_id())
+    }
+
     /// Adds devices by their key packages, in one commit. Adding a person
     /// means adding all of their devices at once. The commit carries no
     /// update path (much smaller in large groups); the adder's own key is
@@ -191,6 +340,11 @@ impl Group {
     ) -> Result<PendingCommit, TreeError> {
         if key_packages.is_empty() {
             return Err(TreeError::Group("nothing to add".into()));
+        }
+        if !self.is_admin(me) {
+            return Err(TreeError::Rejected(
+                "only a group administrator may add members".into(),
+            ));
         }
         let kps = key_packages
             .iter()
@@ -206,8 +360,9 @@ impl Group {
             })
             .collect::<Result<Vec<_>, _>>()?;
         self.begin_commit(me, |mls| {
-            let (commit, welcome, _info) =
-                mls.add_members_without_update(&me.provider, &me.signer, &kps).map_err(group_err)?;
+            let (commit, welcome, _info) = mls
+                .add_members_without_update(&me.provider, &me.signer, &kps)
+                .map_err(group_err)?;
             Ok((commit, Some(welcome)))
         })
     }
@@ -223,12 +378,30 @@ impl Group {
         if members.is_empty() {
             return Err(TreeError::Group("nothing to remove".into()));
         }
+        if !self.is_admin(me) {
+            return Err(TreeError::Rejected(
+                "only a group administrator may remove members".into(),
+            ));
+        }
         let own = me.member_id();
         let mut leaves = Vec::new();
         for id in members {
             if *id == own {
                 return Err(TreeError::Group(
                     "a device cannot remove itself; send a leave request instead".into(),
+                ));
+            }
+            if self.state.admins.contains(id)
+                && self
+                    .state
+                    .admins
+                    .iter()
+                    .filter(|admin| *admin != id)
+                    .count()
+                    == 0
+            {
+                return Err(TreeError::Group(
+                    "the last administrator must be transferred before removal".into(),
                 ));
             }
             let index = self
@@ -242,8 +415,9 @@ impl Group {
             }
         }
         self.begin_commit(me, |mls| {
-            let (commit, _welcome, _info) =
-                mls.remove_members(&me.provider, &me.signer, &leaves).map_err(group_err)?;
+            let (commit, _welcome, _info) = mls
+                .remove_members(&me.provider, &me.signer, &leaves)
+                .map_err(group_err)?;
             Ok((commit, None))
         })
     }
@@ -251,10 +425,14 @@ impl Group {
     /// Refreshes this device's keys. Run periodically and after any
     /// suspicion of compromise: an attacker who copied old state loses
     /// access once this commit is merged (post-compromise security).
-    pub fn refresh_keys<P: TreeProvider>(&mut self, me: &Client<P>) -> Result<PendingCommit, TreeError> {
+    pub fn refresh_keys<P: TreeProvider>(
+        &mut self,
+        me: &Client<P>,
+    ) -> Result<PendingCommit, TreeError> {
         self.begin_commit(me, |mls| {
-            let bundle =
-                mls.self_update(&me.provider, &me.signer, LeafNodeParameters::default()).map_err(group_err)?;
+            let bundle = mls
+                .self_update(&me.provider, &me.signer, LeafNodeParameters::default())
+                .map_err(group_err)?;
             Ok((bundle.into_commit(), None))
         })
     }
@@ -271,7 +449,15 @@ impl Group {
             welcome: p.welcome.clone(),
             added: staged
                 .add_proposals()
-                .map(|a| MemberId::of(a.add_proposal().key_package().leaf_node().signature_key().as_slice()))
+                .map(|a| {
+                    MemberId::of(
+                        a.add_proposal()
+                            .key_package()
+                            .leaf_node()
+                            .signature_key()
+                            .as_slice(),
+                    )
+                })
                 .collect(),
             removed: staged
                 .remove_proposals()
@@ -288,18 +474,23 @@ impl Group {
         };
         let hash = sha256(&pending.commit);
         let sealed_in = pending.epoch;
-        me.provider.atomically(|| {
-            let past = self.past_epoch(me)?;
-            let refreshed = self.mls.pending_commit().is_some_and(|s| s.update_path_leaf_node().is_some());
-            self.mls.merge_pending_commit(&me.provider).map_err(group_err)?;
-            self.state.pending = None;
-            self.state.sent.push((sealed_in, hash));
+        self.atomic(me, |this| {
+            let past = this.past_epoch(me)?;
+            let refreshed = this
+                .mls
+                .pending_commit()
+                .is_some_and(|s| s.update_path_leaf_node().is_some());
+            this.mls
+                .merge_pending_commit(&me.provider)
+                .map_err(group_err)?;
+            this.state.pending = None;
+            this.state.sent.push((sealed_in, hash));
             if refreshed {
-                self.state.should_refresh = false;
+                this.state.should_refresh = false;
             }
-            self.entered_new_epoch(past);
-            self.save(me)?;
-            Ok(self.epoch())
+            this.entered_new_epoch(past);
+            this.save(me)?;
+            Ok(this.epoch())
         })
     }
 
@@ -310,10 +501,12 @@ impl Group {
         if self.state.pending.is_none() {
             return Ok(());
         }
-        me.provider.atomically(|| {
-            self.mls.clear_pending_commit(me.provider.storage()).map_err(group_err)?;
-            self.state.pending = None;
-            self.save(me)
+        self.atomic(me, |this| {
+            this.mls
+                .clear_pending_commit(me.provider.storage())
+                .map_err(group_err)?;
+            this.state.pending = None;
+            this.save(me)
         })
     }
 
@@ -330,40 +523,292 @@ impl Group {
             return Err(TreeError::CommitPending);
         }
         let epoch = self.epoch();
-        me.provider.atomically(|| {
+        self.atomic(me, |this| {
             // Tree never stores proposals (F-007); make sure none can be
             // folded into this commit.
-            self.mls.clear_pending_proposals(me.provider.storage()).map_err(group_err)?;
-            let result = build(&mut self.mls).and_then(|(commit, welcome)| {
-                // Sealed with the CURRENT epoch: what the other members hold.
-                let commit = self.seal(me, &commit.to_bytes().map_err(group_err)?)?;
-                let welcome = welcome.map(|w| w.to_bytes().map_err(group_err)).transpose()?;
-                self.state.pending = Some(Pending { epoch, commit, welcome });
-                self.save(me)
+            this.mls
+                .clear_pending_proposals(me.provider.storage())
+                .map_err(group_err)?;
+            let (commit, welcome) = build(&mut this.mls)?;
+            let commit = this.seal(me, &commit.to_bytes().map_err(group_err)?)?;
+            let welcome = welcome
+                .map(|w| w.to_bytes().map_err(group_err))
+                .transpose()?;
+            this.state.pending = Some(Pending {
+                epoch,
+                commit,
+                welcome,
             });
-            if result.is_err() {
-                self.state.pending = None;
-                let _ = self.mls.clear_pending_commit(me.provider.storage());
-            }
-            result
+            this.save(me)
         })?;
         Ok(self.pending_commit().expect("pending commit just stored"))
     }
 
     // ----- application messages ---------------------------------------------
 
+    fn send_control<P: TreeProvider>(
+        &mut self,
+        me: &Client<P>,
+        control: Control,
+    ) -> Result<Vec<u8>, TreeError> {
+        if !self.is_admin(me) || !self.mls.is_active() {
+            return Err(TreeError::NotAMember);
+        }
+        let seq = self
+            .state
+            .last_control_seq
+            .checked_add(1)
+            .ok_or_else(|| TreeError::Group("settings sequence exhausted".into()))?;
+        let bytes = encode_control(seq, &control)?;
+        self.atomic(me, |this| {
+            let out = this
+                .mls
+                .create_message(&me.provider, &me.signer, &bytes)
+                .map_err(group_err)?;
+            let envelope = this.seal(me, &out.to_bytes().map_err(group_err)?)?;
+            let members = this
+                .mls
+                .members()
+                .map(|m| MemberId::of(&m.signature_key))
+                .collect::<Vec<_>>();
+            apply_control_state(&mut this.state, seq, me.member_id(), &control, &members)?;
+            this.state.last_control_seq = seq;
+            this.state.last_control_author = Some(me.member_id());
+            this.save(me)?;
+            Ok(envelope)
+        })
+    }
+
+    /// Sends a structured text message using the group's current disappearing
+    /// timer. The returned id is stable across edits/deletes.
+    pub fn send_message<P: TreeProvider>(
+        &mut self,
+        me: &Client<P>,
+        body: &[u8],
+    ) -> Result<(MessageId, Vec<u8>), TreeError> {
+        self.send_new_message(me, body, self.state.disappearing_seconds, false, None)
+    }
+
+    pub fn send_message_with_options<P: TreeProvider>(
+        &mut self,
+        me: &Client<P>,
+        body: &[u8],
+        ttl_secs: u32,
+        view_once: bool,
+        preview: Option<Vec<u8>>,
+    ) -> Result<(MessageId, Vec<u8>), TreeError> {
+        if ttl_secs > 30 * 86_400 {
+            return Err(TreeError::Group(
+                "disappearing timer is limited to 30 days".into(),
+            ));
+        }
+        self.send_new_message(me, body, ttl_secs, view_once, preview)
+    }
+
+    fn send_new_message<P: TreeProvider>(
+        &mut self,
+        me: &Client<P>,
+        body: &[u8],
+        ttl_secs: u32,
+        view_once: bool,
+        preview: Option<Vec<u8>>,
+    ) -> Result<(MessageId, Vec<u8>), TreeError> {
+        let id = MessageId::generate()?;
+        let seq = self.state.messages.next_outgoing_seq()?;
+        let event = MessageEvent::New {
+            id,
+            seq,
+            sent_at: unix_now(),
+            ttl_secs,
+            view_once,
+            body: body.to_vec(),
+            preview,
+        };
+        let now = unix_now();
+        let author = me.member_id();
+        let envelope = self.send_structured_with_update(me, &event, move |group| {
+            group.state.messages.record_new(MessageRecord {
+                id,
+                author,
+                created_at: now,
+                ttl_secs,
+                view_once,
+                deleted: false,
+                last_edit_seq: seq,
+            });
+            Ok(())
+        })?;
+        Ok((id, envelope))
+    }
+
+    pub fn edit_message<P: TreeProvider>(
+        &mut self,
+        me: &Client<P>,
+        target: MessageId,
+        body: &[u8],
+    ) -> Result<Vec<u8>, TreeError> {
+        let record = self
+            .state
+            .messages
+            .record(target)
+            .ok_or_else(|| TreeError::UnknownMember(target.to_hex()))?;
+        if record.author != me.member_id() {
+            return Err(TreeError::Rejected(
+                "only the message author may edit it".into(),
+            ));
+        }
+        if record.deleted {
+            return Err(TreeError::Rejected(
+                "deleted message cannot be edited".into(),
+            ));
+        }
+        if unix_now().saturating_sub(record.created_at) as u64 > DEFAULT_EDIT_WINDOW_SECS {
+            return Err(TreeError::Rejected(
+                "message edit window has expired".into(),
+            ));
+        }
+        let seq = self.state.messages.next_outgoing_seq()?;
+        let event = MessageEvent::Edit {
+            target,
+            seq,
+            edited_at: unix_now(),
+            body: body.to_vec(),
+        };
+        self.send_structured_with_update(me, &event, |group| {
+            if let Some(record) = group.state.messages.record_mut(target) {
+                record.last_edit_seq = seq;
+            }
+            Ok(())
+        })
+    }
+
+    pub fn delete_message<P: TreeProvider>(
+        &mut self,
+        me: &Client<P>,
+        target: MessageId,
+    ) -> Result<Vec<u8>, TreeError> {
+        let record = self
+            .state
+            .messages
+            .record(target)
+            .ok_or_else(|| TreeError::Group("message is not present in local ledger".into()))?;
+        if record.author != me.member_id() {
+            return Err(TreeError::Rejected(
+                "only the message author may delete it".into(),
+            ));
+        }
+        let seq = self.state.messages.next_outgoing_seq()?;
+        let event = MessageEvent::Delete {
+            target,
+            seq,
+            deleted_at: unix_now(),
+        };
+        self.send_structured_with_update(me, &event, |group| {
+            if let Some(record) = group.state.messages.record_mut(target) {
+                record.deleted = true;
+                record.last_edit_seq = seq;
+            }
+            Ok(())
+        })
+    }
+
+    pub fn react_to_message<P: TreeProvider>(
+        &mut self,
+        me: &Client<P>,
+        target: MessageId,
+        reaction: &str,
+        add: bool,
+    ) -> Result<Vec<u8>, TreeError> {
+        if self.state.messages.record(target).is_none() {
+            return Err(TreeError::Group(
+                "message is not present in local ledger".into(),
+            ));
+        }
+        let seq = self.state.messages.next_outgoing_seq()?;
+        let event = MessageEvent::Reaction {
+            target,
+            seq,
+            reaction: reaction.to_string(),
+            add,
+        };
+        self.send_structured_with_update(me, &event, |_group| Ok(()))
+    }
+
+    pub fn send_read_receipt<P: TreeProvider>(
+        &mut self,
+        me: &Client<P>,
+        target: MessageId,
+    ) -> Result<Vec<u8>, TreeError> {
+        if self.state.messages.record(target).is_none() {
+            return Err(TreeError::Group(
+                "message is not present in local ledger".into(),
+            ));
+        }
+        let seq = self.state.messages.next_outgoing_seq()?;
+        self.send_structured_with_update(
+            me,
+            &MessageEvent::Read {
+                target,
+                seq,
+                read_at: unix_now(),
+            },
+            |_group| Ok(()),
+        )
+    }
+
+    pub fn send_typing<P: TreeProvider>(
+        &mut self,
+        me: &Client<P>,
+        active: bool,
+    ) -> Result<Vec<u8>, TreeError> {
+        let seq = self.state.messages.next_outgoing_seq()?;
+        self.send_structured_with_update(me, &MessageEvent::Typing { seq, active }, |_group| Ok(()))
+    }
+
+    fn send_structured_with_update<P, F>(
+        &mut self,
+        me: &Client<P>,
+        event: &MessageEvent,
+        update: F,
+    ) -> Result<Vec<u8>, TreeError>
+    where
+        P: TreeProvider,
+        F: FnOnce(&mut Self) -> Result<(), TreeError>,
+    {
+        let body = event.encode()?;
+        self.atomic(me, |this| {
+            let out = this
+                .mls
+                .create_message(&me.provider, &me.signer, &body)
+                .map_err(group_err)?;
+            let envelope = this.seal(me, &out.to_bytes().map_err(group_err)?)?;
+            update(this)?;
+            this.save(me)?;
+            Ok(envelope)
+        })
+    }
+
     /// Encrypts a chat message for everyone in the group (in the current
     /// epoch; also while a commit of ours is pending).
-    pub fn send<P: TreeProvider>(&mut self, me: &Client<P>, body: &[u8]) -> Result<Vec<u8>, TreeError> {
+    pub fn send<P: TreeProvider>(
+        &mut self,
+        me: &Client<P>,
+        body: &[u8],
+    ) -> Result<Vec<u8>, TreeError> {
         if !self.mls.is_active() {
             return Err(TreeError::NotAMember);
         }
-        me.provider.atomically(|| {
-            let out = self
+        if body.starts_with(CONTROL_MAGIC) {
+            return Err(TreeError::Rejected(
+                "message body uses a reserved Tree control prefix".into(),
+            ));
+        }
+        self.atomic(me, |this| {
+            let out = this
                 .mls
                 .create_message(&me.provider, &me.signer, body)
                 .map_err(group_err)?;
-            self.seal(me, &out.to_bytes().map_err(group_err)?)
+            this.seal(me, &out.to_bytes().map_err(group_err)?)
         })
     }
 
@@ -373,7 +818,11 @@ impl Group {
     /// (PROTOCOL.md section 6.6). Anything tampered with, replayed, from a
     /// non-member, for another group, a proposal, or a commit for a past
     /// epoch is rejected.
-    pub fn receive<P: TreeProvider>(&mut self, me: &Client<P>, bytes: &[u8]) -> Result<Incoming, TreeError> {
+    pub fn receive<P: TreeProvider>(
+        &mut self,
+        me: &Client<P>,
+        bytes: &[u8],
+    ) -> Result<Incoming, TreeError> {
         if !self.mls.is_active() {
             return Err(TreeError::NotAMember);
         }
@@ -385,31 +834,79 @@ impl Group {
                 return Ok(Incoming::OwnCommitMerged { epoch });
             }
         }
-        if self.state.sent.iter().any(|(_, h)| bool::from(h.ct_eq(&hash))) {
+        if self
+            .state
+            .sent
+            .iter()
+            .any(|(_, h)| bool::from(h.ct_eq(&hash)))
+        {
             return Ok(Incoming::OwnEcho);
         }
+        if self
+            .state
+            .processed
+            .iter()
+            .any(|(_, h)| bool::from(h.ct_eq(&hash)))
+        {
+            return Ok(Incoming::OwnEcho);
+        }
+        let now = unix_now();
 
-        // Checked before anything is written.
-        let (epoch, body) = self.open_envelope(me, bytes)?;
-        let msg = MlsMessageIn::tls_deserialize_exact(body).map_err(|e| TreeError::Malformed(format!("{e:?}")))?;
-        let protocol = msg
-            .try_into_protocol_message()
-            .map_err(|_| TreeError::Malformed("not a group message".into()))?;
-        if protocol.wire_format() != WireFormat::PrivateMessage {
-            return Err(TreeError::Rejected("only private messages are accepted".into()));
-        }
-        if protocol.group_id().as_slice() != self.mls.group_id().as_slice() || protocol.epoch().as_u64() != epoch {
-            return Err(TreeError::Rejected("header does not match the envelope".into()));
-        }
-        match protocol.content_type() {
-            ContentType::Application => {}
-            ContentType::Commit if epoch == self.epoch() => {}
-            ContentType::Commit => return Err(TreeError::Rejected("commit for a past epoch".into())),
-            ContentType::Proposal => {
-                return Err(TreeError::Rejected("proposals are not accepted in Tree v1 (F-007)".into()))
+        // Read only enough of the MLS message to learn its epoch. No MLS
+        // state is touched until the Tree envelope seal is verified.
+        let announced = peek_epoch(bytes, self.mls.group_id().as_slice())?;
+        self.atomic(me, |this| {
+            this.state.prune_future(now);
+            if announced > this.epoch() {
+                if !this
+                    .state
+                    .future
+                    .iter()
+                    .any(|p| bool::from(sha256(&p.bytes).ct_eq(&hash)))
+                {
+                    this.state.future.push(PendingEnvelope {
+                        epoch: announced,
+                        received_at: now,
+                        bytes: bytes.to_vec(),
+                    });
+                    this.state.prune_future(now);
+                    this.save(me)?;
+                }
+                return Ok(Incoming::HeldForRetry { epoch: announced });
             }
-        }
-        me.provider.atomically(|| self.process(me, protocol, epoch))
+
+            let (epoch, body) = this.open_envelope(me, bytes)?;
+            let msg = MlsMessageIn::tls_deserialize_exact(body)
+                .map_err(|e| TreeError::Malformed(format!("{e:?}")))?;
+            let protocol = msg
+                .try_into_protocol_message()
+                .map_err(|_| TreeError::Malformed("not a group message".into()))?;
+            if protocol.wire_format() != WireFormat::PrivateMessage {
+                return Err(TreeError::Rejected(
+                    "only private messages are accepted".into(),
+                ));
+            }
+            if protocol.group_id().as_slice() != this.mls.group_id().as_slice()
+                || protocol.epoch().as_u64() != epoch
+            {
+                return Err(TreeError::Rejected(
+                    "header does not match the envelope".into(),
+                ));
+            }
+            match protocol.content_type() {
+                ContentType::Application => {}
+                ContentType::Commit if epoch == this.epoch() => {}
+                ContentType::Commit => {
+                    return Err(TreeError::Rejected("commit for a past epoch".into()))
+                }
+                ContentType::Proposal => {
+                    return Err(TreeError::Rejected(
+                        "proposals are not accepted in Tree v1 (F-007)".into(),
+                    ))
+                }
+            }
+            this.process(me, protocol, epoch, hash)
+        })
     }
 
     fn process<P: TreeProvider>(
@@ -417,6 +914,7 @@ impl Group {
         me: &Client<P>,
         protocol: ProtocolMessage,
         epoch: u64,
+        hash: [u8; 32],
     ) -> Result<Incoming, TreeError> {
         let processed = self
             .mls
@@ -429,21 +927,91 @@ impl Group {
         match processed.into_content() {
             ProcessedMessageContent::ApplicationMessage(m) => {
                 if !aad_empty {
-                    return Err(TreeError::Rejected("authenticated data must be empty".into()));
+                    return Err(TreeError::Rejected(
+                        "authenticated data must be empty".into(),
+                    ));
                 }
                 let from = self.sender_id(epoch, &sender)?;
-                Ok(Incoming::Message { from, name, body: m.into_bytes() })
+                let body = m.into_bytes();
+                if body.starts_with(crate::message::MESSAGE_MAGIC) {
+                    let event = MessageEvent::decode(&body)?;
+                    let events = self.apply_message_event(from, event)?;
+                    self.mark_processed(epoch, hash);
+                    self.state.future.retain(|p| sha256(&p.bytes) != hash);
+                    self.save(me)?;
+                    return Ok(if events.is_empty() {
+                        Incoming::NoOp
+                    } else {
+                        Incoming::StructuredMessages { events }
+                    });
+                }
+                if body.starts_with(CONTROL_MAGIC) {
+                    if epoch != self.epoch() {
+                        return Err(TreeError::Rejected(
+                            "settings controls from past epochs are not accepted".into(),
+                        ));
+                    }
+                    if !self.state.admins.contains(&from) {
+                        return Err(TreeError::Rejected(
+                            "settings control sender is not an administrator".into(),
+                        ));
+                    }
+                    let control = decode_control(&body)?;
+                    let members = self
+                        .mls
+                        .members()
+                        .map(|m| MemberId::of(&m.signature_key))
+                        .collect::<Vec<_>>();
+                    apply_control_state(
+                        &mut self.state,
+                        control.seq,
+                        from,
+                        &control.control,
+                        &members,
+                    )?;
+                    let tag = (control.seq, from);
+                    if self
+                        .state
+                        .last_control_author
+                        .is_none_or(|author| tag > (self.state.last_control_seq, author))
+                    {
+                        self.state.last_control_seq = control.seq;
+                        self.state.last_control_author = Some(from);
+                    }
+                    self.mark_processed(epoch, hash);
+                    self.state.future.retain(|p| sha256(&p.bytes) != hash);
+                    self.save(me)?;
+                    return Ok(Incoming::SettingsChanged {
+                        seq: control.seq,
+                        title: self.state.title.clone(),
+                        disappearing_seconds: self.state.disappearing_seconds,
+                    });
+                }
+                self.mark_processed(epoch, hash);
+                self.state.future.retain(|p| sha256(&p.bytes) != hash);
+                self.save(me)?;
+                Ok(Incoming::Message { from, name, body })
             }
             ProcessedMessageContent::StagedCommitMessage(staged) => {
                 let Sender::Member(committer) = sender else {
                     return Err(TreeError::Rejected("commit from a non-member".into()));
                 };
                 check_commit(&staged, committer)?;
-                let removed_leaves: Vec<LeafNodeIndex> =
-                    staged.remove_proposals().map(|p| p.remove_proposal().removed()).collect();
+                let removed_leaves: Vec<LeafNodeIndex> = staged
+                    .remove_proposals()
+                    .map(|p| p.remove_proposal().removed())
+                    .collect();
                 let added_ids: Vec<MemberId> = staged
                     .add_proposals()
-                    .map(|p| MemberId::of(p.add_proposal().key_package().leaf_node().signature_key().as_slice()))
+                    .map(|p| {
+                        MemberId::of(
+                            p.add_proposal()
+                                .key_package()
+                                .leaf_node()
+                                .signature_key()
+                                .as_slice(),
+                        )
+                    })
                     .collect();
                 let removed: Vec<Member> = self
                     .members()
@@ -456,18 +1024,40 @@ impl Group {
                 let past = self.past_epoch(me)?;
 
                 // Merging another member's commit also drops our pending one.
-                self.mls.merge_staged_commit(&me.provider, *staged).map_err(group_err)?;
+                self.mls
+                    .merge_staged_commit(&me.provider, *staged)
+                    .map_err(group_err)?;
                 self.state.pending = None;
                 self.entered_new_epoch(past);
+                let current_epoch = self.epoch();
+                self.state.future.retain(|p| p.epoch > current_epoch);
+                self.reconcile_admins();
+                self.mark_processed(epoch, hash);
                 self.save(me)?;
                 if !self.mls.is_active() {
                     return Ok(Incoming::RemovedFromGroup);
                 }
-                let added = self.members().into_iter().filter(|m| added_ids.contains(&m.id)).collect();
-                Ok(Incoming::GroupChanged { added, removed, epoch: self.epoch(), own_commit_discarded })
+                let added = self
+                    .members()
+                    .into_iter()
+                    .filter(|m| added_ids.contains(&m.id))
+                    .collect();
+                Ok(Incoming::GroupChanged {
+                    added,
+                    removed,
+                    epoch: self.epoch(),
+                    own_commit_discarded,
+                })
             }
-            ProcessedMessageContent::OwnPrivateMessage => Ok(Incoming::OwnEcho),
-            _ => Err(TreeError::Rejected("message type not accepted in Tree v1".into())),
+            ProcessedMessageContent::OwnPrivateMessage => {
+                self.mark_processed(epoch, hash);
+                self.state.future.retain(|p| sha256(&p.bytes) != hash);
+                self.save(me)?;
+                Ok(Incoming::OwnEcho)
+            }
+            _ => Err(TreeError::Rejected(
+                "message type not accepted in Tree v1".into(),
+            )),
         }
     }
 
@@ -477,13 +1067,20 @@ impl Group {
             return Err(TreeError::Rejected("message from a non-member".into()));
         };
         let found = if epoch == self.epoch() {
-            self.mls.member_at(*leaf).map(|m| MemberId::of(&m.signature_key))
+            self.mls
+                .member_at(*leaf)
+                .map(|m| MemberId::of(&m.signature_key))
         } else {
             self.state
                 .past
                 .iter()
                 .find(|p| p.epoch == epoch)
-                .and_then(|p| p.members.iter().find(|(l, _)| *l == leaf.u32()).map(|(_, id)| *id))
+                .and_then(|p| {
+                    p.members
+                        .iter()
+                        .find(|(l, _)| *l == leaf.u32())
+                        .map(|(_, id)| *id)
+                })
         };
         found.ok_or_else(|| TreeError::Rejected("unknown sender".into()))
     }
@@ -495,17 +1092,247 @@ impl Group {
         Ok(PastEpoch {
             epoch: self.epoch(),
             envelope_key: self.envelope_key(me)?,
-            members: self.mls.members().map(|m| (m.index.u32(), MemberId::of(&m.signature_key))).collect(),
+            members: self
+                .mls
+                .members()
+                .map(|m| (m.index.u32(), MemberId::of(&m.signature_key)))
+                .collect(),
         })
     }
 
     fn entered_new_epoch(&mut self, left: PastEpoch) {
         self.state.past.insert(0, left);
-        self.state.prune(self.epoch().saturating_sub(Self::PAST_EPOCHS));
+        self.state
+            .prune(self.epoch().saturating_sub(Self::PAST_EPOCHS));
+
+        // Controls created by a member who is no longer in the MLS group
+        // must not permanently outrank later controls from surviving admins.
+        let current: HashSet<MemberId> = self
+            .mls
+            .members()
+            .map(|m| MemberId::of(&m.signature_key))
+            .collect();
+        if self
+            .state
+            .title_tag
+            .is_some_and(|(_, author)| !current.contains(&author))
+        {
+            self.state.title_tag = None;
+        }
+        if self
+            .state
+            .disappearing_tag
+            .is_some_and(|(_, author)| !current.contains(&author))
+        {
+            self.state.disappearing_tag = None;
+        }
+        self.state
+            .admin_tags
+            .retain(|(_, _, author)| current.contains(author));
     }
 
     fn save<P: TreeProvider>(&self, me: &Client<P>) -> Result<(), TreeError> {
-        me.provider.save_group_state(self.mls.group_id().as_slice(), &self.state.encode())
+        let encoded = self.state.encode()?;
+        me.provider
+            .save_group_state(self.mls.group_id().as_slice(), &encoded)
+    }
+
+    /// Runs a group operation transactionally. Stored providers roll the
+    /// database back on error, so reload the MLS and Tree state afterward.
+    fn atomic<P, T, F>(&mut self, me: &Client<P>, op: F) -> Result<T, TreeError>
+    where
+        P: TreeProvider,
+        F: FnOnce(&mut Self) -> Result<T, TreeError>,
+    {
+        let reload = me.provider.reload_group_after_error();
+        let state_before = (!reload).then(|| self.state.clone());
+        let result = me.provider.atomically(|| op(self));
+        if result.is_err() {
+            if reload {
+                let group_id = self.mls.group_id().clone();
+                let mls = MlsGroup::load(me.provider.storage(), &group_id)
+                    .map_err(crate::storage::storage_err)?
+                    .ok_or(TreeError::NoSuchGroup)?;
+                let state = match me.provider.load_group_state(group_id.as_slice())? {
+                    Some(bytes) => GroupState::decode(&bytes)?,
+                    None => GroupState::default(),
+                };
+                self.mls = mls;
+                self.state = state;
+                self.reconcile_admins();
+            } else if let Some(state) = state_before {
+                self.state = state;
+            }
+        }
+        result
+    }
+
+    fn reconcile_admins(&mut self) {
+        let current: Vec<MemberId> = self
+            .mls
+            .members()
+            .map(|m| MemberId::of(&m.signature_key))
+            .collect();
+        self.state.admins.retain(|admin| current.contains(admin));
+        if self.state.admins.is_empty() {
+            if let Some(id) = self
+                .mls
+                .members()
+                .min_by_key(|m| m.index)
+                .map(|m| MemberId::of(&m.signature_key))
+            {
+                self.state.admins.push(id);
+            }
+        }
+        self.state.admins.sort_unstable();
+        self.state.admins.dedup();
+    }
+
+    fn apply_message_event(
+        &mut self,
+        from: MemberId,
+        event: MessageEvent,
+    ) -> Result<Vec<(MemberId, MessageEvent)>, TreeError> {
+        let now = unix_now();
+        match &event {
+            MessageEvent::New {
+                id,
+                sent_at,
+                ttl_secs,
+                view_once,
+                ..
+            } => {
+                if self.state.messages.record(*id).is_some() {
+                    return Ok(Vec::new());
+                }
+                if *ttl_secs > 30 * 86_400 {
+                    return Err(TreeError::Group("message TTL exceeds 30 days".into()));
+                }
+                let created_at = (*sent_at).min(now);
+                if !self.state.messages.accept_sender_seq(from, event.seq()) {
+                    return Ok(Vec::new());
+                }
+                let record = MessageRecord {
+                    id: *id,
+                    author: from,
+                    created_at,
+                    ttl_secs: *ttl_secs,
+                    view_once: *view_once,
+                    deleted: false,
+                    last_edit_seq: event.seq(),
+                };
+                self.state.messages.record_new(record);
+                let mut output = vec![(from, event.clone())];
+                let mut pending = self.state.messages.take_pending_for(*id);
+                pending.sort_by_key(|mutation| mutation.event.seq());
+                for mutation in pending {
+                    if self.apply_pending_mutation(now, mutation.from, mutation.event.clone())? {
+                        output.push((mutation.from, mutation.event));
+                    }
+                }
+                Ok(output)
+            }
+            MessageEvent::Edit { target, .. } | MessageEvent::Delete { target, .. } => {
+                if self.state.messages.record(*target).is_none() {
+                    self.state.messages.queue_pending(PendingMutation {
+                        from,
+                        event: event.clone(),
+                    })?;
+                    return Ok(Vec::new());
+                }
+                if self.apply_pending_mutation(now, from, event.clone())? {
+                    Ok(vec![(from, event)])
+                } else {
+                    Ok(Vec::new())
+                }
+            }
+            MessageEvent::Reaction { target, .. } | MessageEvent::Read { target, .. } => {
+                if self.state.messages.record(*target).is_none() {
+                    self.state
+                        .messages
+                        .queue_pending(PendingMutation { from, event })?;
+                    return Ok(Vec::new());
+                }
+                if !self.state.messages.accept_sender_seq(from, event.seq()) {
+                    return Ok(Vec::new());
+                }
+                Ok(vec![(from, event)])
+            }
+            MessageEvent::Typing { .. } => {
+                if !self.state.messages.accept_sender_seq(from, event.seq()) {
+                    return Ok(Vec::new());
+                }
+                Ok(vec![(from, event)])
+            }
+        }
+    }
+
+    fn apply_pending_mutation(
+        &mut self,
+        now: i64,
+        from: MemberId,
+        event: MessageEvent,
+    ) -> Result<bool, TreeError> {
+        let target = event
+            .target()
+            .ok_or_else(|| TreeError::Malformed("mutation has no target".into()))?;
+        match &event {
+            MessageEvent::Edit { seq, .. } | MessageEvent::Delete { seq, .. } => {
+                if !self.state.messages.accept_sender_seq(from, *seq) {
+                    return Ok(false);
+                }
+                let record = self
+                    .state
+                    .messages
+                    .record_mut(target)
+                    .ok_or_else(|| TreeError::Storage("message record disappeared".into()))?;
+                if record.author != from {
+                    return Err(TreeError::Rejected(
+                        "message mutation sender is not the original author".into(),
+                    ));
+                }
+                if record.deleted {
+                    return Ok(false);
+                }
+                if now.saturating_sub(record.created_at) as u64 > DEFAULT_EDIT_WINDOW_SECS {
+                    return Ok(false);
+                }
+                if *seq <= record.last_edit_seq {
+                    return Ok(false);
+                }
+                if matches!(event, MessageEvent::Delete { .. }) {
+                    record.deleted = true;
+                }
+                record.last_edit_seq = *seq;
+                Ok(true)
+            }
+            MessageEvent::Reaction { seq, .. } | MessageEvent::Read { seq, .. } => {
+                if !self.state.messages.accept_sender_seq(from, *seq) {
+                    return Ok(false);
+                }
+                let record = self
+                    .state
+                    .messages
+                    .record(target)
+                    .ok_or_else(|| TreeError::Storage("message record disappeared".into()))?;
+                if record.deleted {
+                    return Ok(false);
+                }
+                Ok(true)
+            }
+            MessageEvent::New { .. } | MessageEvent::Typing { .. } => Ok(false),
+        }
+    }
+
+    fn mark_processed(&mut self, epoch: u64, hash: [u8; 32]) {
+        self.state.processed.push((epoch, hash));
+        const MAX_PROCESSED: usize = 2048;
+        if self.state.processed.len() > MAX_PROCESSED {
+            let drop_n = self.state.processed.len() - MAX_PROCESSED;
+            self.state.processed.drain(0..drop_n);
+        }
+        self.state
+            .prune(self.epoch().saturating_sub(Self::PAST_EPOCHS));
     }
 
     // ----- envelope (PROTOCOL.md section 4) ----------------------------------
@@ -514,7 +1341,11 @@ impl Group {
     /// members of the epoch can export. Checked BEFORE the message reaches
     /// MLS, so a tampered or injected copy is dropped without consuming the
     /// message key (otherwise the genuine message would become undecryptable).
-    fn seal<P: OpenMlsProvider>(&self, me: &Client<P>, mls_bytes: &[u8]) -> Result<Vec<u8>, TreeError> {
+    fn seal<P: OpenMlsProvider>(
+        &self,
+        me: &Client<P>,
+        mls_bytes: &[u8],
+    ) -> Result<Vec<u8>, TreeError> {
         let tag = envelope_tag(me, &self.envelope_key(me)?[..], mls_bytes)?;
         let mut out = Vec::with_capacity(1 + Self::TAG_LEN + mls_bytes.len());
         out.push(Self::ENVELOPE_V1);
@@ -523,10 +1354,18 @@ impl Group {
         Ok(out)
     }
 
-    fn envelope_key<P: OpenMlsProvider>(&self, me: &Client<P>) -> Result<Zeroizing<[u8; 32]>, TreeError> {
+    fn envelope_key<P: OpenMlsProvider>(
+        &self,
+        me: &Client<P>,
+    ) -> Result<Zeroizing<[u8; 32]>, TreeError> {
         let key = Zeroizing::new(
             self.mls
-                .export_secret(me.provider.crypto(), "tree/envelope/v1", self.mls.group_id().as_slice(), 32)
+                .export_secret(
+                    me.provider.crypto(),
+                    "tree/envelope/v1",
+                    self.mls.group_id().as_slice(),
+                    32,
+                )
                 .map_err(group_err)?,
         );
         let mut out = Zeroizing::new([0u8; 32]);
@@ -546,7 +1385,8 @@ impl Group {
         }
         let (tag, body) = bytes[1..].split_at(Self::TAG_LEN);
         let current = (self.epoch(), self.envelope_key(me)?);
-        let keys = std::iter::once((current.0, &current.1)).chain(self.state.past.iter().map(|p| (p.epoch, &p.envelope_key)));
+        let keys = std::iter::once((current.0, &current.1))
+            .chain(self.state.past.iter().map(|p| (p.epoch, &p.envelope_key)));
         for (epoch, key) in keys {
             let expected = envelope_tag(me, &key[..], body)?;
             if bool::from(tag.ct_eq(&expected)) {
@@ -557,7 +1397,11 @@ impl Group {
     }
 }
 
-fn envelope_tag<P: OpenMlsProvider>(me: &Client<P>, key: &[u8], mls_bytes: &[u8]) -> Result<Vec<u8>, TreeError> {
+fn envelope_tag<P: OpenMlsProvider>(
+    me: &Client<P>,
+    key: &[u8],
+    mls_bytes: &[u8],
+) -> Result<Vec<u8>, TreeError> {
     let tag = me
         .provider
         .crypto()
@@ -568,7 +1412,11 @@ fn envelope_tag<P: OpenMlsProvider>(me: &Client<P>, key: &[u8], mls_bytes: &[u8]
 
 /// Commit contents allowed in Tree v1 (PROTOCOL.md section 6.4).
 fn check_commit(staged: &StagedCommit, committer: LeafNodeIndex) -> Result<(), TreeError> {
-    let reject = |why: &str| Err(TreeError::Rejected(format!("commit not allowed in Tree v1: {why}")));
+    let reject = |why: &str| {
+        Err(TreeError::Rejected(format!(
+            "commit not allowed in Tree v1: {why}"
+        )))
+    };
     let mut only_adds = true;
     let mut any = false;
     for q in staged.queued_proposals() {
@@ -578,7 +1426,9 @@ fn check_commit(staged: &StagedCommit, committer: LeafNodeIndex) -> Result<(), T
         }
         match q.proposal() {
             Proposal::Add(_) => {}
-            Proposal::Remove(r) if r.removed() == committer => return reject("committer removes itself"),
+            Proposal::Remove(r) if r.removed() == committer => {
+                return reject("committer removes itself")
+            }
             Proposal::Remove(_) => only_adds = false,
             _ => return reject("proposal type"),
         }
@@ -595,4 +1445,245 @@ fn name_of(credential: &Credential) -> String {
 
 fn sha256(data: &[u8]) -> [u8; 32] {
     Sha256::digest(data).into()
+}
+
+const CONTROL_MAGIC: &[u8] = b"TREECTRL\x01";
+const CONTROL_TITLE: u8 = 1;
+const CONTROL_DISAPPEARING: u8 = 2;
+const CONTROL_ADD_ADMIN: u8 = 3;
+const CONTROL_REMOVE_ADMIN: u8 = 4;
+const MAX_TITLE_BYTES: usize = 128;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Control {
+    SetTitle(Option<String>),
+    SetDisappearingSeconds(u32),
+    AddAdmin(MemberId),
+    RemoveAdmin(MemberId),
+}
+
+fn encode_control(seq: u64, control: &Control) -> Result<Vec<u8>, TreeError> {
+    let mut out = Vec::with_capacity(32);
+    out.extend_from_slice(CONTROL_MAGIC);
+    out.extend_from_slice(&seq.to_be_bytes());
+    match control {
+        Control::SetTitle(title) => {
+            out.push(CONTROL_TITLE);
+            match title {
+                None => out.push(0),
+                Some(title) => {
+                    if title.len() > MAX_TITLE_BYTES {
+                        return Err(TreeError::Group("group title is too long".into()));
+                    }
+                    out.push(1);
+                    out.extend_from_slice(&(title.len() as u16).to_be_bytes());
+                    out.extend_from_slice(title.as_bytes());
+                }
+            }
+        }
+        Control::SetDisappearingSeconds(seconds) => {
+            if *seconds > 30 * 86_400 {
+                return Err(TreeError::Group(
+                    "disappearing timer is limited to 30 days".into(),
+                ));
+            }
+            out.push(CONTROL_DISAPPEARING);
+            out.extend_from_slice(&seconds.to_be_bytes());
+        }
+        Control::AddAdmin(target) => {
+            out.push(CONTROL_ADD_ADMIN);
+            out.extend_from_slice(target.as_bytes());
+        }
+        Control::RemoveAdmin(target) => {
+            out.push(CONTROL_REMOVE_ADMIN);
+            out.extend_from_slice(target.as_bytes());
+        }
+    }
+    Ok(out)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DecodedControl {
+    seq: u64,
+    control: Control,
+}
+
+fn decode_control(bytes: &[u8]) -> Result<DecodedControl, TreeError> {
+    if !bytes.starts_with(CONTROL_MAGIC) {
+        return Err(TreeError::Malformed("not a Tree control message".into()));
+    }
+    let mut r = ControlReader(&bytes[CONTROL_MAGIC.len()..]);
+    let seq = r.u64()?;
+    let kind = r.u8()?;
+    let control = match kind {
+        CONTROL_TITLE => match r.u8()? {
+            0 => Control::SetTitle(None),
+            1 => {
+                let len = r.u16()? as usize;
+                if len == 0 || len > MAX_TITLE_BYTES {
+                    return Err(TreeError::Malformed("invalid group title length".into()));
+                }
+                let title = String::from_utf8(r.take(len)?.to_vec())
+                    .map_err(|_| TreeError::Malformed("group title is not UTF-8".into()))?;
+                Control::SetTitle(Some(title))
+            }
+            _ => return Err(TreeError::Malformed("invalid title control".into())),
+        },
+        CONTROL_DISAPPEARING => {
+            let seconds = r.u32()?;
+            if seconds > 30 * 86_400 {
+                return Err(TreeError::Malformed("invalid disappearing timer".into()));
+            }
+            Control::SetDisappearingSeconds(seconds)
+        }
+        CONTROL_ADD_ADMIN => Control::AddAdmin(MemberId(r.array()?)),
+        CONTROL_REMOVE_ADMIN => Control::RemoveAdmin(MemberId(r.array()?)),
+        _ => return Err(TreeError::Malformed("unknown Tree control type".into())),
+    };
+    if !r.0.is_empty() {
+        return Err(TreeError::Malformed(
+            "trailing bytes in Tree control".into(),
+        ));
+    }
+    Ok(DecodedControl { seq, control })
+}
+
+fn apply_control_state(
+    state: &mut GroupState,
+    seq: u64,
+    author: MemberId,
+    control: &Control,
+    current_members: &[MemberId],
+) -> Result<(), TreeError> {
+    match control {
+        Control::SetTitle(title) => {
+            let tag = (seq, author);
+            if state.title_tag.is_none_or(|old| tag > old) {
+                state.title = title.clone();
+                state.title_tag = Some(tag);
+            }
+        }
+        Control::SetDisappearingSeconds(seconds) => {
+            let tag = (seq, author);
+            if state.disappearing_tag.is_none_or(|old| tag > old) {
+                state.disappearing_seconds = *seconds;
+                state.disappearing_tag = Some(tag);
+            }
+        }
+        Control::AddAdmin(target) | Control::RemoveAdmin(target) => {
+            if !current_members.contains(target) {
+                return Err(TreeError::UnknownMember(target.to_hex()));
+            }
+            let tag = (seq, author);
+            let newer = state
+                .admin_tags
+                .iter()
+                .find(|(id, _, _)| id == target)
+                .is_none_or(|(_, old_seq, old_author)| tag > (*old_seq, *old_author));
+            if !newer {
+                return Ok(());
+            }
+            if !state.admins.contains(target)
+                && matches!(control, Control::AddAdmin(_))
+                && state.admins.len() >= 64
+            {
+                return Err(TreeError::Group("administrator limit reached".into()));
+            }
+            state.admin_tags.retain(|(id, _, _)| id != target);
+            state.admin_tags.push((*target, seq, author));
+            match control {
+                Control::AddAdmin(_) => {
+                    state.admins.push(*target);
+                    state.admins.sort_unstable();
+                    state.admins.dedup();
+                }
+                Control::RemoveAdmin(_) => {
+                    state.admins.retain(|admin| admin != target);
+                    if state.admins.is_empty() {
+                        if let Some(id) = current_members.iter().copied().min() {
+                            state.admins.push(id);
+                        }
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+    Ok(())
+}
+
+struct ControlReader<'a>(&'a [u8]);
+
+impl ControlReader<'_> {
+    fn take(&mut self, n: usize) -> Result<&[u8], TreeError> {
+        if self.0.len() < n {
+            return Err(TreeError::Malformed("truncated Tree control".into()));
+        }
+        let (head, rest) = self.0.split_at(n);
+        self.0 = rest;
+        Ok(head)
+    }
+
+    fn u8(&mut self) -> Result<u8, TreeError> {
+        Ok(self.take(1)?[0])
+    }
+
+    fn u16(&mut self) -> Result<u16, TreeError> {
+        Ok(u16::from_be_bytes(
+            self.take(2)?.try_into().expect("length checked"),
+        ))
+    }
+
+    fn u32(&mut self) -> Result<u32, TreeError> {
+        Ok(u32::from_be_bytes(
+            self.take(4)?.try_into().expect("length checked"),
+        ))
+    }
+
+    fn u64(&mut self) -> Result<u64, TreeError> {
+        Ok(u64::from_be_bytes(
+            self.take(8)?.try_into().expect("length checked"),
+        ))
+    }
+
+    fn array<const N: usize>(&mut self) -> Result<[u8; N], TreeError> {
+        Ok(self.take(N)?.try_into().expect("length checked"))
+    }
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Parses only the MLS private-message header from an untrusted envelope.
+/// No ratchet or group state is modified here.
+fn peek_epoch(bytes: &[u8], expected_group: &[u8]) -> Result<u64, TreeError> {
+    if bytes.len() < 1 + Group::TAG_LEN {
+        return Err(TreeError::Malformed("bad envelope".into()));
+    }
+    let mut mls = &bytes[1 + Group::TAG_LEN..];
+    let input = MlsMessageIn::tls_deserialize(&mut mls)
+        .map_err(|e| TreeError::Malformed(format!("{e:?}")))?;
+    let protocol = input
+        .try_into_protocol_message()
+        .map_err(|_| TreeError::Malformed("not a group message".into()))?;
+    if protocol.wire_format() != WireFormat::PrivateMessage {
+        return Err(TreeError::Rejected(
+            "only private messages are accepted".into(),
+        ));
+    }
+    if protocol.group_id().as_slice() != expected_group {
+        return Err(TreeError::Rejected(
+            "envelope belongs to another group".into(),
+        ));
+    }
+    match protocol.content_type() {
+        ContentType::Application | ContentType::Commit => Ok(protocol.epoch().as_u64()),
+        ContentType::Proposal => Err(TreeError::Rejected(
+            "proposals are not accepted in Tree v1 (F-007)".into(),
+        )),
+    }
 }

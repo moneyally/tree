@@ -43,7 +43,11 @@ pub fn envelope_header(body: &[u8]) -> Result<Header<'_>, &'static str> {
     if !(APPLICATION..=COMMIT).contains(&content_type) {
         return Err("unknown content type");
     }
-    Ok(Header { group_id, epoch, content_type })
+    Ok(Header {
+        group_id,
+        epoch,
+        content_type,
+    })
 }
 
 /// True for a bare MLSMessage carrying a Welcome.
@@ -107,7 +111,11 @@ mod tests {
             let e = envelope(&g, 0x0102_0304_0506_0708, ct);
             assert_eq!(
                 envelope_header(&e),
-                Ok(Header { group_id: &g, epoch: 0x0102_0304_0506_0708, content_type: ct })
+                Ok(Header {
+                    group_id: &g,
+                    epoch: 0x0102_0304_0506_0708,
+                    content_type: ct
+                })
             );
         }
     }
@@ -142,7 +150,10 @@ mod tests {
         assert_eq!(ok(&[0x7f, 0xff]), Ok(16383));
         assert_eq!(ok(&[0x80, 0x00, 0x40, 0x00]), Ok(16384));
         assert_eq!(ok(&[0x40, 0x3f]), Err("length prefix not minimal"));
-        assert_eq!(ok(&[0x80, 0x00, 0x3f, 0xff]), Err("length prefix not minimal"));
+        assert_eq!(
+            ok(&[0x80, 0x00, 0x3f, 0xff]),
+            Err("length prefix not minimal")
+        );
         assert_eq!(ok(&[0x40]), Err("truncated"));
         // a 2-byte group id length works end to end
         let mut e = vec![1u8];

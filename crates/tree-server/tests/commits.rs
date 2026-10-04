@@ -42,11 +42,21 @@ async fn first_commit_wins_and_retry_is_idempotent() {
     r["welcome"] = json!(b64(&welcome(b"for c")));
     let (st, v) = submit(api, &a, r.clone()).await;
     assert_eq!(st, StatusCode::OK, "{v}");
-    assert_eq!((v["accepted"].as_bool(), v["epoch"].as_u64(), v["delivered"].as_u64()), (Some(true), Some(0), Some(2)));
+    assert_eq!(
+        (
+            v["accepted"].as_bool(),
+            v["epoch"].as_u64(),
+            v["delivered"].as_u64()
+        ),
+        (Some(true), Some(0), Some(2))
+    );
     let id = v["id"].as_str().unwrap().to_string();
 
     let got_b = api.fetch(&b, 0).await;
-    assert_eq!(unb64(got_b[0]["body"].as_str().unwrap()), commit(&G, 0, b"a0"));
+    assert_eq!(
+        unb64(got_b[0]["body"].as_str().unwrap()),
+        commit(&G, 0, b"a0")
+    );
     let got_c = api.fetch(&c, 0).await;
     assert_eq!(unb64(got_c[0]["body"].as_str().unwrap()), welcome(b"for c"));
     assert!(api.fetch(&a, 0).await.is_empty());
@@ -54,7 +64,10 @@ async fn first_commit_wins_and_retry_is_idempotent() {
     // Retry with the same bytes (lost response): same answer, nothing delivered again.
     let (st, v) = submit(api, &a, r).await;
     assert_eq!(st, StatusCode::OK, "{v}");
-    assert_eq!((v["id"].as_str(), v["delivered"].as_u64()), (Some(id.as_str()), Some(0)));
+    assert_eq!(
+        (v["id"].as_str(), v["delivered"].as_u64()),
+        (Some(id.as_str()), Some(0))
+    );
     assert_eq!(api.fetch(&b, 0).await.len(), 1);
 
     // A different commit for epoch 0 loses and learns the winner.
@@ -73,7 +86,10 @@ async fn eligibility_and_epoch_rules() {
     let ts = boot(|_| {}).await;
     let api = &ts.api;
     let (a, b, outsider) = (api.signup().await, api.signup().await, api.signup().await);
-    assert_eq!(submit(api, &a, req(0, b"a0", &[&b])).await.0, StatusCode::OK);
+    assert_eq!(
+        submit(api, &a, req(0, b"a0", &[&b])).await.0,
+        StatusCode::OK
+    );
 
     // An outsider cannot take the next slot (and so cannot freeze the group).
     let (st, v) = submit(api, &outsider, req(1, b"junk", &[&a])).await;
@@ -102,17 +118,31 @@ async fn conflicts_beyond_the_kept_window_have_no_winner_hash() {
     let api = &ts.api;
     let a = api.signup().await;
     for e in 0..70u64 {
-        assert_eq!(submit(api, &a, req(e, b"x", &[])).await.0, StatusCode::OK, "epoch {e}");
+        assert_eq!(
+            submit(api, &a, req(e, b"x", &[])).await.0,
+            StatusCode::OK,
+            "epoch {e}"
+        );
     }
     let (st, v) = submit(api, &a, req(69, b"other", &[])).await;
     assert_eq!((st, code(&v)), (StatusCode::CONFLICT, "COMMIT_CONFLICT"));
     assert_eq!(v["winner_sha256"], json!(sha_hex(&commit(&G, 69, b"x"))));
     let (st, v) = submit(api, &a, req(3, b"other", &[])).await;
     assert_eq!((st, code(&v)), (StatusCode::CONFLICT, "COMMIT_CONFLICT"));
-    assert_eq!(v["winner_sha256"], Value::Null, "epoch 3 is older than the last 64");
+    assert_eq!(
+        v["winner_sha256"],
+        Value::Null,
+        "epoch 3 is older than the last 64"
+    );
     // a retry of an accepted commit that old is a conflict too (no hash kept)
-    assert_eq!(submit(api, &a, req(3, b"x", &[])).await.0, StatusCode::CONFLICT);
-    let n: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM group_winners").fetch_one(&ts.server.state.db).await.unwrap();
+    assert_eq!(
+        submit(api, &a, req(3, b"x", &[])).await.0,
+        StatusCode::CONFLICT
+    );
+    let n: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM group_winners")
+        .fetch_one(&ts.server.state.db)
+        .await
+        .unwrap();
     assert_eq!(n.0, 64);
     ts.stop().await;
 }
@@ -129,10 +159,18 @@ async fn concurrent_commits_for_one_epoch() {
     }
     // epoch 0 by devs[0] makes everyone a member
     let all: Vec<&Device> = devs.iter().collect();
-    assert_eq!(submit(api, &devs[0], req(0, b"setup", &all[1..])).await.0, StatusCode::OK);
+    assert_eq!(
+        submit(api, &devs[0], req(0, b"setup", &all[1..])).await.0,
+        StatusCode::OK
+    );
 
     let results = futures_join(api, &devs).await;
-    let winners: Vec<usize> = results.iter().enumerate().filter(|(_, (st, _))| *st == StatusCode::OK).map(|(i, _)| i).collect();
+    let winners: Vec<usize> = results
+        .iter()
+        .enumerate()
+        .filter(|(_, (st, _))| *st == StatusCode::OK)
+        .map(|(i, _)| i)
+        .collect();
     assert_eq!(winners.len(), 1, "{results:?}");
     let w = winners[0];
     let winner_hash = sha_hex(&commit(&G, 1, format!("d{w}").as_bytes()));
@@ -145,11 +183,19 @@ async fn concurrent_commits_for_one_epoch() {
     // Every other device received exactly the winner.
     for (i, d) in devs.iter().enumerate() {
         let msgs = api.fetch(d, 0).await;
-        let commits: Vec<Vec<u8>> = msgs.iter().map(|m| unb64(m["body"].as_str().unwrap())).filter(|b| b[1 + 32 + 4 + 1 + 16 + 7] == 1).collect();
+        let commits: Vec<Vec<u8>> = msgs
+            .iter()
+            .map(|m| unb64(m["body"].as_str().unwrap()))
+            .filter(|b| b[1 + 32 + 4 + 1 + 16 + 7] == 1)
+            .collect();
         if i == w {
             assert!(commits.is_empty());
         } else {
-            assert_eq!(commits, vec![commit(&G, 1, format!("d{w}").as_bytes())], "device {i}");
+            assert_eq!(
+                commits,
+                vec![commit(&G, 1, format!("d{w}").as_bytes())],
+                "device {i}"
+            );
         }
     }
     ts.stop().await;
@@ -158,7 +204,11 @@ async fn concurrent_commits_for_one_epoch() {
 async fn futures_join(api: &Api, devs: &[Device]) -> Vec<(StatusCode, Value)> {
     let mut handles = Vec::new();
     for (i, d) in devs.iter().enumerate() {
-        let others: Vec<String> = devs.iter().filter(|o| o.device_id != d.device_id).map(|o| o.device_id.clone()).collect();
+        let others: Vec<String> = devs
+            .iter()
+            .filter(|o| o.device_id != d.device_id)
+            .map(|o| o.device_id.clone())
+            .collect();
         let body = json!({
             "group_id": b64(&G),
             "epoch": 1,
@@ -167,7 +217,9 @@ async fn futures_join(api: &Api, devs: &[Device]) -> Vec<(StatusCode, Value)> {
         });
         let api = api.clone();
         let d = d.clone();
-        handles.push(tokio::spawn(async move { api.call(&d, Method::POST, "/v1/commits", Some(body)).await }));
+        handles.push(tokio::spawn(async move {
+            api.call(&d, Method::POST, "/v1/commits", Some(body)).await
+        }));
     }
     let mut out = Vec::new();
     for h in handles {
@@ -192,61 +244,130 @@ async fn request_validation() {
 
     let mut r = req(0, b"x", &[&b]);
     r["body"] = json!(b64(&app(b"not a commit")));
-    check(submit(api, &a, r).await, StatusCode::BAD_REQUEST, "application message as commit");
+    check(
+        submit(api, &a, r).await,
+        StatusCode::BAD_REQUEST,
+        "application message as commit",
+    );
     let mut r = req(0, b"x", &[&b]);
     r["body"] = json!(b64(&envelope(&G, 0, 2, b"proposal")));
-    check(submit(api, &a, r).await, StatusCode::BAD_REQUEST, "proposal");
+    check(
+        submit(api, &a, r).await,
+        StatusCode::BAD_REQUEST,
+        "proposal",
+    );
     let mut r = req(0, b"x", &[&b]);
     r["epoch"] = json!(1);
-    check(submit(api, &a, r).await, StatusCode::BAD_REQUEST, "epoch differs from header");
+    check(
+        submit(api, &a, r).await,
+        StatusCode::BAD_REQUEST,
+        "epoch differs from header",
+    );
     let mut r = req(0, b"x", &[&b]);
     r["group_id"] = json!(b64(&[0x32; 16]));
-    check(submit(api, &a, r).await, StatusCode::BAD_REQUEST, "group differs from header");
+    check(
+        submit(api, &a, r).await,
+        StatusCode::BAD_REQUEST,
+        "group differs from header",
+    );
     let mut r = req(0, b"x", &[&b]);
     r["group_id"] = json!(b64(&[]));
-    check(submit(api, &a, r).await, StatusCode::BAD_REQUEST, "empty group id");
+    check(
+        submit(api, &a, r).await,
+        StatusCode::BAD_REQUEST,
+        "empty group id",
+    );
     let mut r = req(0, b"x", &[&b]);
     r["body"] = json!(b64(&[1, 2, 3]));
     check(submit(api, &a, r).await, StatusCode::BAD_REQUEST, "garbage");
     let mut r = req(0, b"x", &[&b]);
     r["welcome"] = json!(b64(&welcome(b"w")));
-    check(submit(api, &a, r).await, StatusCode::BAD_REQUEST, "welcome without added");
+    check(
+        submit(api, &a, r).await,
+        StatusCode::BAD_REQUEST,
+        "welcome without added",
+    );
     let mut r = req(0, b"x", &[&b]);
     r["added"] = json!([b.device_id]);
-    check(submit(api, &a, r).await, StatusCode::BAD_REQUEST, "added without welcome");
+    check(
+        submit(api, &a, r).await,
+        StatusCode::BAD_REQUEST,
+        "added without welcome",
+    );
     let mut r = req(0, b"x", &[]);
     r["added"] = json!([b.device_id]);
     r["welcome"] = json!(b64(&app(b"not a welcome")));
-    check(submit(api, &a, r).await, StatusCode::BAD_REQUEST, "welcome that is no welcome");
+    check(
+        submit(api, &a, r).await,
+        StatusCode::BAD_REQUEST,
+        "welcome that is no welcome",
+    );
     let mut r = req(0, b"x", &[]);
     r["added"] = json!([b.device_id]);
     r["welcome"] = json!(b64(&welcome(&[0; 497])));
-    check(submit(api, &a, r).await, StatusCode::PAYLOAD_TOO_LARGE, "welcome too large");
+    check(
+        submit(api, &a, r).await,
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "welcome too large",
+    );
     let r = req(0, &vec![0; 1000], &[&b]);
-    check(submit(api, &a, r).await, StatusCode::PAYLOAD_TOO_LARGE, "commit too large");
+    check(
+        submit(api, &a, r).await,
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "commit too large",
+    );
     let mut r = req(0, b"x", &[&b]);
-    r["recipients"] = json!(["AAAAAAAAAAAAAAAAAAAAAA", "BAAAAAAAAAAAAAAAAAAAAA", "CAAAAAAAAAAAAAAAAAAAAA", "DAAAAAAAAAAAAAAAAAAAAA"]);
-    check(submit(api, &a, r).await, StatusCode::PAYLOAD_TOO_LARGE, "too many recipients");
+    r["recipients"] = json!([
+        "AAAAAAAAAAAAAAAAAAAAAA",
+        "BAAAAAAAAAAAAAAAAAAAAA",
+        "CAAAAAAAAAAAAAAAAAAAAA",
+        "DAAAAAAAAAAAAAAAAAAAAA"
+    ]);
+    check(
+        submit(api, &a, r).await,
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "too many recipients",
+    );
     let mut r = req(0, b"x", &[&b]);
-    r["removed"] = json!(["AAAAAAAAAAAAAAAAAAAAAA", "BAAAAAAAAAAAAAAAAAAAAA", "CAAAAAAAAAAAAAAAAAAAAA", "DAAAAAAAAAAAAAAAAAAAAA"]);
-    check(submit(api, &a, r).await, StatusCode::PAYLOAD_TOO_LARGE, "too many removed");
+    r["removed"] = json!([
+        "AAAAAAAAAAAAAAAAAAAAAA",
+        "BAAAAAAAAAAAAAAAAAAAAA",
+        "CAAAAAAAAAAAAAAAAAAAAA",
+        "DAAAAAAAAAAAAAAAAAAAAA"
+    ]);
+    check(
+        submit(api, &a, r).await,
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "too many removed",
+    );
     let mut r = req(0, b"x", &[&b]);
     r["recipients"] = json!(["../etc"]);
     check(submit(api, &a, r).await, StatusCode::BAD_REQUEST, "bad id");
     let mut r = req(0, b"x", &[&b]);
     r["epoch"] = json!(u64::MAX);
     r["body"] = json!(b64(&commit(&G, u64::MAX, b"x")));
-    check(submit(api, &a, r).await, StatusCode::BAD_REQUEST, "epoch beyond i64");
+    check(
+        submit(api, &a, r).await,
+        StatusCode::BAD_REQUEST,
+        "epoch beyond i64",
+    );
 
     // Nothing above created a group.
-    let n: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM groups").fetch_one(&ts.server.state.db).await.unwrap();
+    let n: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM groups")
+        .fetch_one(&ts.server.state.db)
+        .await
+        .unwrap();
     assert_eq!(n.0, 0);
     // Largest allowed sizes pass; unknown recipients are reported.
     let mut r = req(0, &vec![0; 1000 - commit(&G, 0, b"").len()], &[&b]);
     r["recipients"] = json!([b.device_id, "AAAAAAAAAAAAAAAAAAAAAA"]);
     r["added"] = json!([b.device_id]);
     r["welcome"] = json!(b64(&welcome(&[0; 496])));
-    r["removed"] = json!(["BAAAAAAAAAAAAAAAAAAAAA", "CAAAAAAAAAAAAAAAAAAAAA", "DAAAAAAAAAAAAAAAAAAAAA"]);
+    r["removed"] = json!([
+        "BAAAAAAAAAAAAAAAAAAAAA",
+        "CAAAAAAAAAAAAAAAAAAAAA",
+        "DAAAAAAAAAAAAAAAAAAAAA"
+    ]);
     let (st, v) = submit(api, &a, r).await;
     assert_eq!(st, StatusCode::OK, "{v}");
     assert_eq!(v["unknown_devices"], json!(["AAAAAAAAAAAAAAAAAAAAAA"]));
@@ -259,6 +380,15 @@ async fn messages_endpoint_refuses_commits_proposals_welcomes() {
     let ts = boot(|_| {}).await;
     let api = &ts.api;
     let (a, b) = (api.signup().await, api.signup().await);
+    // Establish the server-side roster before testing application-message routing.
+    assert_eq!(
+        submit(api, &a, req(0, b"setup", &[&b])).await.0,
+        StatusCode::OK
+    );
+    let setup = api.fetch(&b, 0).await;
+    assert_eq!(setup.len(), 1);
+    api.ack(&b, &[setup[0]["id"].as_str().unwrap()]).await;
+
     for (body, why) in [
         (commit(&G, 0, b"c"), "commits must be sent to /v1/commits"),
         (envelope(&G, 0, 2, b"p"), "proposals are not accepted"),
@@ -267,10 +397,23 @@ async fn messages_endpoint_refuses_commits_proposals_welcomes() {
         (envelope(&G, 0, 9, b"?"), "body: unknown content type"),
     ] {
         let (st, v) = api.send_raw(&a, &[&b.device_id], &body).await;
-        assert_eq!((st, code(&v), v["message"].as_str()), (StatusCode::BAD_REQUEST, "BAD_REQUEST", Some(why)), "{v}");
+        assert_eq!(
+            (st, code(&v), v["message"].as_str()),
+            (StatusCode::BAD_REQUEST, "BAD_REQUEST", Some(why)),
+            "{v}"
+        );
     }
     assert!(api.fetch(&b, 0).await.is_empty());
-    assert_eq!(api.send_raw(&a, &[&b.device_id], &app(b"ok")).await.0, StatusCode::OK);
+    assert_eq!(
+        api.send_raw(&a, &[&b.device_id], &app(b"ok")).await.0,
+        StatusCode::OK
+    );
+    let outsider = api.signup().await;
+    let (st, v) = api
+        .send_raw(&a, &[&outsider.device_id], &app(b"cross-group"))
+        .await;
+    assert_eq!((st, code(&v)), (StatusCode::FORBIDDEN, "NOT_ELIGIBLE"));
+    assert!(api.fetch(&outsider, 0).await.is_empty());
     ts.stop().await;
 }
 
@@ -282,17 +425,83 @@ async fn group_record_removed_with_its_last_device() {
     let a1 = api.signup().await;
     let a2 = api.add_device(&a1).await;
     assert_eq!(submit(api, &a2, req(0, b"x", &[])).await.0, StatusCode::OK);
-    let count = || async { sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM groups").fetch_one(&ts.server.state.db).await.unwrap().0 };
-    tree_server::purge_expired(&ts.server.state, now()).await.unwrap();
+    let count = || async {
+        sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM groups")
+            .fetch_one(&ts.server.state.db)
+            .await
+            .unwrap()
+            .0
+    };
+    tree_server::purge_expired(&ts.server.state, now())
+        .await
+        .unwrap();
     assert_eq!(count().await, 1);
-    let (st, _) = api.call(&a1, Method::DELETE, &format!("/v1/devices/{}", a2.device_id), None).await;
+    let (st, _) = api
+        .call(
+            &a1,
+            Method::DELETE,
+            &format!("/v1/devices/{}", a2.device_id),
+            None,
+        )
+        .await;
     assert_eq!(st, StatusCode::OK);
-    tree_server::purge_expired(&ts.server.state, now()).await.unwrap();
+    tree_server::purge_expired(&ts.server.state, now())
+        .await
+        .unwrap();
     assert_eq!(count().await, 0);
     ts.stop().await;
 }
 
 /// A commit to a few devices costs one rate token, not one per device.
+#[tokio::test]
+async fn purge_expired_messages_removes_mailbox_rows() {
+    let ts = boot(|c| {
+        c.message_ttl_secs = 10;
+        c.max_mailbox_messages = 1;
+    })
+    .await;
+    let api = &ts.api;
+    let (a, b) = (api.signup().await, api.signup().await);
+
+    let (st, v) = api.send_raw(&a, &[&b.device_id], &app(b"expired")).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(
+        sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM deliveries WHERE device_id = ?")
+            .bind(&b.device_id)
+            .fetch_one(&ts.server.state.db)
+            .await
+            .unwrap()
+            .0,
+        1
+    );
+
+    sqlx::query("UPDATE blobs SET received_at = ?")
+        .bind(now() - 20)
+        .execute(&ts.server.state.db)
+        .await
+        .unwrap();
+
+    tree_server::purge_expired(&ts.server.state, now())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM deliveries WHERE device_id = ?")
+            .bind(&b.device_id)
+            .fetch_one(&ts.server.state.db)
+            .await
+            .unwrap()
+            .0,
+        0
+    );
+
+    // The expired entry must not consume the mailbox slot.
+    let (st, v) = api.send_raw(&a, &[&b.device_id], &app(b"fresh")).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(api.fetch(&b, 0).await.len(), 1);
+    ts.stop().await;
+}
+
 #[tokio::test]
 async fn small_commits_cost_one_token() {
     let ts = boot(|c| {

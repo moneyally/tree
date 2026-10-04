@@ -13,6 +13,8 @@ pub struct Config {
     pub bind_addr: SocketAddr,
     /// `ADMIN_TOKEN_SHA256`: hex SHA-256 of the operator token. Unset = operator endpoints disabled.
     pub admin_token_sha256: Option<[u8; 32]>,
+    /// Server-only secret used to hash bot tokens.
+    pub bot_token_hmac_secret: Option<[u8; 32]>,
     /// `POW_BITS`: leading zero bits required for signup proof-of-work.
     pub pow_bits: u32,
     /// `MESSAGE_TTL_SECS`: undelivered messages older than this are purged.
@@ -33,6 +35,10 @@ pub struct Config {
     pub max_key_package_bytes: usize,
     /// `MAX_MESSAGE_BYTES`: size of one decoded message body.
     pub max_message_bytes: usize,
+    /// `MAX_FILE_BYTES`: size of one encrypted media object.
+    pub max_file_bytes: usize,
+    /// `FILE_TTL_SECS`: how long uploaded encrypted media is retained.
+    pub file_ttl_secs: u64,
     /// `MAX_RECIPIENTS`: device mailboxes per send or commit (a 1,000-member
     /// group with two devices each has 2,000).
     pub max_recipients: usize,
@@ -73,6 +79,8 @@ impl Default for Config {
             max_key_packages_per_upload: 100,
             max_key_package_bytes: 16 * 1024,
             max_message_bytes: 256 * 1024,
+            max_file_bytes: 64 * 1024 * 1024,
+            file_ttl_secs: 30 * 24 * 3600,
             max_recipients: 2048,
             max_commit_bytes: 4 * 1024 * 1024,
             max_welcome_bytes: 4 * 1024 * 1024,
@@ -82,6 +90,7 @@ impl Default for Config {
             rate_burst: 200.0,
             signup_per_hour: 20.0,
             signup_burst: 10.0,
+            bot_token_hmac_secret: None,
             trust_forwarded_for: false,
         }
     }
@@ -123,10 +132,17 @@ impl Config {
             })?),
             _ => None,
         };
+        let bot_token_hmac_secret = match std::env::var("BOT_TOKEN_HMAC_SECRET") {
+            Ok(v) if !v.trim().is_empty() => Some(parse_sha256_hex(&v).ok_or_else(|| {
+                ConfigError("BOT_TOKEN_HMAC_SECRET must be 64 hex characters".into())
+            })?),
+            _ => None,
+        };
         let cfg = Self {
             database_url: env_parse("DATABASE_URL", d.database_url)?,
             bind_addr: env_parse("BIND_ADDR", d.bind_addr)?,
             admin_token_sha256,
+            bot_token_hmac_secret,
             pow_bits: env_parse("POW_BITS", d.pow_bits)?,
             message_ttl_secs: env_parse("MESSAGE_TTL_SECS", d.message_ttl_secs)?,
             purge_interval_secs: env_parse("PURGE_INTERVAL_SECS", d.purge_interval_secs)?,
@@ -146,6 +162,8 @@ impl Config {
             )?,
             max_key_package_bytes: env_parse("MAX_KEY_PACKAGE_BYTES", d.max_key_package_bytes)?,
             max_message_bytes: env_parse("MAX_MESSAGE_BYTES", d.max_message_bytes)?,
+            max_file_bytes: env_parse("MAX_FILE_BYTES", d.max_file_bytes)?,
+            file_ttl_secs: env_parse("FILE_TTL_SECS", d.file_ttl_secs)?,
             max_recipients: env_parse("MAX_RECIPIENTS", d.max_recipients)?,
             max_commit_bytes: env_parse("MAX_COMMIT_BYTES", d.max_commit_bytes)?,
             max_welcome_bytes: env_parse("MAX_WELCOME_BYTES", d.max_welcome_bytes)?,
@@ -169,6 +187,7 @@ impl Config {
             || self.max_recipients == 0
             || self.max_commit_bytes == 0
             || self.max_welcome_bytes == 0
+            || self.max_file_bytes == 0
             || self.max_key_packages_per_upload == 0
         {
             return Err(ConfigError("limits must be positive".into()));
@@ -215,6 +234,11 @@ mod tests {
             f(&mut c);
             assert!(c.validate().is_err(), "case {i}");
         }
-        assert!(Config { pow_bits: 40, ..Config::default() }.validate().is_ok());
+        assert!(Config {
+            pow_bits: 40,
+            ..Config::default()
+        }
+        .validate()
+        .is_ok());
     }
 }

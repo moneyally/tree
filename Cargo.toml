@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/tree-core", "crates/tree-server"]
+members = ["crates/tree-core", "crates/tree-server", "crates/tree-cli"]
 
 [workspace.package]
 edition = "2021"

@@ -242,7 +242,7 @@ impl Session {
         composer: &MediaComposerState,
         preview_plaintext: Option<&[u8]>,
     ) -> Result<SentMedia, Error> {
-        composer.edit.push_for_validation()?;
+        composer.edit.validate()?;
         self.send_media_with_caption(
             gid,
             rendered_plaintext,

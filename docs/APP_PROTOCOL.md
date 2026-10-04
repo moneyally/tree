@@ -15,9 +15,9 @@ One JSON object per application message, UTF-8, field `t` names the type:
 
 | `t` | Fields | Meaning | Who may send |
 | --- | --- | --- | --- |
-| `text` | `id` (16 random bytes, hex), `text`; optional `fmt` (true: Tree markup, 1.1), `mentions` (member ids, at most 50), `all` (@all), `preview` (`url`, `title`, `description`: made by the sender's app, which fetched the page; receivers never fetch it; shown only while the receiver's `user.link_preview` is applied), `silent` (true: silent send, receivers' apps do not notify, 6.1), `fwd` (true: forwarded from another chat, 6.2; the original sender is not named) | a chat message | any member; `fmt` only while `chat.formatting` is applied; `all` as `chat.mention_all` allows |
+| `text` | `id` (16 random bytes, hex), `text`; optional `fmt` (true: Tree markup, 1.1), `mentions` (member ids, at most 50), `all` (@all), `preview` (`url`, `title`, `description`: made by the sender's app, which fetched the page; receivers never fetch it; shown only while the receiver's `user.link_preview` is applied), `silent` (true: silent send, receivers' apps do not notify, 6.1), `fwd` (true: forwarded from another chat, 6.2; the original sender is not named), `topic` (a topic id, 9.1) | a chat message | any member not restricted (9.9), within slow mode (9.8); `fmt` only while `chat.formatting` is applied; `all` as `chat.mention_all` allows; `topic` while `chat.topics` is applied and the topic is open (or the sender manages topics) |
 | `edit` | `id`, `text` | replaces the text of the sender's own message `id` | its sender, if `chat.edit` is applied, within the window |
-| `delete` | `id` | deletes the sender's own message `id` for everyone | its sender, if `chat.delete_for_all` is applied, within the window |
+| `delete` | `id` | deletes message `id` for everyone | its sender, if `chat.delete_for_all` is applied, within the window; or, for another member's message, an admin or a member whose role has `delete` (9.2), at any age |
 | `react` | `id`, `emoji` (1 to 8 characters), `remove` (optional), `sticker` (optional: `pack` (blob reference of the pack manifest), `index`; a custom emoji, 8.1) | adds or takes back a reaction | any member, if `chat.reactions` is applied; `sticker` counts only while `chat.stickers` is applied (otherwise the plain `emoji`) |
 | `profile` | `name`; `chat` (optional; true: a name for this chat only, 8.7) | the sender's own display name | any member, about itself; `chat` only while `chat.allow_per_chat_profiles` is applied |
 | `roster` | `devices`: member id (hex) -> device id; `names` (optional): member id -> name; `accounts` (optional): member id -> account id; `link` (optional): the nonce (hex) the new member's device sent with its invite-link request (PROTOCOL.md 8.7) | who is reachable at which server device, the sender's view of names, and which account each device belongs to | the member that just added devices (others may too) |
@@ -38,6 +38,10 @@ One JSON object per application message, UTF-8, field `t` names the type:
 | `event_edit` | `event` (as `chat_event`, same `id`), `cancelled` (optional) | changes or cancels the event | its creator, if `chat.events` is applied |
 | `rsvp` | `id`, `answer` (`going`, `maybe` or `not`) | the sender's answer; the newest counts | any member, if `chat.events` is applied and the event is not cancelled |
 | `profile_photo` | `photo` (blob reference, optional: none = removed), `mime`, `chat` (optional; for this chat only) | the sender's profile photo (8.6) | any member, about itself; `chat` only while `chat.allow_per_chat_profiles` is applied |
+| `topic` | `id` (1 to 32 letters and digits), `name` (optional, 1 to 64 characters), `closed` (optional) | creates topic `id` (new id, with a name), renames, closes or reopens it (9.1) | while `chat.topics` is applied: creating by an admin or a role with `topics`, or any member with the option `all`; the rest by an admin or a role with `topics` |
+| `topics` | `list` (`id`, `name`, `closed`) | the topics the sender knows; sent after it added members (9.1) | an admin or a role with `topics`; receivers take only unknown entries |
+| `history` | `to` (member ids), `msgs` (`id`, `from`, `name`, `at`, `kind` = `text` or `file`, `text` or `file`, `topic`) | recent messages for the new members `to` (9.5); `from`, `name`, `at` are the sharer's claims | the member that added `to`, while `chat.history_share` is applied |
+| `join_chat` | `chat` (group id, hex), `account` | in a community root: the sender asks to be added to `chat` (9.7) | any member of the community |
 | `franked` | `p` (the inner `text`, `edit`, `file`, `poll`, `sticker`, `location` or `chat_event` payload as a JSON string), `k` (base64), `tag` (base64), `m` (minute) | how every franked kind is sent: the inner payload with its franking (PROTOCOL.md 8.5); the receiver keeps `p`, `k`, `tag`, `m` to be able to report it | any member |
 
 ```json
@@ -54,8 +58,10 @@ One JSON object per application message, UTF-8, field `t` names the type:
 {"t":"poll_close","id":"…"}
 ```
 
-Older apps read a `text` or `file` with `fwd` as an ordinary message (unknown
-fields are ignored), and drop `pin`, `poll`, `vote` and `poll_close` as
+Older apps read a `text` or `file` with `fwd` or `topic` as an ordinary
+message (unknown fields are ignored; a topic's message shows in the main
+chat), drop `topic`, `topics`, `history` and `join_chat` as unsupported types
+and drop another member's `delete` (only the sender may change a message), and drop `pin`, `poll`, `vote` and `poll_close` as
 unsupported types (a franked `poll` as a malformed franked payload).
 
 `silent` and `quiet` are per message: there is no setting for them, the
@@ -310,6 +316,13 @@ both are deleted when done and with the account.
 | `photoshared/<group hex>` | what the group was last sent: photo attachment id ("" = removed), per-chat or not, the members then |
 | `photo/<group hex>/<member hex>`, `photocache/<attachment id>` | a member's photo reference in the group; the fetched photo |
 | `chatprofile/<group hex>` | the own name and photo for this chat only (8.7) |
+| `topics/<group hex>`, `topicunread/<group hex>` | the group's topics (id, name, closed, creator, when received); unread messages per topic (9.1) |
+| `adminlog/<group hex>` | the admin log: when, actor (member id), action, target, detail; at most 500 (9.3) |
+| `shared/<group hex>`, `histtaken/<group hex>` | message id -> member that shared it; present once a history bundle was taken (9.5) |
+| `joined/<group hex>`, `adder/<group hex>` | when this device joined the group; the member that added it (the sender of the first roster after joining) |
+| `joinreq/<group hex>/<account>` | a join request waiting for an admin: account, nonce, when (9.6) |
+| `slow/<group hex>`, `slowseen/<group hex>` | when this device last sent a counted message; per member, the server minutes of its last accepted messages (9.8) |
+| `commjoin/<chat hex>` | this device asked to join the chat through a community, when (9.7) |
 | table `tree_messages` | message history with franking records (SCHEMA.md 1.2); also `left` / `removed` lines about members who went (6.1); kinds `sticker`, `location`, `event` keep their state in `data` (8) |
 | table `tree_outbox` | messages being sent: sealed bytes, recipients, idempotency key, state (SCHEMA.md 1.2) |
 
@@ -421,3 +434,178 @@ same keys and MLS member id in every chat, so someone in two of the user's
 chats can link the names (member ids, safety numbers, the account in
 rosters). A separate cryptographic identity per chat (new keys per chat,
 full unlinkability) is a later step.
+
+## 9. Groups and communities (Wave 3)
+
+Code: `crates/tree-client/src/groups.rs` (roles, permissions, restricted
+members, slow mode, welcome text, the next admin), `topics.rs`,
+`admin_log.rs`, `history_share.rs`, `invites.rs` (join approval),
+`community.rs`; the commit rules in `crates/tree-core/src/group.rs` and
+`group_settings.rs` (PROTOCOL.md 6.11.1). FFI `crates/tree-ffi/src/groups.rs`,
+apps `apps/shared/.../Groups.kt`, desktop `GroupsView.kt`.
+
+Every decision below is made by every receiving device with the sender MLS
+authenticated (the committer of a commit, the sender of an application
+message), never with an id written inside a payload. The server learns
+nothing new: settings live in the MLS group context, everything else is an
+ordinary MLS application message or stays on the device. The only server
+data the client now reads is the arrival minute the mailbox already
+returned (`received_at`), used by slow mode.
+
+| Key | Scope | Default | Option | Effect |
+| --- | --- | --- | --- | --- |
+| `chat.topics` | chat (admins) | released | `admins` (default) or `all`: who creates topics | topics (9.1) |
+| `chat.roles` | chat (admins) | applied | | roles grant their permissions and show as member tags (9.2) |
+| `chat.member_adds` | chat (admins) | applied | | any member adds members; released: admins and roles with `add` only (9.2) |
+| `chat.admin_log` | chat (admins) | applied | | the device-local admin log (9.3) |
+| `chat.welcome` | chat (admins) | released | a text of 1 to 500 characters | new members see it once (9.4) |
+| `chat.history_share` | chat (admins) | released | 25 to 100 (default 50) | new members get that many recent messages (9.5) |
+| `chat.owner_succession` | chat (admins) | applied | | the last admin names the next one before leaving (9.10) |
+| `chat.join_approval` | chat (admins) | released | | invite-link joins wait for an admin (9.6) |
+| `chat.slow_mode` | chat (admins) | released | 10 s to 1 h (default `30s`) | members who are not admins send one message per interval (9.8) |
+| `chat.restrict` | chat (admins) | applied | | restrictions are enforced (9.9) |
+
+### 9.1 Topics (`chat.topics`)
+
+Threads inside a group. A `topic` message creates (a new random id with a
+name), renames, closes or reopens a topic; every device, the sender's
+included, applies it to its own list after the checks in section 1. At most
+100 topics per group, names 1 to 64 characters. Texts and files carry the
+topic id (`topic`); other kinds belong to the main chat. A receiver keeps a
+message under its topic, or drops it when the topic is closed and the
+sender may not manage topics; while `chat.topics` is released no topics are
+shown and a topic on a message is ignored (the message shows in the main
+chat). Unread counts are kept per topic on the device (`mark_topic_read`).
+After adding members, an adder that may manage topics sends a `topics`
+list so they learn the names; a message in a topic a device was never told
+about is kept under that id and shown as an unnamed topic.
+
+### 9.2 Roles, member tags and permissions (`chat.roles`, `chat.member_adds`)
+
+Admins create roles (name, `#rrggbb` colour, permissions) and give them to
+members; roles and assignments are in the group settings (PROTOCOL.md
+6.11.1) so every member holds the same ones. Permissions, each also held by
+every admin:
+
+| Permission | Allows | Enforced by |
+| --- | --- | --- |
+| `pin` | pin and unpin (`chat.pins`) | the sender and every receiver (`pins.rs`) |
+| `delete` | delete another member's message for everyone (`delete`) | the sender and every receiver (`messages.rs`) |
+| `add` | add members while `chat.member_adds` is released | the sender and every device's core, which rejects the add commit before merging it (PROTOCOL.md 6.11.1) |
+| `topics` | create, rename, close and reopen topics | the sender and every receiver (`topics.rs`) |
+
+While `chat.roles` is released roles grant nothing and are not shown (they
+stay in the settings). A payload a permission does not cover is dropped by
+every honest receiver; the tests send such payloads with the sending
+device's own checks bypassed (`send_unchecked`) and with raw MLS commits.
+
+### 9.3 Admin log (`chat.admin_log`)
+
+Each device records the admin actions it observes, with the actor MLS
+authenticated: settings changes (name, admins, chat features, roles and
+assignments, restrictions, community chats; as a difference of the
+settings before and after each merged commit), members added and removed
+(by the committer), pins and unpins, messages deleted by moderators, topic
+changes, join requests approved or declined on this device. Nothing is sent
+for it; a device that joined later has no earlier entries, and an action a
+device dropped is not logged. At most 500 entries per group. Shown to
+admins (`NOT_ADMIN` otherwise). Released: nothing is recorded and nothing
+is shown.
+
+### 9.4 Welcome message (`chat.welcome`)
+
+Stored in the group settings as the option of `chat.welcome` (at most 500
+characters), so it is the admins' text, authenticated by the group context
+the new member receives in its welcome, and not something the adding device
+chose. A device that joins shows it once (`Event::Welcome` and a `welcome`
+line in its history); members already in the group see no line. Released:
+new members see nothing.
+
+### 9.5 History for new members (`chat.history_share`)
+
+Chosen design: the device whose commit added the new members re-sends its
+newest N texts and files (N = the option, 25 to 100) in one `history`
+application message to the group, naming the new members in `to`. It is
+end-to-end encrypted like any message; other members' devices ignore a
+bundle not addressed to them; the server sees one more ciphertext. A
+separate group would cost commits and gain nothing.
+
+A receiver takes a bundle only if its own member id is in `to`,
+`chat.history_share` is applied, the authenticated sender is a current
+member and the member that added this device (the sender of the first
+roster after joining), it is the first bundle, and it arrives within a day
+of joining. At most 200 KiB per bundle (oldest messages give way); texts are
+cut at 4096 characters; view-once files, deleted messages and messages that
+were themselves shared are never re-sent.
+
+Honest limit: the original messages' MLS authentication cannot be carried.
+Authors, names and times inside a bundle are the sharer's claims; apps show
+every shared message with "shared by X" (X the authenticated sharer,
+`Message.shared_by`). Shared messages are not franked again (they cannot be
+reported as their claimed author's), do not count as unread, and get the
+group's disappearing timer from when they arrive. While the key is applied
+the apps show "new members see the recent conversation".
+
+### 9.6 Join approval (`chat.join_approval`)
+
+With the key applied, an invite-link request (PROTOCOL.md 8.7) is not
+carried out at once by the link owner's device: it waits there as a join
+request (`Event::JoinRequest`, `join_requests`) for 30 days until an admin
+approves it (`approve_join`: the account is added as for any link join, its
+device accepts the group because the nonce matches) or declines it
+(nothing is sent). The joiner's device accepts the group by itself only
+within a day of using the link (section 5); approved later, the group
+arrives there as a request. Requests live on the device that made the link. The
+server sees the same request as without approval.
+
+### 9.7 Communities
+
+A community is a group (the root) whose settings carry `community.chats`
+(group id and name of each chat, at most 50). Its members are the
+community's members, its admins the community's admins. An admin creates
+it (`create_community`), invites members like to any group, and adds or
+removes chats it is in. A member asks to join a chat with `join_chat` in
+the root, naming its own account; each admin device of the root that is in
+the chat and may add members there claims the account's key packages and
+adds them only if one of the claimed devices is the requesting device
+itself (its member id is the authenticated sender), so nobody can get
+another account added. The joining device accepts the chat at once (it
+asked). Limits: a chat none of the community's admins is in cannot be
+joined this way; each chat keeps its own admins and settings.
+
+### 9.8 Slow mode (`chat.slow_mode`)
+
+Members who are not admins send at most one new message (text, file,
+sticker, poll, place, event) per interval. The sending device refuses
+earlier ones (`SLOW_MODE`, `slow_mode_wait`). Receivers check with the
+server's arrival minute, which every receiver sees the same: with interval
+`i`, at most `ceil(60 / i)` messages of one member in one server minute, and
+messages at least `i - 60` seconds apart in server minutes. An honest
+sender always passes; a modified one gets at most about twice the rate. A
+message that breaks it is hidden; admins get `Event::SlowModeHidden`. Limit:
+messages that waited in the outbox and reach the server together may be
+hidden by receivers.
+
+### 9.9 Restricted members (`chat.restrict`)
+
+An admin restricts a member until a time (`restrict_member`): the member
+may read but not send anything except its name, photo, read receipts,
+typing, presence and a leave request. Restrictions are in the group
+settings (at most 50; admins cannot be restricted); every receiver drops
+what a restricted member sends until the time passes by its own clock.
+Released: restrictions are not enforced.
+
+### 9.10 The next admin (`chat.owner_succession`)
+
+When the group's only admin leaves (`leave`, `leave_quietly`, account
+deletion) and the key is applied, its device first commits a settings
+change naming the successor admin, then sends its leave request, which the
+new admin's app carries out. The successor is the member in the lowest leaf
+of the ratchet tree, other than the leaving device and not restricted
+(`Group::successor`): every device computes the same one from the same
+tree, and MLS puts each added device into the leftmost free leaf, so it is
+the longest-standing member unless a removal freed an earlier leaf. A last
+admin cannot be removed by anyone else (only admins remove, and no device
+removes itself), so leaving is the only way the last admin goes. Released:
+nobody is named; the group keeps the departed device as its only admin and
+its leaf stays, since nobody else may remove it.

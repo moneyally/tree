@@ -104,7 +104,10 @@ impl Session {
     /// checks; apps never call it.
     #[doc(hidden)]
     pub fn send_unchecked(&mut self, gid: &[u8], p: &Payload) -> Result<usize, Error> {
-        self.send_payload(gid, p)
+        self.unchecked = true;
+        let r = self.send_payload(gid, p);
+        self.unchecked = false;
+        r
     }
 
     /// Routes a part B rich-chat payload from member `from` (blocked

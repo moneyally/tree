@@ -43,6 +43,15 @@ pub struct CommunityChatInfo {
     pub joined: bool,
 }
 
+/// A join request an admin device carries out after the mailbox pass.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct JoinAsk {
+    root: String,
+    chat: String,
+    member: String,
+    account: String,
+}
+
 /// A join request this device sent, by chat (hex) -> when.
 fn asked_key(chat: &str) -> String {
     format!("commjoin/{chat}")
@@ -192,16 +201,45 @@ impl Session {
         if !self.may_add(&gid)? || self.group(&gid)?.pending_commit().is_some() {
             return Ok(());
         }
-        if account.is_empty() || account.len() > 64 || self.is_blocked(&account)? {
+        if account.is_empty() || account.len() > 64 || !account.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') || self.is_blocked(&account)? {
             drop(events, "bad or blocked account");
             return Ok(());
         }
-        match self.add_requester(&gid, &account, &from)? {
-            Some(CommitOutcome::Accepted { .. }) => {
-                events.push(Event::CommunityMemberAdded { community: root.to_vec(), group: gid, member: from });
+        // Carried out after the mailbox pass (`handle_community_requests`):
+        // a commit and its network calls never run inside the receive
+        // transaction.
+        let r = JoinAsk { root: hex::encode(root), chat, member: from.to_hex(), account };
+        self.app_put(&format!("commreq/{}/{}", r.root, from.to_hex()), Some(&r))
+    }
+
+    /// Carries out the join requests `on_join_chat` accepted (called by
+    /// `sync` after the mailbox pass), checking everything again.
+    pub(crate) fn handle_community_requests(&mut self, events: &mut Vec<Event>) -> Result<(), Error> {
+        for k in self.client.app_data_keys("commreq/")? {
+            let r: Option<JoinAsk> = self.app_get(&k)?;
+            self.client.set_app_data(&k, None)?;
+            let Some(r) = r else { continue };
+            let (Ok(root), Ok(gid), Some(from)) = (hex::decode(&r.root), hex::decode(&r.chat), MemberId::from_hex(&r.member)) else { continue };
+            let me = self.member_id();
+            let still = self.group_ids()?.contains(&root)
+                && self.group_ids()?.contains(&gid)
+                && self.group(&root)?.members().contains(&from)
+                && self.group_settings(&root)?.is_admin(&me)
+                && self.group(&gid)?.is_member()
+                && !self.group(&gid)?.members().contains(&from)
+                && self.group(&gid)?.pending_commit().is_none()
+                && self.may_add(&gid)?;
+            if !still {
+                continue;
             }
-            Some(CommitOutcome::Lost) => {} // another admin's commit won
-            None => drop(events, "the account's devices do not include the requesting device"),
+            match self.add_requester(&gid, &r.account, &from) {
+                Ok(Some(CommitOutcome::Accepted { .. })) => {
+                    events.push(Event::CommunityMemberAdded { community: root, group: gid, member: from });
+                }
+                Ok(Some(CommitOutcome::Lost)) => {} // another admin's commit won
+                Ok(None) => events.push(Event::Dropped { reason: "community join: the account's devices do not include the requesting device".into() }),
+                Err(e) => events.push(Event::Dropped { reason: format!("community join: {e}") }),
+            }
         }
         Ok(())
     }

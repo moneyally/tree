@@ -392,6 +392,9 @@ pub struct Session {
     /// The server's arrival time (whole minutes) of the message being
     /// handled, if it came from the mailbox now (slow mode, `groups.rs`).
     server_time: Option<i64>,
+    /// Inside [`Session::send_unchecked`]: the sending side's own group
+    /// checks are skipped (tests of the receiving side only).
+    unchecked: bool,
 }
 
 impl Session {
@@ -450,7 +453,7 @@ impl Session {
 
     pub(crate) fn from_parts(client: Client<StoredProvider>, api: Api, creds: Creds, path: &str) -> Self {
         let media = media::MediaState::new(path);
-        Self { client, api, creds, groups: HashMap::new(), refresh_policy: Default::default(), link: None, media, server_time: None }
+        Self { client, api, creds, groups: HashMap::new(), refresh_policy: Default::default(), link: None, media, server_time: None, unchecked: false }
     }
 
     /// Opens an existing profile and resubmits any commit that was waiting
@@ -949,7 +952,7 @@ impl Session {
         if !extra.added.is_empty() {
             // Tell everyone, including the new devices, who is where.
             let names = self.names(gid)?;
-            let members: Vec<String> = self.group(gid)?.members().iter().map(|m| m.to_hex()).collect();
+            let members: std::collections::HashSet<String> = self.group(gid)?.members().iter().map(|m| m.to_hex()).collect();
             let mut accounts = self.map(&accounts_key(gid))?;
             accounts.retain(|m, _| members.contains(m));
             self.save_map(&accounts_key(gid), &accounts)?;
@@ -1068,6 +1071,7 @@ impl Session {
             self.ensure_key_packages()?;
         }
         self.handle_invite_requests(&mut events)?;
+        self.handle_community_requests(&mut events)?;
         self.refresh_due_groups(&mut events)?;
         // After joining, tell the others our name once we know where they are.
         for key in self.client.app_data_keys("announce/")? {
@@ -1235,7 +1239,7 @@ impl Session {
             Some(Payload::Roster { devices, names, accounts, link }) => {
                 // Only entries for current members are taken; names only as
                 // hints where the member has not announced its own.
-                let members: Vec<String> = self.group(gid)?.members().iter().map(|m| m.to_hex()).collect();
+                let members: std::collections::HashSet<String> = self.group(gid)?.members().iter().map(|m| m.to_hex()).collect();
                 let mut roster = self.roster(gid)?;
                 for (m, d) in devices {
                     if members.contains(&m) && m != me {

@@ -162,7 +162,7 @@ object Strings {
         "chat_name" to "이 대화에서만 쓰는 이름",
         "chat_name_note" to "이 대화에서만 다른 이름을 보여 줍니다. 같은 기기 키를 쓰므로 두 대화에 모두 있는 사람은 같은 사람인 줄 알 수 있습니다.",
         "clear_chat_name" to "원래 이름으로",
-    ) + RichStrings.ko
+    ) + RichStrings.ko + GroupStrings.ko
 
     private val en = mapOf(
         "app" to "Tree",
@@ -319,7 +319,7 @@ object Strings {
         "chat_name" to "Name in this chat only",
         "chat_name_note" to "Shows another name in this chat only. Your device keys stay the same, so someone in two of your chats can tell it is you.",
         "clear_chat_name" to "Back to my name",
-    ) + RichStrings.en
+    ) + RichStrings.en + GroupStrings.en
 
     fun t(key: String): String = (if (lang == Lang.KO) ko[key] else null) ?: en[key] ?: key
 

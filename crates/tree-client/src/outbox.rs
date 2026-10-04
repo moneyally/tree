@@ -144,7 +144,7 @@ impl Session {
             return Err(Error::Usage("this device is not a member of the group".into()));
         }
         // Restricted members and slow mode (`groups.rs`).
-        let slow = self.check_sendable(gid, p)?;
+        let slow = !self.unchecked && self.check_sendable(gid, p)?;
         if slow {
             self.note_slow_send(gid)?;
         }

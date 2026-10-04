@@ -33,8 +33,8 @@ const KEY_PACKAGE_MIN: u64 = 4;
 pub enum Error {
     #[error("tree: {0}")]
     Tree(#[from] TreeError),
-    #[error("server: {0}")]
-    Server(#[from] api::Error),
+    #[error("server error {status}: {code}")]
+    Server { status: u16, code: String },
     #[error("usage: {0}")]
     Usage(String),
 }
@@ -249,9 +249,7 @@ impl Session {
             .or_else(|| reply.body["message_id"].as_str())
             .unwrap_or_default();
         if id.is_empty() {
-            return Err(Error::Server(api::Error::Protocol(
-                "server did not return a message id".into(),
-            )));
+            return Err(Error::Usage("server did not return a message id".into()));
         }
         Ok(id.to_string())
     }

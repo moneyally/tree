@@ -138,7 +138,7 @@ pub async fn put_chunk(
     }
     let owner: String = row.try_get("owner_device_id")?;
     if owner != req.device.device_id {
-        return Err(ApiError::forbidden("media belongs to another device"));
+        return Err(ApiError::forbidden("MEDIA_OWNER_MISMATCH", "media belongs to another device"));
     }
     let expires_at: i64 = row.try_get("expires_at")?;
     if expires_at <= now_secs() {
@@ -146,7 +146,7 @@ pub async fn put_chunk(
     }
     let finalized: i64 = row.try_get("finalized")?;
     if finalized != 0 {
-        return Err(ApiError::conflict("media is already finalized"));
+        return Err(ApiError::conflict("MEDIA_FINALIZED", "media is already finalized"));
     }
 
     let chunk_size: usize = row.try_get::<i64, _>("chunk_size")? as usize;
@@ -306,7 +306,7 @@ pub async fn finalize(
     .fetch_one(&state.db)
     .await?;
     if count != expected as i64 {
-        return Err(ApiError::conflict("not all media chunks are uploaded"));
+        return Err(ApiError::conflict("MEDIA_INCOMPLETE", "not all media chunks are uploaded"));
     }
     let distinct_bad: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM media_chunks WHERE media_id = ? AND length(sha256) != 32",

@@ -219,7 +219,6 @@ pub async fn submit(
         .into_iter()
         .map(|r| r.try_get("device_id"))
         .collect::<Result<HashSet<_>, _>>()?;
-        let removed_set: HashSet<&String> = removed.iter().collect();
         if removed.iter().any(|d| d == &sender)
             || !removed.iter().all(|d| current_members.contains(d))
         {

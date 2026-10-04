@@ -413,6 +413,27 @@ impl Api {
         .await
     }
 
+    /// Sends exactly body with a stable 16-byte idempotency key.
+    pub async fn send_raw_idempotent(
+        &self,
+        dev: &Device,
+        recipients: &[&str],
+        body: &[u8],
+        key: [u8; 16],
+    ) -> (StatusCode, Value) {
+        self.call(
+            dev,
+            Method::POST,
+            "/v1/messages",
+            Some(json!({
+                "recipients": recipients,
+                "body": b64(body),
+                "idempotency_key": b64(&key),
+            })),
+        )
+        .await
+    }
+
     /// Creates the fake group roster used by mailbox tests. Production
     /// requests must establish this roster through the real MLS commit path.
     pub async fn seed_fake_group(&self, dev: &Device, recipients: &[&Device]) {

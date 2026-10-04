@@ -895,6 +895,16 @@ mod tests {
     }
 
     #[test]
+    fn manifest_is_encrypted_for_server_storage() {
+        let (manifest, key) = sample(5, ViewPolicy::Persistent);
+        let blob = encrypt_manifest(&key, &manifest).unwrap();
+        assert_ne!(blob, manifest.encode().unwrap());
+        assert_eq!(decrypt_manifest(&key, &blob).unwrap(), manifest);
+        let other = MediaKey::generate().unwrap();
+        assert!(decrypt_manifest(&other, &blob).is_err());
+    }
+
+    #[test]
     fn view_event_round_trips() {
         let event = MediaViewEvent {
             message_id: MessageId([3; 16]),

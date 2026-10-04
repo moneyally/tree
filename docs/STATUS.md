@@ -72,6 +72,7 @@ in section 5.
 | Minimal logs (no IP, no sender, day / minute granularity) | done | SERVER_API.md "What the server stores" |
 | Operator feature flags + audit trail | done | own implementation; section 4.4 |
 | `@username` (hash only, rate-limited search) | partial | client canonicalization/hash + server claim/lookup/delete; UI/QR not built |
+| Unused key-package revocation after suspected compromise | done | `DELETE /v1/keypackages`; CLI `revoke-keys`; integration coverage |
 | Message request inbox for strangers, blocking | partial | server request/accept/reject + block/unblock APIs; client UI and message delivery policy integration remain |
 | Report service (reporter's device submits) | partial | opaque MLS application envelope transport + evidence hash; message franking not implemented |
 | Spam limits for new accounts | partial | per-device rate limits and signup limits exist; no new-account sending limit |

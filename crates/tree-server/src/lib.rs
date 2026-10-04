@@ -201,7 +201,10 @@ pub fn router(state: AppState) -> Router {
             "/v1/device-links/{link_id}/confirm-join",
             post(device_links::confirm_join),
         )
-        .route("/v1/keypackages", post(keypackages::upload).delete(keypackages::revoke_all))
+        .route(
+            "/v1/keypackages",
+            post(keypackages::upload).delete(keypackages::revoke_all),
+        )
         .route("/v1/groups/{group_id}/devices", get(groups::list_devices))
         .route(
             "/v1/username",

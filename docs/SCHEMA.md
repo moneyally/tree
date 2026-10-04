@@ -279,7 +279,7 @@ CREATE TABLE account_recovery (
 
 ```sql
 CREATE TABLE invites (
-    token_hash BLOB PRIMARY KEY,            -- SHA-256("tree/invite/v1" || secret)
+    token_hash BLOB PRIMARY KEY,            -- SHA-256("tree/invite/v1" || proof) (v2) or || secret (v1)
     owner_account TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
     owner_device  TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
     expires_at INTEGER NOT NULL, max_uses INTEGER NOT NULL, uses INTEGER NOT NULL DEFAULT 0
@@ -293,9 +293,12 @@ CREATE TABLE invite_requests (
 );
 ```
 
-Migration `0010_invite_nonce.sql` adds `invite_requests.nonce` (BLOB, 16
-random bytes from the joining device, returned only to the link owner's
-device; NULL from older clients; PROTOCOL.md 8.7).
+Migration `0010_invite_nonce.sql` adds `invite_requests.nonce` (BLOB,
+returned only to the link owner's device; PROTOCOL.md 8.7): for version 2
+links the joiner's 16-byte nonce sealed to the link's owner (44 bytes,
+AES-256-GCM, the server cannot open it, F-025); 16 bytes in the clear only
+from older clients on version 1 links; NULL if none was sent. The column
+type did not change, so no migration was needed for version 2.
 
 ### 2.7 Push (migration `0008_push.sql`, PROTOCOL.md 8.8)
 

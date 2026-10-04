@@ -8,26 +8,64 @@
 //! requester through the normal MLS path if the link is still valid, the
 //! group still allows links (`chat.invite_link` applied by its admins) and
 //! this device is still an admin.
+//!
+//! Version 2 links (F-025) are `tree://join/<b64url(0x02 || secret(16) ||
+//! owner member id(32) || owner account id)>`: the joiner learns the owner
+//! from the link itself (out of band), not from the server, sends the
+//! server a proof derived from the secret instead of the secret, and seals
+//! its nonce to the owner (`tree_core::invite`). Version 1 links (the bare
+//! 16-byte secret) still work, but their owner is only the server's word:
+//! the group then arrives as a request.
 
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use tree_core::MemberId;
+
 use crate::api::InviteRequest;
 use crate::messages::now;
 use crate::{CommitOutcome, Error, Event, Session};
 
 const PREFIX: &str = "tree://join/";
+const LINK_V2: u8 = 2;
 const FEATURE: &str = "chat.invite_link";
 /// How long a "I opened this link" marker counts.
 const JOIN_WINDOW: i64 = 86400;
 
-/// "The user opened this link of `owner` at `at`" (`linkjoin/<hash hex>`).
+/// "The user opened this link of `owner` at `at`" (`linkjoin/<nonce hex>`).
 #[derive(Serialize, Deserialize)]
 struct LinkJoin {
     owner: String,
     at: i64,
+    /// The owner's member id (hex), from a version 2 link.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    member: Option<String>,
+    /// The owner came from the link itself (version 2), not from the server.
+    #[serde(default)]
+    verified: bool,
+}
+
+/// What a roster's link field means for this device (see
+/// [`Session::take_link_join`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LinkConsent {
+    /// Not an answer to a link this device opened.
+    None,
+    /// The answer to a version 2 link this device opened: the adder is the
+    /// device the link named, and the roster names the sealed nonce.
+    Verified,
+    /// The user opened a version 1 link of this account; the owner was only
+    /// the server's word, so the group goes to the request inbox.
+    Unverified,
+}
+
+/// A parsed invite link.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ParsedLink {
+    V1 { token: [u8; 16] },
+    V2 { token: [u8; 16], member: MemberId, owner: String },
 }
 
 /// A link this device made.
@@ -49,13 +87,38 @@ fn key(hash: &[u8]) -> String {
     format!("invite/{}", hex::encode(hash))
 }
 
-pub(crate) fn parse_link(link: &str) -> Result<Vec<u8>, Error> {
+fn invite_key_key(hash: &[u8]) -> String {
+    format!("invitekey/{}", hex::encode(hash))
+}
+
+pub(crate) fn parse_link(link: &str) -> Result<ParsedLink, Error> {
+    let damaged = || Error::Usage("damaged invite link".into());
     let t = link.trim().strip_prefix(PREFIX).ok_or_else(|| Error::Usage("not a Tree invite link".into()))?;
-    let token = URL_SAFE_NO_PAD.decode(t).map_err(|_| Error::Usage("damaged invite link".into()))?;
-    if token.len() != 16 {
-        return Err(Error::Usage("damaged invite link".into()));
+    let b = URL_SAFE_NO_PAD.decode(t).map_err(|_| damaged())?;
+    if b.len() == 16 {
+        return Ok(ParsedLink::V1 { token: b.try_into().expect("16 bytes") });
     }
-    Ok(token)
+    // 0x02, secret, member id, then the owner's account id (1 to 64 URL-safe characters).
+    if b.len() < 1 + 16 + 32 + 1 || b.len() > 1 + 16 + 32 + 64 || b[0] != LINK_V2 {
+        return Err(damaged());
+    }
+    let owner = std::str::from_utf8(&b[49..]).map_err(|_| damaged())?;
+    if !owner.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_') {
+        return Err(damaged());
+    }
+    Ok(ParsedLink::V2 {
+        token: b[1..17].try_into().expect("length checked"),
+        member: MemberId(b[17..49].try_into().expect("length checked")),
+        owner: owner.to_string(),
+    })
+}
+
+fn encode_link(token: &[u8; 16], member: &MemberId, owner: &str) -> String {
+    let mut b = vec![LINK_V2];
+    b.extend_from_slice(token);
+    b.extend_from_slice(member.as_bytes());
+    b.extend_from_slice(owner.as_bytes());
+    format!("{PREFIX}{}", URL_SAFE_NO_PAD.encode(b))
 }
 
 impl Session {
@@ -73,12 +136,15 @@ impl Session {
         }
         let mut token = [0u8; 16];
         getrandom::getrandom(&mut token).expect("operating system random number generator failed");
-        let h = token_hash(&token);
+        // Version 2: the server knows only the hash of a proof derived from
+        // the secret; this device keeps the key that opens joiners' nonces.
+        let h = token_hash(&tree_core::invite::proof(&token));
         let v = self.api.invite_create(&self.creds, &h, lifetime_secs, max_uses)?;
         let expires_at = v["expires_at"].as_i64().unwrap_or(now() + lifetime_secs);
         let rec = InviteLink { group: hex::encode(gid), expires_at, max_uses };
         self.client.set_app_data(&key(&h), Some(&serde_json::to_vec(&rec).expect("JSON")))?;
-        Ok(format!("{PREFIX}{}", URL_SAFE_NO_PAD.encode(token)))
+        self.client.set_app_data(&invite_key_key(&h), Some(&tree_core::invite::nonce_key(&token)[..]))?;
+        Ok(encode_link(&token, &me, self.account_id()))
     }
 
     /// Links this device made for a group: (hash hex, link record).
@@ -102,6 +168,7 @@ impl Session {
             let hash = hex::decode(&h).map_err(|_| Error::Protocol("bad invite key".into()))?;
             self.api.invite_revoke(&self.creds, &hash)?;
             self.client.set_app_data(&key(&hash), None)?;
+            self.client.set_app_data(&invite_key_key(&hash), None)?;
         }
         if self.chat_feature(gid, FEATURE)?.0 {
             self.set_chat_feature(gid, FEATURE, false, None)?;
@@ -110,38 +177,69 @@ impl Session {
     }
 
     /// Uses an invite link. The link's owner adds this account when its
-    /// device next syncs; the group then arrives as accepted (the user
-    /// asked to join). Returns the owner's account id.
+    /// device next syncs; for a version 2 link the group then arrives as
+    /// accepted (the user asked to join), for a version 1 link as a request.
+    /// Returns the owner's account id. Fails if the server names another
+    /// owner than the link does (F-025).
     pub fn join_invite_link(&mut self, link: &str) -> Result<String, Error> {
-        let token = parse_link(link)?;
-        // Everyone who has the link knows the token; only the owner's device
-        // gets this nonce (from the server, with the request). A roster
-        // naming it therefore comes from the device that took the request,
-        // not from someone else who saw the link and claims the owner's
-        // account (F-018).
         let mut nonce = [0u8; 16];
         getrandom::getrandom(&mut nonce).expect("operating system random number generator failed");
-        let owner = self.api.invite_join(&self.creds, &STANDARD.encode(&token), &nonce)?;
-        let mark = LinkJoin { owner: owner.clone(), at: now() };
+        let (owner, mark) = match parse_link(link)? {
+            ParsedLink::V2 { token, member, owner } => {
+                // The owner's account and device come from the link (out of
+                // band). The nonce is sealed to whoever holds the link's
+                // secret; the server relays it to the owner's device without
+                // reading it. A roster naming it, sent by the device the link
+                // names, is the answer to exactly this request (F-018, F-025).
+                let sealed = tree_core::invite::seal_nonce(&token, self.account_id(), &nonce);
+                let proof = tree_core::invite::proof(&token);
+                let said = self.api.invite_join(&self.creds, &STANDARD.encode(proof), Some(&sealed))?;
+                if said != owner {
+                    return Err(Error::Protocol("the server named another owner than the invite link: not joined".into()));
+                }
+                let mark = LinkJoin { owner: owner.clone(), at: now(), member: Some(member.to_hex()), verified: true };
+                (owner, mark)
+            }
+            ParsedLink::V1 { token } => {
+                // An old link: the owner is the server's word, the request
+                // carries no nonce, and the group arrives as a request.
+                let owner = self.api.invite_join(&self.creds, &STANDARD.encode(token), None)?;
+                let mark = LinkJoin { owner: owner.clone(), at: now(), member: None, verified: false };
+                (owner, mark)
+            }
+        };
         self.client.set_app_data(&format!("linkjoin/{}", hex::encode(nonce)), Some(&serde_json::to_vec(&mark).expect("JSON")))?;
         Ok(owner)
     }
 
-    /// True (once) if the user recently opened an invite link of `account`
-    /// and `link` is the nonce (hex) this device sent with that request.
-    /// Tying it to the request means the owner can bring the user into one
-    /// group, the one this use was for, and nobody else can.
-    pub(crate) fn take_link_join(&mut self, account: &str, link: Option<&str>) -> Result<bool, Error> {
-        let Some(h) = link.filter(|h| h.len() == 32 && h.bytes().all(|b| b.is_ascii_hexdigit())) else { return Ok(false) };
-        let k = format!("linkjoin/{h}");
-        let Some(mark) = self.client.app_data(&k)?.and_then(|v| serde_json::from_slice::<LinkJoin>(&v).ok()) else {
-            return Ok(false);
+    /// Whether a group added by `from` (claiming `account`) answers a link
+    /// this device opened (each marker counts once, for a day):
+    /// [`LinkConsent::Verified`] if `link` is the nonce (hex) sent with a
+    /// version 2 request whose link named `account` and the device `from`;
+    /// [`LinkConsent::Unverified`] if the user opened a version 1 link whose
+    /// owner the server said was `account`.
+    pub(crate) fn take_link_join(&mut self, account: &str, from: &MemberId, link: Option<&str>) -> Result<LinkConsent, Error> {
+        let read = |s: &Self, k: &str| -> Result<Option<LinkJoin>, Error> {
+            Ok(s.client.app_data(k)?.and_then(|v| serde_json::from_slice::<LinkJoin>(&v).ok()))
         };
-        if mark.owner != account {
-            return Ok(false);
+        if let Some(h) = link.filter(|h| h.len() == 32 && h.bytes().all(|b| b.is_ascii_hexdigit())) {
+            let k = format!("linkjoin/{h}");
+            if let Some(mark) = read(self, &k)? {
+                if mark.verified && mark.owner == account && mark.member.as_deref() == Some(from.to_hex().as_str()) {
+                    self.client.set_app_data(&k, None)?;
+                    return Ok(if now() - mark.at <= JOIN_WINDOW { LinkConsent::Verified } else { LinkConsent::None });
+                }
+            }
         }
-        self.client.set_app_data(&k, None)?;
-        Ok(now() - mark.at <= JOIN_WINDOW)
+        for k in self.client.app_data_keys("linkjoin/")? {
+            if let Some(mark) = read(self, &k)? {
+                if !mark.verified && mark.owner == account && now() - mark.at <= JOIN_WINDOW {
+                    self.client.set_app_data(&k, None)?;
+                    return Ok(LinkConsent::Unverified);
+                }
+            }
+        }
+        Ok(LinkConsent::None)
     }
 
     fn handle_invite_request(&mut self, req: &InviteRequest, events: &mut Vec<Event>) -> Result<(), Error> {
@@ -166,9 +264,16 @@ impl Session {
             refuse(events, "blocked account");
             return Ok(());
         }
-        // Without the joiner's nonce (an older client) the group arrives as
-        // a request on its side.
-        let nonce = req.nonce.as_ref().filter(|n| n.len() == 16).map(hex::encode);
+        // A version 2 link: open the joiner's sealed nonce (bound to its
+        // account). A version 1 link: an older joiner's nonce in the clear.
+        // Without one the group arrives as a request on the joiner's side.
+        let nonce = match self.client.app_data(&invite_key_key(hash))? {
+            Some(k) => {
+                let k: [u8; 32] = k.as_slice().try_into().map_err(|_| Error::Protocol("damaged invite key".into()))?;
+                req.nonce.as_deref().and_then(|n| tree_core::invite::open_nonce(&k, account, n).ok()).map(hex::encode)
+            }
+            None => req.nonce.as_ref().filter(|n| n.len() == 16).map(hex::encode),
+        };
         match self.invite_via(&gid, account, nonce)? {
             (CommitOutcome::Accepted { .. }, ev) => {
                 events.extend(ev);
@@ -200,6 +305,7 @@ impl Session {
             if let Some(rec) = self.client.app_data(&k)?.and_then(|v| serde_json::from_slice::<InviteLink>(&v).ok()) {
                 if rec.expires_at + 7 * 86400 < now() {
                     self.client.set_app_data(&k, None)?;
+                    self.client.set_app_data(&format!("invitekey/{}", &k["invite/".len()..]), None)?;
                 }
             }
         }
@@ -215,10 +321,19 @@ mod tests {
     fn links_parse() {
         let t = [5u8; 16];
         let link = format!("{PREFIX}{}", URL_SAFE_NO_PAD.encode(t));
-        assert_eq!(parse_link(&format!(" {link}\n")).unwrap(), t.to_vec());
+        assert_eq!(parse_link(&format!(" {link}\n")).unwrap(), ParsedLink::V1 { token: t });
         assert!(parse_link("https://example.org/x").is_err());
         assert!(parse_link(&format!("{PREFIX}{}", URL_SAFE_NO_PAD.encode([1u8; 15]))).is_err());
         assert!(parse_link(&format!("{PREFIX}!!")).is_err());
         assert_eq!(hex::encode(token_hash(&t)).len(), 64);
+        // Version 2 carries the owner's device and account.
+        let m = MemberId([3; 32]);
+        let v2 = encode_link(&t, &m, "QWxpY2UtYWNjb3VudA");
+        assert_eq!(parse_link(&v2).unwrap(), ParsedLink::V2 { token: t, member: m, owner: "QWxpY2UtYWNjb3VudA".into() });
+        let mut b = URL_SAFE_NO_PAD.decode(v2.strip_prefix(PREFIX).unwrap()).unwrap();
+        b[0] = 3;
+        assert!(parse_link(&format!("{PREFIX}{}", URL_SAFE_NO_PAD.encode(&b))).is_err(), "unknown version");
+        assert!(parse_link(&encode_link(&t, &m, "bad owner!")).is_err());
+        assert!(parse_link(&encode_link(&t, &m, "")).is_err());
     }
 }

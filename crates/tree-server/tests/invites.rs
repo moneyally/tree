@@ -136,3 +136,27 @@ async fn a_database_failure_is_not_reported_as_a_duplicate() {
     assert_eq!(create(api, &o, &[1; 16], 3600, 1).await.0, StatusCode::CREATED);
     ts.stop().await;
 }
+
+/// Version 2 links (F-025): the joiner sends a 32-byte proof instead of the
+/// secret and a 44-byte sealed nonce, which the server relays as it is.
+#[tokio::test]
+async fn version_2_proof_and_sealed_nonce() {
+    let ts = boot(|_| {}).await;
+    let api = &ts.api;
+    let (owner, a) = (api.signup().await, api.signup().await);
+    let proof = [9u8; 32];
+    let body = json!({ "token_hash": b64(&token_hash(&proof)), "lifetime": 3600, "max_uses": 5 });
+    assert_eq!(api.call(&owner, Method::POST, "/v1/invites", Some(body)).await.0, StatusCode::CREATED);
+    let sealed = [5u8; 44];
+    for bad in [vec![1u8; 20], vec![1u8; 45]] {
+        let (st, _) = api.call(&a, Method::POST, "/v1/invites/join", Some(json!({ "token": b64(&proof), "nonce": b64(&bad) }))).await;
+        assert_eq!(st, StatusCode::BAD_REQUEST);
+    }
+    let (st, _) = api.call(&a, Method::POST, "/v1/invites/join", Some(json!({ "token": b64(&[9u8; 31]) }))).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+    let (st, v) = api.call(&a, Method::POST, "/v1/invites/join", Some(json!({ "token": b64(&proof), "nonce": b64(&sealed) }))).await;
+    assert_eq!((st, v["owner_account"].as_str()), (StatusCode::ACCEPTED, Some(owner.account_id.as_str())));
+    let (_, v) = api.call(&owner, Method::GET, "/v1/invites/requests", None).await;
+    assert_eq!(v["requests"][0]["nonce"], b64(&sealed), "relayed as it is");
+    ts.stop().await;
+}

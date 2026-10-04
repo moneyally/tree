@@ -19,6 +19,7 @@ pub mod features;
 pub mod group;
 pub mod group_settings;
 mod group_state;
+pub mod invite;
 pub mod link;
 pub mod provider;
 pub mod recovery;

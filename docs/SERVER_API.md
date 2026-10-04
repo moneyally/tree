@@ -490,12 +490,17 @@ Only the device that made it; idempotent. `200 { "state": "released" }`.
 
 ### `POST /v1/invites/join` — use a link
 
-`{ "token": "<16 bytes>", "nonce": "<16 bytes>" }` → `202 { "owner_account":
-"..." }`. `nonce` (optional, random from the joining device) is handed only
-to the owner's device with the request (PROTOCOL.md 8.7). `404` if unknown,
-expired or used up; `400` for the owner's own account or a nonce that is not
-16 bytes. A repeated request by the same account counts once and replaces
-the nonce. Costs 5 rate tokens.
+`{ "token": "<16 or 32 bytes>", "nonce": "<16 or 44 bytes>" }` → `202 {
+"owner_account": "..." }`. `token`: the proof derived from a version 2
+link's secret (32 bytes; the server never sees the secret) or a version 1
+secret (16 bytes). The server looks up `SHA-256("tree/invite/v1" || token)`.
+`nonce` (optional) is opaque to the server and handed only to the owner's
+device with the request (PROTOCOL.md 8.7): sealed to the link's owner for
+version 2 links (44 bytes), 16 bytes in the clear only from older clients.
+`404` if unknown, expired or used up; `400` for the owner's own account or
+other lengths. A repeated request by the same account counts once and
+replaces the nonce. Costs 5 rate tokens. Version 2 joiners compare
+`owner_account` with the owner named in the link and stop if they differ.
 
 ### `GET /v1/invites/requests` — requests for my links
 

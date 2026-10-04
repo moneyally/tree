@@ -273,10 +273,11 @@ impl Api {
         Ok(())
     }
 
-    /// Uses a link; returns the owner's account id. `nonce` goes only to
-    /// the owner's device, with the request.
-    pub fn invite_join(&self, c: &Creds, token_b64: &str, nonce: &[u8; 16]) -> Result<String, Error> {
-        let body = json!({ "token": token_b64, "nonce": b64(nonce) });
+    /// Uses a link; returns the owner's account id as the server says.
+    /// `token_b64`: the version 1 secret or the version 2 proof; `nonce`:
+    /// sealed to the owner (version 2), relayed only to the owner's device.
+    pub fn invite_join(&self, c: &Creds, token_b64: &str, nonce: Option<&[u8]>) -> Result<String, Error> {
+        let body = json!({ "token": token_b64, "nonce": nonce.map(b64) });
         let v = self.call(c, Method::POST, "/v1/invites/join", Some(&body))?.ok()?;
         field(&v, "owner_account")
     }

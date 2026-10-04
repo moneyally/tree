@@ -177,10 +177,18 @@ impl Session {
         // answer to exactly that request: they asked to join (once per
         // link use). This deliberately skips the joiner's own
         // `user.group_add` and message requests: the user chose this group.
-        // The nonce went only to the link owner's device, so it vouches for
-        // the adder by itself.
-        if self.take_link_join(adder, link)? {
-            return self.set_group_status(gid, &GroupStatus::Accepted);
+        // The adder is the device the (version 2) link named, and the roster
+        // names the nonce that only the link's holder could open (F-025).
+        // A version 1 link named its owner only through the server: its
+        // group goes to the request inbox instead.
+        match self.take_link_join(adder, adder_member, link)? {
+            crate::invites::LinkConsent::Verified => return self.set_group_status(gid, &GroupStatus::Accepted),
+            crate::invites::LinkConsent::Unverified => {
+                self.set_group_status(gid, &GroupStatus::Request { from: Some(adder.to_string()) })?;
+                events.push(Event::Request { group: gid.to_vec(), from: adder.to_string(), direct });
+                return Ok(());
+            }
+            crate::invites::LinkConsent::None => {}
         }
         // An unvouched adder gets none of a contact's trust.
         let c = c.filter(|_| vouched);
@@ -248,6 +256,28 @@ mod tests {
 
         fn device(&self, name: &str) -> Session {
             Session::create(&self.dir.join(format!("{name}.db")).display().to_string(), "pw", name, &self.url, 8).unwrap()
+        }
+
+        /// Runs `q` (with one text argument) on the server's database.
+        fn sql(&self, q: &'static str, arg: &str) -> u64 {
+            let (db, arg) = (format!("sqlite://{}/s.db", self.dir.display()), arg.to_string());
+            self._rt.block_on(async move {
+                let pool = sqlx::SqlitePool::connect(&db).await.unwrap();
+                let n = sqlx::query(q).bind(arg).execute(&pool).await.unwrap().rows_affected();
+                pool.close().await;
+                n
+            })
+        }
+
+        /// Every blob in one column of the server's database.
+        fn blobs(&self, q: &'static str) -> Vec<Vec<u8>> {
+            let db = format!("sqlite://{}/s.db", self.dir.display());
+            self._rt.block_on(async move {
+                let pool = sqlx::SqlitePool::connect(&db).await.unwrap();
+                let v: Vec<(Vec<u8>,)> = sqlx::query_as(q).fetch_all(&pool).await.unwrap();
+                pool.close().await;
+                v.into_iter().map(|r| r.0).collect()
+            })
         }
     }
 
@@ -480,6 +510,73 @@ mod tests {
         assert!(ev.iter().any(|e| matches!(e, Event::LeaveRequested { .. })), "{ev:?}");
     }
 
+    /// F-025: the invite link names its owner, so a server that names
+    /// another owner is caught before anything is joined; the joiner's nonce
+    /// reaches the server only sealed, never in the clear; the real owner
+    /// still brings the joiner in without a request.
+    #[test]
+    fn the_invite_link_names_its_owner_and_the_server_never_sees_the_nonce() {
+        let srv = Server::new("linkowner");
+        let mut alice = srv.device("alice");
+        let mut dave = srv.device("dave");
+        let mallory = srv.device("mallory");
+        let carol = srv.device("carol");
+        let g = alice.create_group().unwrap();
+        alice.invite(&g, carol.account_id()).unwrap();
+        let link = alice.create_invite_link(&g, 3600, 10).unwrap();
+        let crate::invites::ParsedLink::V2 { token, member, owner } = crate::invites::parse_link(&link).unwrap() else { panic!("version 2") };
+        assert_eq!((member, owner.as_str()), (alice.member_id(), alice.account_id()));
+        // The server holds the hash of a proof, not of the secret itself.
+        assert!(srv.blobs("SELECT token_hash FROM invites").iter().all(|h| *h != crate::invites::token_hash(&token)));
+
+        // The server claims the link is mallory's.
+        assert_eq!(srv.sql("UPDATE invites SET owner_account = ?", mallory.account_id()), 1);
+        let e = dave.join_invite_link(&link).unwrap_err();
+        assert!(e.to_string().contains("another owner"), "{e}");
+        assert!(dave.client.app_data_keys("linkjoin/").unwrap().is_empty(), "no consent recorded");
+        srv.sql("UPDATE invites SET owner_account = ?", alice.account_id());
+        srv.sql("DELETE FROM invite_requests WHERE account_id = ?", dave.account_id());
+
+        // The honest path: the nonce is sealed on the server.
+        assert_eq!(dave.join_invite_link(&link).unwrap(), alice.account_id());
+        let keys = dave.client.app_data_keys("linkjoin/").unwrap();
+        assert_eq!(keys.len(), 1);
+        let nonce = hex::decode(&keys[0]["linkjoin/".len()..]).unwrap();
+        let stored = srv.blobs("SELECT nonce FROM invite_requests WHERE nonce IS NOT NULL");
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].len(), tree_core::invite::SEALED_NONCE_LEN);
+        assert!(!stored[0].windows(16).any(|w| w == nonce.as_slice()), "the server never has the nonce in the clear");
+        alice.sync(0).unwrap();
+        let ev = dave.sync(0).unwrap();
+        assert!(ev.iter().any(|e| matches!(e, Event::Joined { .. })), "{ev:?}");
+        assert!(!ev.iter().any(|e| matches!(e, Event::Request { .. } | Event::Declined { .. })), "{ev:?}");
+        assert_eq!(dave.group_status(&g).unwrap(), GroupStatus::Accepted);
+    }
+
+    /// F-025: a version 1 link (owner only the server's word) still works,
+    /// but its group arrives in the request inbox.
+    #[test]
+    fn an_old_link_still_works_but_arrives_as_a_request() {
+        let srv = Server::new("oldlink");
+        let mut alice = srv.device("alice");
+        let mut dave = srv.device("dave");
+        let carol = srv.device("carol");
+        let g = alice.create_group().unwrap();
+        alice.invite(&g, carol.account_id()).unwrap();
+        // A link as older clients made it: the bare secret, registered by its hash.
+        alice.create_invite_link(&g, 3600, 10).unwrap();
+        let token = [42u8; 16];
+        let h = crate::invites::token_hash(&token);
+        alice.api.invite_create(&alice.creds, &h, 3600, 10).unwrap();
+        alice.client.set_app_data(&format!("invite/{}", hex::encode(h)), Some(&serde_json::to_vec(&crate::invites::InviteLink { group: hex::encode(&g), expires_at: crate::messages::now() + 3600, max_uses: 10 }).unwrap())).unwrap();
+        let old = format!("tree://join/{}", base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, token));
+        assert_eq!(dave.join_invite_link(&old).unwrap(), alice.account_id());
+        alice.sync(0).unwrap();
+        let ev = dave.sync(0).unwrap();
+        assert!(ev.iter().any(|e| matches!(e, Event::Request { from, .. } if from == alice.account_id())), "{ev:?}");
+        assert!(matches!(dave.group_status(&g).unwrap(), GroupStatus::Request { .. }));
+    }
+
     /// F-018: someone else who saw a public invite link cannot pull the
     /// joiner into their own group by claiming to be the link's owner: only
     /// the owner's device learns the nonce of the join request.
@@ -496,7 +593,7 @@ mod tests {
         dave.join_invite_link(&link).unwrap();
         // mallory knows the link (it was published), so she knows its
         // hash; she claims alice's account and names hash and a guess.
-        let token = crate::invites::parse_link(&link).unwrap();
+        let crate::invites::ParsedLink::V2 { token, .. } = crate::invites::parse_link(&link).unwrap() else { panic!("version 2") };
         for fake in [hex::encode(crate::invites::token_hash(&token)), "ab".repeat(16)] {
             let gm = mallory.create_group().unwrap();
             claim_to_be(&mallory, &gm, alice.account_id());

@@ -202,11 +202,14 @@ transcript; the new device's member id from the invitation). A roster label
 naming this account never adds to it and never counts as it.
 
 A group whose adder names, in its roster, the nonce this device sent with
-an invite-link request to that adder in the last day (PROTOCOL.md 8.7) is
-accepted after the blocked check, once: the user asked to join that group,
-so the joiner's own `user.group_add` and message requests do not apply.
-The nonce reaches only the link owner's device, so nobody else who saw a
-published link can use it.
+an invite-link request in the last day (PROTOCOL.md 8.7), and whose adding
+device is the one the (version 2) link names for that account, is accepted
+after the blocked check, once: the user asked to join that group, so the
+joiner's own `user.group_add` and message requests do not apply. The nonce
+reaches only the link owner's device, sealed, and the owner comes from the
+link itself, so neither someone else who saw a published link nor the
+server can use it (F-025). A version 1 link's group goes to the request
+inbox.
 
 `user.group_add` takes the option `contacts` (default) or `nobody`;
 `user.read_receipts` released also hides receipts stored earlier

@@ -432,3 +432,25 @@ Issues found by testing Tree's own design. Each one has a regression test.
   receive batch is open; the whole client test suite runs with it.
 - **Test:** `requests::tests::a_decline_is_only_queued_inside_the_receive_batch`
   (fails before: the request is made inside the batch).
+
+## F-025: the server decided invite-link consent (fixed)
+
+- **Found:** 2026-10-04, security review of wave 2.
+- **What:** the joiner took the link owner's account from the server's
+  answer, and its consent nonce crossed the server in the clear. A
+  malicious server could answer with any account and hand the nonce to that
+  account's device, which then pulled the joiner into any group of its
+  choice past message requests, `user.group_add` and stranger blocking.
+- **Severity:** medium (consent, against a malicious server).
+- **Fix:** invite links version 2 carry the owner's account and member id
+  (out of band); the joiner stops if the server names another owner, and
+  accepts without a request only a group whose adding device is the one the
+  link names and whose roster names its nonce. The nonce is sealed with
+  AES-256-GCM under `HKDF(secret, "tree/invite/nonce-key/v2")` (associated
+  data: the joiner's account), and the server receives
+  `HKDF(secret, "tree/invite/proof/v2")` instead of the secret, so it can
+  read neither. Version 1 links still work; their groups arrive as requests.
+  No migration (the nonce column stays a BLOB).
+- **Test:** `requests::tests::the_invite_link_names_its_owner_and_the_server_never_sees_the_nonce`,
+  `requests::tests::an_old_link_still_works_but_arrives_as_a_request`,
+  `invite::tests::nonce_round_trip_and_binding`.

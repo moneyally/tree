@@ -1275,22 +1275,38 @@ backups keyed from the phrase (stage 3).
 `chat.invite_link` (chat scope, admins; released by default). Code:
 `crates/tree-client/src/invites.rs`, `crates/tree-server/src/invites.rs`.
 
-1. An admin device makes a 16-byte random secret; the link is
-   `tree://join/<base64url secret>`. It registers
-   `SHA-256("tree/invite/v1" || secret)` with a lifetime (1 minute to 30
+1. An admin device makes a 16-byte random secret `T`. The link (version 2,
+   F-025) is
+
+   ```text
+   tree://join/ b64u( 0x02 || T(16) || owner member id(32) || owner account id )
+   proof     = HKDF-SHA-256(ikm = T, salt = none, info = "tree/invite/proof/v2")
+   nonce_key = HKDF-SHA-256(ikm = T, salt = none, info = "tree/invite/nonce-key/v2")
+   ```
+
+   (`crates/tree-core/src/invite.rs`). It registers
+   `SHA-256("tree/invite/v1" || proof)` with a lifetime (1 minute to 30
    days) and a use limit (1 to 10,000), and keeps locally which group the
-   link is for. Making a link applies `chat.invite_link` in the group
-   settings (a commit) if it was released.
-2. A device that opens the link sends the secret and a fresh 16-byte random
-   nonce (`POST /v1/invites/join`, 5 rate tokens). The server checks expiry
-   and uses, counts one use per account, queues a join request (with the
-   nonce) for the owner's device and returns the owner's account id. The
-   joining device remembers (for one day) that the user asked to join,
-   keyed by the nonce, with the owner's account.
-3. The owner's device, on sync, fetches its requests and adds the requester
-   through the normal path (key-package claim, commit, welcome, and a roster
-   naming the nonce; the joiner accepts the group without a request only if
-   the nonce is one it sent to that account, once: F-014, F-018) only if the
+   link is for and `nonce_key`. Making a link applies `chat.invite_link` in
+   the group settings (a commit) if it was released. The owner's account and member id
+   travel inside the link, out of band: the server cannot substitute them.
+2. A device that opens the link makes a fresh 16-byte random nonce, seals
+   it for the link's holder (AES-256-GCM under `nonce_key`, a random 12-byte
+   AEAD nonce, associated data `lp("tree/invite/nonce/v2", joiner account
+   id)`) and sends `proof` and the sealed nonce (`POST /v1/invites/join`, 5
+   rate tokens). The server never sees `T` or the nonce. It checks expiry and
+   uses, counts one use per account, queues a join request (with the sealed
+   nonce) for the owner's device and returns the owner's account id; the
+   joiner stops if that is not the account the link names. The joining
+   device remembers (for one day) that the user asked to join, keyed by the
+   nonce, with the owner's account and member id from the link.
+3. The owner's device, on sync, fetches its requests, opens the sealed
+   nonce (a request whose nonce does not open is handled without one) and
+   adds the requester through the normal path (key-package claim, commit,
+   welcome, and a roster naming the nonce; the joiner accepts the group
+   without a request only if the nonce is one it sent for a link naming that
+   account, the roster's sender is the device the link names, once: F-014,
+   F-018, F-025) only if the
    link is still in its store, the group's settings still apply
    `chat.invite_link`, the device is still an admin, and the requester is not
    blocked. Otherwise it drops the request. Requests are acknowledged
@@ -1304,10 +1320,18 @@ Consent, in both directions (F-018):
   blocked list still applies. The exemption covers exactly one group: the
   one the owner's device adds for that request.
 - **Nobody else can use the exemption.** Everyone who saw a published link
-  knows its secret and hash, so neither identifies the owner. The nonce does:
-  only the owner's device receives it, from the server, with the request. A
-  stranger who claims the owner's account in a roster without the nonce is
-  judged as any stranger (APP_PROTOCOL.md 5).
+  knows its secret, so the secret does not identify the owner. Two things
+  do: the roster must come from the owner's device as the link names it
+  (the MLS-authenticated sender), and must name the nonce, which reaches
+  only the owner's device and only sealed. Before F-025 the owner's account
+  came from the server's answer and the nonce crossed the server in the
+  clear, so a malicious server could name any owner and hand the nonce to
+  that owner's device. A stranger who claims the owner's account in a
+  roster is judged as any stranger (APP_PROTOCOL.md 5).
+- **Version 1 links** (`tree://join/<b64u(T)>`, the bare secret, made by
+  older clients) still work: the joiner sends `T` and no nonce, the owner is
+  only the server's word, and the group arrives in the request inbox (not
+  accepted, not declined by `user.group_add`).
 - **The owner** publishes the link and adds only accounts that asked to
   join through it; nobody is put into a group on the owner's side, so
   `user.group_add` (a setting about being added) has nothing to decide
@@ -1320,8 +1344,9 @@ Consent, in both directions (F-018):
    `chat.invite_link` for the group, which makes every admin device refuse
    requests for its links too.
 
-The server never learns the group: only the hash of the secret, the owner
-account and device, the limits, and which accounts asked. Whoever holds the
+The server never learns the group: only the hash of the proof (version 1:
+of the secret), the owner account and device, the limits, which accounts
+asked, and the sealed nonces. Whoever holds the
 link can ask to join; the limits and the admin's control of the setting
 bound that. The joiner sees the members once it is in (and contacts' key
 changes as usual); it cannot learn anything about the group before. Expired

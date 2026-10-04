@@ -54,6 +54,8 @@ data class UiState(
     val screenshotBlocked: Boolean = false,
     /** Files received in this session: message id -> reference. */
     val files: Map<String, Attachment> = emptyMap(),
+    /** Own messages still in the outbox and not failed: sync sends them. */
+    val sending: Boolean = false,
     val notice: String? = null,
     val error: String? = null,
 )
@@ -125,13 +127,18 @@ class AppModel(
         return true
     }
 
-    /** Long-polls in the background; every arrival is synced and shown. */
+    /**
+     * Long-polls in the background; every arrival is synced and shown.
+     * While own messages wait in the outbox it polls briefly and syncs
+     * every round, which sends them when they are due.
+     */
     fun startSyncLoop() {
         loop?.cancel()
         loop = scope.launch {
             while (isActive && session != null) {
-                val pending = call { it.wait(25u) } ?: false
-                if (pending) syncNow()
+                val outbox = _state.value.sending
+                val pending = call { it.wait(if (outbox) 5u else 25u) } ?: false
+                if (pending || outbox) syncNow()
             }
         }
     }
@@ -170,6 +177,7 @@ class AppModel(
             }
             is TreeEvent.GroupSafetyNotice -> _state.update { it.copy(notice = Strings.t("group_notice")) }
             is TreeEvent.KeyChanged -> _state.update { it.copy(notice = Strings.t("key_changed")) }
+            is TreeEvent.SendFailed -> _state.update { it.copy(notice = Strings.t("send_failed")) }
             else -> {}
         }
     }
@@ -198,11 +206,12 @@ class AppModel(
         val names = members.associate { m -> m.id to if (m.id == me) "" else (m.name ?: m.id.take(6)) }
         val chatFeatures = if (open != null) call { it.chatFeatures(open) } ?: emptyList() else emptyList()
         val blocked = open != null && (call { it.screenshotBlocked(open) } ?: false)
+        val sending = call { s -> s.outbox().any { it.state != "failed" } } ?: false
         _state.update {
             it.copy(
                 chats = chats.map { c -> if (c.id == open) c.copy(unread = 0) else c },
                 messages = messages, names = names, members = members, chatFeatures = chatFeatures,
-                screenshotBlocked = blocked, folders = folders, readMine = readMine,
+                screenshotBlocked = blocked, folders = folders, readMine = readMine, sending = sending,
             )
         }
     }
@@ -246,6 +255,12 @@ class AppModel(
         if (text.isBlank()) return false
         return (call { it.sendText(group, text) } != null).also { refresh() }
     }
+
+    /** A failed message (status "failed"): try again now. True if it went out. */
+    suspend fun retrySend(messageId: String): Boolean = (call { it.retrySend(messageId) } == true).also { refresh() }
+
+    /** A failed message: give up; it leaves the chat on this device. */
+    suspend fun cancelSend(messageId: String): Boolean = (call { it.cancelSend(messageId) } != null).also { refresh() }
 
     suspend fun accept(group: String) { call { it.acceptRequest(group) }; refresh() }
 

@@ -35,6 +35,7 @@ Some errors add fields (named with the endpoint).
 | `COMMIT_CONFLICT` | 409 | another commit already won this epoch; field `winner_sha256` |
 | `USERNAME_TAKEN` | 409 | another account holds this username |
 | `EPOCH_MISMATCH` | 409 | commit for an epoch beyond the next one; field `last_epoch` |
+| `IDEMPOTENCY_KEY_REUSE` | 409 | this device already used the idempotency key for another send (PROTOCOL.md 8.10) |
 | `TOO_LARGE` | 413 | body, message, commit, welcome, key package, or a list (recipients, key packages, ack ids) too large |
 | `RATE_LIMITED` | 429 | slow down; see `Retry-After` (seconds) |
 | `INTERNAL` | 500 | server error |
@@ -167,12 +168,20 @@ One per device; a new one replaces the old. Same size limit as uploads.
 ### `POST /v1/messages` — send
 
 ```json
-{ "recipients": ["<device_id>", ...], "body": "<base64 ciphertext>" }
+{ "recipients": ["<device_id>", ...], "body": "<base64 ciphertext>", "idempotency_key": "<base64, optional>" }
 ```
 
 One mailbox entry per recipient device (duplicates collapse); the body is
 stored once. At most 2048 recipients and 256 KiB body. The sender is **not**
-stored.
+stored with the message.
+
+`idempotency_key` (16 to 64 bytes, PROTOCOL.md 8.10): a retry of the same
+request (same body, same set of recipients) with the same key from the same
+device is answered `200` with the first `delivered` count and
+`"replayed": true`, and delivers nothing again. The same key with another
+body or other recipients: `409 IDEMPOTENCY_KEY_REUSE`. Keys are per sending
+device and expire with the message TTL; at most `MAX_IDEMPOTENCY_KEYS` per
+device are kept (the oldest go first). Malformed key: `400`.
 
 The body must be a Tree envelope holding an MLS application message
 (PROTOCOL.md 4.1; the server reads only the cleartext header). Refused with
@@ -182,10 +191,11 @@ welcomes (they travel only with their commit), anything else.
 `200` →
 
 ```json
-{ "delivered": 2, "unknown_devices": ["..."], "full_devices": ["..."] }
+{ "delivered": 2, "unknown_devices": ["..."], "full_devices": ["..."], "replayed": false }
 ```
 
-`full_devices`: mailboxes holding 10 000 pending messages already.
+`full_devices`: mailboxes holding 10 000 pending messages already. A replayed
+answer has empty `unknown_devices` and `full_devices` (they are not stored).
 
 
 
@@ -250,6 +260,10 @@ On accept the group's device set becomes `({caller} ∪ recipients ∪ added) \
 removed` (registered devices only), the commit goes into every recipient's
 mailbox and the welcome into every added device's mailbox, before the
 transaction ends.
+
+Commits take no idempotency key: they are idempotent by their hash (rule 2).
+A client that lost the answer resubmits the same bytes and gets `200` with
+the same `id` and nothing delivered again.
 
 `200` →
 
@@ -455,7 +469,8 @@ Errors: `UNAUTHORIZED`, `UNKNOWN_FEATURE`.
 | username hash per account (if registered), discoverable flag, day registered | until released or the account is deleted |
 | per group: last accepted epoch, the device ids that may commit next, SHA-256 and id of the last 64 accepted commits | while one of its devices exists |
 | message ciphertext + recipient device + arrival minute | until acknowledged, at most 30 days |
-| message sender | **no** |
+| message sender | **no** (not with the message) |
+| idempotency records (`POST /v1/messages` with a key) | sending device, key, request hash, delivered count, day; until the message TTL, at most `MAX_IDEMPOTENCY_KEYS` per device, deleted with the device; never recipients, body or message id |
 | IP addresses | **no** (signup rate limit keeps them in memory only) |
 | operator flag changes | key, state, time, optional reason |
 | franking | the server key only; nothing per message |
@@ -481,6 +496,7 @@ Logs contain method, route template, status and latency only.
 | `MAX_KEY_PACKAGES_PER_DEVICE` / `_PER_UPLOAD` / `MAX_KEY_PACKAGE_BYTES` | `200` / `100` / `16384` |
 | `MAX_MESSAGE_BYTES` / `MAX_RECIPIENTS` / `MAX_MAILBOX_MESSAGES` / `FETCH_LIMIT` | `262144` / `2048` / `10000` / `100` |
 | `MAX_COMMIT_BYTES` / `MAX_WELCOME_BYTES` | `4194304` / `4194304` |
+| `MAX_IDEMPOTENCY_KEYS` (per sending device) | `10000` |
 | `ATTACHMENT_DIR` / `MAX_ATTACHMENT_BYTES` | `attachments` / `104857600` |
 | `RATE_PER_SEC` / `RATE_BURST` (per device) | `20` / `200` |
 | `SIGNUP_PER_HOUR` / `SIGNUP_BURST` (per address, IPv6 per /64) | `20` / `10` |

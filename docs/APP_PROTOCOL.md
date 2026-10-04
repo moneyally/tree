@@ -143,7 +143,8 @@ device database and checked against the registry (permanent locks such as
 | Create | encrypted profile (`Client::create`), new Ed25519 request key, signup with proof of work, upload 20 key packages |
 | Open | reopen the profile; resubmit every pending commit (PROTOCOL.md 7.1 step 7) |
 | Commit | `add` / `remove` / `refresh_keys` create a pending commit, submit it to `/v1/commits`; `200`, or `409` naming our own hash: confirm; `409` with another winner: discard and report "lost"; other errors: discard; network error: keep pending for a resubmit |
-| Sync | fetch the mailbox (optionally long-poll), process in order, acknowledge everything processed |
+| Sync | fetch the mailbox (optionally long-poll), process in order, acknowledge everything processed, then send the due outbox items |
+| Send | every payload except `typing` and `seen` goes through the outbox (PROTOCOL.md 6.13): sealed once, stored with the history entry, sent with its idempotency key, retried with backoff; `typing` / `seen` go directly and only when nothing of the group waits |
 | Welcome | join; start a roster with the own device; announce the own `profile` when the roster lists others |
 | Envelope for an unknown group, or failing the seal check | hold it (at most 256), retry after every epoch change or join (PROTOCOL.md 6.7) |
 | Key packages | top up to 20 when fewer than 10 remain (checked at creation and after joins) |
@@ -182,3 +183,4 @@ In the same encrypted database as the core (`tree_app` table, SCHEMA.md):
 | `linkjoin/<link hash hex>` | the user opened this link: owner account and time (one day, used once) |
 | `feature/user.recovery_phrase` | applied once a recovery phrase was made (the phrase itself is never stored) |
 | table `tree_messages` | message history with franking records (SCHEMA.md 1.2) |
+| table `tree_outbox` | messages being sent: sealed bytes, recipients, idempotency key, state (SCHEMA.md 1.2) |

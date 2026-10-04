@@ -10,15 +10,17 @@
 //! * Key: rebuilt on every unlock from the side file `<db>.hdr` by a
 //!   [`KeySource`] ([`Passphrase`] = Argon2id today).
 //! * OpenMLS tables: `openmls_sqlite_storage`, unchanged.
-//! * Tree tables: `tree_meta` (identity), `tree_groups` (group list) and
+//! * Tree tables: `tree_meta` (identity), `tree_groups` (group list),
 //!   `tree_group_state` (pending commit, past envelope keys; see
-//!   `group_state.rs`).
+//!   `group_state.rs`), `tree_app`, `tree_messages` (history) and
+//!   `tree_outbox` (messages being sent, `outbox.rs`).
 //! * Each group operation runs in one transaction ([`TreeProvider::atomically`]),
 //!   so a crash leaves either the old or the new state, never half of each.
 
 mod forward;
 pub mod key;
 pub mod messages;
+pub mod outbox;
 #[cfg(test)]
 mod tests;
 
@@ -40,7 +42,8 @@ use crate::{error::TreeError, provider::TreeProvider};
 /// Version of Tree's own tables (`PRAGMA user_version`).
 /// 1: `tree_meta`, `tree_groups`. 2: + `tree_group_state`.
 /// 3: + `tree_app`, `tree_messages`. 4: + `tree_messages.franking`, `seq`.
-const TREE_SCHEMA_VERSION: i64 = 4;
+/// 5: + `tree_outbox`.
+const TREE_SCHEMA_VERSION: i64 = 5;
 
 /// Tree tables added after version 1 (all idempotent, so any older
 /// database is brought up to date by running them).
@@ -64,7 +67,24 @@ const TREE_TABLES_V2: &str =
          PRIMARY KEY (group_id, id)
      ) WITHOUT ROWID;
      CREATE INDEX IF NOT EXISTS tree_messages_time ON tree_messages(group_id, received_at);
-     CREATE INDEX IF NOT EXISTS tree_messages_expiry ON tree_messages(expires_at) WHERE expires_at IS NOT NULL;";
+     CREATE INDEX IF NOT EXISTS tree_messages_expiry ON tree_messages(expires_at) WHERE expires_at IS NOT NULL;
+     CREATE TABLE IF NOT EXISTS tree_outbox (
+         seq        INTEGER PRIMARY KEY AUTOINCREMENT,
+         local_id   TEXT NOT NULL UNIQUE,
+         group_id   BLOB NOT NULL,
+         message_id TEXT,
+         payload    BLOB,
+         body       BLOB,
+         recipients TEXT NOT NULL DEFAULT '[]',
+         idem_key   BLOB,
+         state      TEXT NOT NULL CHECK (state IN ('queued', 'sending', 'sent', 'retry', 'failed')),
+         attempts   INTEGER NOT NULL DEFAULT 0,
+         next_at    INTEGER NOT NULL DEFAULT 0,
+         created_at INTEGER NOT NULL,
+         last_error TEXT
+     );
+     CREATE INDEX IF NOT EXISTS tree_outbox_group ON tree_outbox(group_id, seq);
+     CREATE INDEX IF NOT EXISTS tree_outbox_state ON tree_outbox(state, next_at);";
 
 /// Serialises OpenMLS objects as JSON before they are stored (and encrypted
 /// by SQLCipher). JSON is the format the OpenMLS storage crates are tested with.

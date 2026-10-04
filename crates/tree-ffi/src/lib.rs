@@ -7,7 +7,7 @@
 use std::ops::{Deref, DerefMut};
 use std::sync::{Mutex, MutexGuard};
 
-use tree_client::{CommitOutcome, Event, FileInfo, GroupStatus, MemberId, Session, TextOptions, Words};
+use tree_client::{CommitOutcome, Event, FileInfo, GroupStatus, MemberId, OutboxState, Session, TextOptions, Words};
 
 uniffi::setup_scaffolding!();
 
@@ -142,6 +142,10 @@ pub enum TreeEvent {
     Read { group: String, from: String, ids: Vec<String> },
     Typing { group: String, from: String, on: bool },
     GroupSafetyNotice { group: String, adder: String },
+    /// A message that waited in the outbox reached the server.
+    Sent { group: String, id: Option<String> },
+    /// An outbox item was given up; offer `retry_send` / `cancel_send`.
+    SendFailed { group: String, id: Option<String>, local_id: String, reason: String },
 }
 
 fn ids(v: Vec<MemberId>) -> Vec<String> {
@@ -189,6 +193,8 @@ impl From<Event> for TreeEvent {
             Event::Read { group, from, ids } => TreeEvent::Read { group: h(group), from: from.to_hex(), ids },
             Event::Typing { group, from, on } => TreeEvent::Typing { group: h(group), from: from.to_hex(), on },
             Event::GroupSafetyNotice { group, adder } => TreeEvent::GroupSafetyNotice { group: h(group), adder },
+            Event::Sent { group, id } => TreeEvent::Sent { group: h(group), id },
+            Event::SendFailed { group, id, local_id, reason } => TreeEvent::SendFailed { group: h(group), id, local_id, reason },
         }
     }
 }
@@ -205,6 +211,10 @@ pub struct Message {
     pub expires_at: Option<i64>,
     /// Emoji and how many members reacted with it.
     pub reactions: Vec<Reaction>,
+    /// This device's own message on its way: `pending` (in the outbox),
+    /// `failed` (offer retry / cancel), `sent`; empty for received messages
+    /// and old ones.
+    pub status: String,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -225,8 +235,32 @@ impl From<tree_client::StoredMessage> for Message {
             deleted: m.deleted,
             expires_at: m.expires_at,
             reactions: m.reactions.into_iter().map(|(emoji, members)| Reaction { emoji, members }).collect(),
+            status: String::new(),
         }
     }
+}
+
+/// `status` of [`Message`] for an outbox state.
+fn send_status(s: OutboxState) -> &'static str {
+    match s {
+        OutboxState::Sent => "sent",
+        OutboxState::Failed => "failed",
+        _ => "pending",
+    }
+}
+
+/// A message not sent yet, as an outbox screen shows it.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct OutboxEntry {
+    pub local_id: String,
+    pub group: String,
+    pub message_id: Option<String>,
+    /// `queued`, `sending`, `retry` or `failed`.
+    pub state: String,
+    pub attempts: u32,
+    /// Unix seconds of the next automatic attempt.
+    pub next_at: i64,
+    pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -696,8 +730,58 @@ impl TreeSession {
         Ok(self.s().mute(&unhex(&group, "group")?, on)?)
     }
 
+    /// The newest `limit` messages, with the send status of this device's own.
     pub fn history(&self, group: String, limit: u32) -> R<Vec<Message>> {
-        Ok(self.s().history(&unhex(&group, "group")?, limit)?.into_iter().map(Into::into).collect())
+        let gid = unhex(&group, "group")?;
+        let s = self.s();
+        let states = s.send_states(&gid)?;
+        Ok(s.history(&gid, limit)?
+            .into_iter()
+            .map(|m| {
+                let st = states.get(&m.id).copied();
+                let mut m: Message = m.into();
+                m.status = st.map(send_status).unwrap_or_default().to_string();
+                m
+            })
+            .collect())
+    }
+
+    // --- outbox (reliable sending) ---
+
+    /// Messages not sent yet: pending (retried automatically by `sync`) or
+    /// failed (the user retries or cancels them).
+    pub fn outbox(&self) -> R<Vec<OutboxEntry>> {
+        Ok(self
+            .s()
+            .outbox()?
+            .into_iter()
+            .map(|o| OutboxEntry {
+                local_id: o.local_id,
+                group: hex::encode(o.group),
+                message_id: o.message_id,
+                state: o.state.as_str().to_string(),
+                attempts: o.attempts,
+                next_at: o.next_at,
+                last_error: o.last_error,
+            })
+            .collect())
+    }
+
+    /// Sends what is due in the outbox now (without receiving).
+    pub fn send_pending(&self) -> R<Vec<TreeEvent>> {
+        Ok(self.s().send_pending()?.into_iter().map(Into::into).collect())
+    }
+
+    /// Retries a failed message now (local id or message id). True if it
+    /// went out.
+    pub fn retry_send(&self, id: String) -> R<bool> {
+        Ok(self.s().retry_send(&id)?)
+    }
+
+    /// Gives up a failed message (local id or message id); it leaves the
+    /// history on this device.
+    pub fn cancel_send(&self, id: String) -> R<()> {
+        Ok(self.s().cancel_send(&id)?)
     }
 
     pub fn search(&self, needle: String) -> R<Vec<Message>> {

@@ -48,6 +48,9 @@ pub struct Config {
     pub max_attachment_bytes: usize,
     /// `MAX_MAILBOX_MESSAGES`: pending messages per device mailbox.
     pub max_mailbox_messages: u32,
+    /// `MAX_IDEMPOTENCY_KEYS`: idempotency records kept per sending device
+    /// (the oldest are dropped beyond it; all expire with the message TTL).
+    pub max_idempotency_keys: u32,
     /// `FETCH_LIMIT`: messages returned per fetch.
     pub fetch_limit: u32,
     /// `RATE_PER_SEC` / `RATE_BURST`: per-device token bucket.
@@ -91,6 +94,7 @@ impl Default for Config {
             attachment_dir: "attachments".into(),
             max_attachment_bytes: 100 * 1024 * 1024,
             max_mailbox_messages: 10_000,
+            max_idempotency_keys: 10_000,
             fetch_limit: 100,
             rate_per_sec: 20.0,
             rate_burst: 200.0,
@@ -169,6 +173,7 @@ impl Config {
             attachment_dir: env_parse("ATTACHMENT_DIR", d.attachment_dir)?,
             max_attachment_bytes: env_parse("MAX_ATTACHMENT_BYTES", d.max_attachment_bytes)?,
             max_mailbox_messages: env_parse("MAX_MAILBOX_MESSAGES", d.max_mailbox_messages)?,
+            max_idempotency_keys: env_parse("MAX_IDEMPOTENCY_KEYS", d.max_idempotency_keys)?,
             fetch_limit: env_parse("FETCH_LIMIT", d.fetch_limit)?,
             rate_per_sec: env_parse("RATE_PER_SEC", d.rate_per_sec)?,
             rate_burst: env_parse("RATE_BURST", d.rate_burst)?,
@@ -198,6 +203,7 @@ impl Config {
             || self.max_welcome_bytes == 0
             || self.max_attachment_bytes == 0
             || self.max_key_packages_per_upload == 0
+            || self.max_idempotency_keys == 0
         {
             return Err(ConfigError("limits must be positive".into()));
         }
@@ -261,6 +267,7 @@ mod tests {
             |c| c.max_welcome_bytes = 0,
             |c| c.max_attachment_bytes = 0,
             |c| c.max_key_packages_per_upload = 0,
+            |c| c.max_idempotency_keys = 0,
             |c| c.rate_per_sec = 0.0,
             |c| c.rate_burst = 0.5,
             |c| c.signup_per_hour = 0.0,

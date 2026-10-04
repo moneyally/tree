@@ -197,6 +197,13 @@ private fun ChatScreen(model: AppModel, state: UiState, chat: Chat) {
                     if (m.id in state.readMine) "  ✓ " + Strings.t("read") else ""
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("$who2: $body", Modifier.weight(1f).padding(4.dp))
+                    when (m.status) {
+                        "pending" -> Text("… " + Strings.t("pending"), style = MaterialTheme.typography.bodySmall)
+                        "failed" -> {
+                            TextButton(onClick = { scope.launch { model.retrySend(m.id) } }) { Text(Strings.t("retry")) }
+                            TextButton(onClick = { scope.launch { model.cancelSend(m.id) } }) { Text(Strings.t("cancel_send")) }
+                        }
+                    }
                     if (m.kind == "file" && chat.status == "request") {
                         Text(Strings.t("after_accept"), style = MaterialTheme.typography.bodySmall)
                     } else if (m.kind == "file" && state.files.containsKey(m.id)) {

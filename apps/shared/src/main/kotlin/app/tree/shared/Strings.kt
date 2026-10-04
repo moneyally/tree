@@ -59,6 +59,11 @@ object Strings {
         "group_settings" to "그룹 설정 (관리자)",
         "verified" to "확인됨",
         "compare" to "상대와 직접 만나거나 통화하며 이 숫자가 같은지 비교하세요.",
+        "pending" to "보내는 중",
+        "failed" to "보내지 못함",
+        "retry" to "다시 보내기",
+        "cancel_send" to "취소",
+        "send_failed" to "메시지를 보내지 못했습니다. 다시 보내거나 취소하세요.",
     )
 
     private val en = mapOf(
@@ -113,6 +118,11 @@ object Strings {
         "group_settings" to "Group settings (admins)",
         "verified" to "Verified",
         "compare" to "Compare these digits with the other person in person or on a call.",
+        "pending" to "sending",
+        "failed" to "not sent",
+        "retry" to "Retry",
+        "cancel_send" to "Cancel",
+        "send_failed" to "A message could not be sent. Retry or cancel it.",
     )
 
     fun t(key: String): String = (if (lang == Lang.KO) ko[key] else null) ?: en[key] ?: key

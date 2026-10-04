@@ -182,3 +182,90 @@ fn schema_v1_is_upgraded() {
         assert!(matches!(Client::open(&path, "pw"), Err(TreeError::Storage(_))), "version {bad}");
     }
 }
+
+/// The outbox survives a restart, enqueue is idempotent by local id, an
+/// item cut off in `sending` comes back as `retry`, the backoff budget runs
+/// out into `failed`, and retry-now / cancel act only on failed items.
+#[test]
+fn outbox_lifecycle_across_restarts() {
+    use crate::storage::outbox::{backoff, OutboxItem, OutboxState, MAX_ATTEMPTS};
+    let dir = TempDir::new("outbox");
+    let path = dir.0.join("a.db");
+    let c = Client::create(&path, "pw", "a").unwrap();
+    let mut item = OutboxItem::new("l1", b"g1", Some("m1"), 1000);
+    item.payload = Some(b"payload".to_vec());
+    assert!(c.outbox_enqueue(&item).unwrap());
+    assert!(!c.outbox_enqueue(&OutboxItem::new("l1", b"other", None, 5)).unwrap(), "same local id: no-op");
+    assert_eq!(c.outbox_item("l1").unwrap().unwrap(), item);
+    c.outbox_seal("l1", b"sealed", &["dev".into()], &[7; 32]).unwrap();
+    // sealing twice keeps the first ciphertext
+    c.outbox_seal("l1", b"other bytes", &[], &[8; 32]).unwrap();
+    let sealed = c.outbox_item("l1").unwrap().unwrap();
+    assert_eq!((sealed.body.as_deref(), sealed.payload, sealed.idempotency_key), (Some(&b"sealed"[..]), None, Some(vec![7; 32])));
+    c.outbox_mark_sending("l1").unwrap();
+    drop(c);
+
+    // crash while sending: recovered as retry, due now, the attempt counted
+    let c = Client::open(&path, "pw").unwrap();
+    assert_eq!(c.outbox_recover(2000).unwrap(), 1);
+    let it = c.outbox_item("l1").unwrap().unwrap();
+    assert_eq!((it.state, it.attempts, it.next_at, it.body.as_deref()), (OutboxState::Retry, 1, 2000, Some(&b"sealed"[..])));
+    assert_eq!(c.outbox_recover(2000).unwrap(), 0, "nothing left in sending");
+
+    // passing failures: backoff, then failed after MAX_ATTEMPTS
+    let mut now = 2000;
+    for n in 2..MAX_ATTEMPTS {
+        assert_eq!(c.outbox_mark_retry("l1", true, now, "network").unwrap(), OutboxState::Retry);
+        let it = c.outbox_item("l1").unwrap().unwrap();
+        assert_eq!((it.attempts, it.next_at), (n, now + backoff(n)));
+        now = it.next_at;
+    }
+    // an early (forced) attempt does not use up the budget
+    assert_eq!(c.outbox_mark_retry("l1", false, now, "network").unwrap(), OutboxState::Retry);
+    assert_eq!(c.outbox_item("l1").unwrap().unwrap().attempts, MAX_ATTEMPTS - 1);
+    assert_eq!(c.outbox_mark_retry("l1", true, now, "network").unwrap(), OutboxState::Failed);
+    assert_eq!(c.outbox_states(b"g1").unwrap(), vec![("m1".to_string(), OutboxState::Failed)]);
+
+    // retry now: a fresh budget; cancel only on failed items
+    assert!(c.outbox_cancel("nope").unwrap().is_none());
+    assert!(c.outbox_retry_now("l1", now).unwrap());
+    assert!(!c.outbox_retry_now("l1", now).unwrap(), "only failed items");
+    assert!(c.outbox_cancel("l1").unwrap().is_none(), "only failed items");
+    let it = c.outbox_item("l1").unwrap().unwrap();
+    assert_eq!((it.state, it.attempts), (OutboxState::Retry, 0));
+    c.outbox_mark_sent("l1", now).unwrap();
+    let it = c.outbox_item("l1").unwrap().unwrap();
+    assert_eq!((it.state, it.body, it.recipients.len()), (OutboxState::Sent, None, 0), "ciphertext erased once sent");
+    assert!(c.outbox_unsent(None).unwrap().is_empty());
+    assert!(!c.outbox_enqueue(&OutboxItem::new("l1", b"g1", None, now)).unwrap(), "still idempotent after sent");
+    c.outbox_mark_failed("l1", "late").unwrap();
+    assert_eq!(c.outbox_item("l1").unwrap().unwrap().state, OutboxState::Sent, "sent is final");
+
+    // cancel removes a failed item; sent records go after SENT_KEEP
+    c.outbox_enqueue(&OutboxItem::new("l2", b"g2", None, now)).unwrap();
+    c.outbox_mark_failed("l2", "refused").unwrap();
+    assert_eq!(c.outbox_unsent(Some(b"g2")).unwrap().len(), 1);
+    assert_eq!(c.outbox_unsent(Some(b"g1")).unwrap().len(), 0);
+    assert_eq!(c.outbox_cancel("l2").unwrap().unwrap().local_id, "l2");
+    assert!(c.outbox_item("l2").unwrap().is_none());
+    c.outbox_recover(now + super::outbox::SENT_KEEP + 1).unwrap();
+    assert!(c.outbox_item("l1").unwrap().is_none());
+}
+
+/// A version-4 profile (before the outbox) gets the outbox table on open.
+#[test]
+fn schema_v4_gets_the_outbox() {
+    let dir = TempDir::new("v4");
+    let path = dir.0.join("v4.db");
+    drop(Client::create(&path, "pw", "a").unwrap());
+    {
+        let c = Client::open(&path, "pw").unwrap();
+        let conn = &c.provider.storage.conn;
+        conn.execute_batch("DROP TABLE tree_outbox").unwrap();
+        conn.pragma_update(None, "user_version", 4).unwrap();
+    }
+    let c = Client::open(&path, "pw").unwrap();
+    let v: i64 = c.provider.storage.conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+    assert_eq!(v, TREE_SCHEMA_VERSION);
+    assert!(c.outbox_unsent(None).unwrap().is_empty());
+}

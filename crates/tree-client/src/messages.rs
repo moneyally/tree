@@ -187,8 +187,9 @@ impl Session {
         let id = new_id();
         let mentions = o.mentions.iter().map(|m| m.to_hex()).collect();
         let data = text_data(fmt, preview.as_ref());
-        self.send_payload(gid, &Payload::Text { id: id.clone(), text: text.to_string(), fmt, mentions, all: o.all, preview })?;
-        self.store(gid, &id, &me, "text", Some(text.to_string()), data, None)?;
+        let p = Payload::Text { id: id.clone(), text: text.to_string(), fmt, mentions, all: o.all, preview };
+        // Stored in the history with the outbox item, before it goes out.
+        self.queue_payload(gid, &p, Some(&id), |s| s.store(gid, &id, &me, "text", Some(text.to_string()), data, None).map(|_| ()))?;
         Ok(id)
     }
 
@@ -232,15 +233,17 @@ impl Session {
         if m.kind != "text" {
             return Err(Error::Usage("only text can be edited".into()));
         }
-        self.send_payload(gid, &Payload::Edit { id: id.into(), text: text.into() })?;
-        Ok(self.client.edit_message(gid, id, text, now(), None)?)
+        self.queue_payload(gid, &Payload::Edit { id: id.into(), text: text.into() }, None, |s| {
+            Ok(s.client.edit_message(gid, id, text, now(), None)?)
+        })?;
+        Ok(())
     }
 
     /// Deletes one of this device's own messages for everyone (chat.delete_for_all).
     pub fn delete_for_all(&mut self, gid: &[u8], id: &str) -> Result<(), Error> {
         self.own_changeable(gid, id, "chat.delete_for_all")?;
-        self.send_payload(gid, &Payload::Delete { id: id.into() })?;
-        Ok(self.client.delete_message(gid, id)?)
+        self.queue_payload(gid, &Payload::Delete { id: id.into() }, None, |s| Ok(s.client.delete_message(gid, id)?))?;
+        Ok(())
     }
 
     /// Reacts to a message (chat.reactions); `remove` takes it back.
@@ -255,9 +258,11 @@ impl Session {
         if m.deleted {
             return Err(Error::Usage("the message was deleted".into()));
         }
-        self.send_payload(gid, &Payload::React { id: id.into(), emoji: emoji.into(), remove })?;
         let me = self.member_id().to_hex();
-        Ok(self.client.react(gid, id, &me, emoji, remove)?)
+        self.queue_payload(gid, &Payload::React { id: id.into(), emoji: emoji.into(), remove }, None, |s| {
+            Ok(s.client.react(gid, id, &me, emoji, remove)?)
+        })?;
+        Ok(())
     }
 
     /// Encrypts `bytes` with a fresh key, uploads the ciphertext and sends the
@@ -303,11 +308,12 @@ impl Session {
             name: name.to_string(),
             mime: mime.to_string(),
         };
-        self.send_payload(gid, &Payload::File(info.clone()))?;
         // The sender keeps no reference to a view-once file.
         let data = (!view_once).then(|| serde_json::to_vec(&info).expect("JSON"));
         let me = self.member_id();
-        self.store(gid, &info.msg_id, &me, "file", Some(info.name.clone()), data, None)?;
+        self.queue_payload(gid, &Payload::File(info.clone()), Some(&info.msg_id), |s| {
+            s.store(gid, &info.msg_id, &me, "file", Some(info.name.clone()), data, None).map(|_| ())
+        })?;
         Ok(info)
     }
 

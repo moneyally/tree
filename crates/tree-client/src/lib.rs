@@ -11,6 +11,7 @@ pub mod franking;
 pub mod invites;
 pub mod messages;
 pub mod organize;
+pub mod outbox;
 pub mod payload;
 pub mod refresh;
 pub mod requests;
@@ -34,6 +35,8 @@ use zeroize::Zeroizing;
 
 pub use api::{Api, Creds};
 pub use messages::TextOptions;
+pub use outbox::OutboxEntry;
+pub use tree_core::storage::outbox::OutboxState;
 pub use payload::{FileInfo, Payload};
 pub use tree_core::recovery::{Phrase, Words};
 pub use tree_core::MemberId;
@@ -128,6 +131,13 @@ pub enum Event {
     /// This device was added to a group by someone who is not a contact
     /// (`user.group_safety_notice`): show who added you and who is in it.
     GroupSafetyNotice { group: Vec<u8>, adder: String },
+    /// One of this device's messages waiting in the outbox reached the
+    /// server (`id`: the history message, if the item carried one).
+    Sent { group: Vec<u8>, id: Option<String> },
+    /// An outbox item was given up: the server refused it, or every
+    /// attempt failed. The app offers retry ([`Session::retry_send`]) and
+    /// cancel ([`Session::cancel_send`]) with `local_id`.
+    SendFailed { group: Vec<u8>, id: Option<String>, local_id: String, reason: String },
 }
 
 /// Recovery as the server has it (PROTOCOL.md 8.6).
@@ -318,9 +328,12 @@ impl Session {
     }
 
     /// Opens an existing profile and resubmits any commit that was waiting
-    /// for the server when the app stopped (PROTOCOL.md 7.1 step 7).
+    /// for the server when the app stopped (PROTOCOL.md 7.1 step 7). Outbox
+    /// items an interrupted attempt left in `sending` become `retry`
+    /// (PROTOCOL.md 6.13); the next sync sends them.
     pub fn open(path: &str, passphrase: &str) -> Result<(Self, Vec<CommitOutcome>), Error> {
         let client = Client::open(path, passphrase)?;
+        client.outbox_recover(messages::now())?;
         let text = |k: &str| -> Result<String, Error> {
             let v = client.app_data(k)?.ok_or_else(|| Error::Protocol(format!("profile lacks {k}")))?;
             String::from_utf8(v).map_err(|_| Error::Protocol(format!("{k} is not text")))
@@ -834,23 +847,8 @@ impl Session {
         self.send_payload(gid, &Payload::Leave)
     }
 
-    /// Returns how many devices the message was delivered to.
-    pub(crate) fn send_payload(&mut self, gid: &[u8], p: &Payload) -> Result<usize, Error> {
-        let to = self.other_devices(gid)?;
-        if to.is_empty() {
-            return Ok(0);
-        }
-        let encoded = if p.is_franked_kind() {
-            let inner = String::from_utf8(p.encode()).expect("JSON is UTF-8");
-            let r = self.frank(gid, &inner)?;
-            Payload::Franked { p: r.payload, k: r.key, tag: r.tag, m: r.minute }.encode()
-        } else {
-            p.encode()
-        };
-        self.send_encoded(gid, &to, &encoded)
-    }
-
-    /// Encrypts an encoded payload for the group and sends it to `to`.
+    /// Encrypts an encoded payload for the group and sends it to `to` once,
+    /// without the outbox (typing and presence only; see `outbox.rs`).
     fn send_encoded(&mut self, gid: &[u8], to: &[String], encoded: &[u8]) -> Result<usize, Error> {
         let bytes = self.with(gid, |g, c| g.send(c, encoded))?;
         self.note_traffic(gid)?;
@@ -859,8 +857,9 @@ impl Session {
     }
 
     /// Fetches and processes the mailbox (waiting up to `wait` seconds for
-    /// something to arrive), acknowledges everything processed, and retries
-    /// held messages after any epoch change.
+    /// something to arrive), acknowledges everything processed, retries
+    /// held messages after any epoch change, and sends the outbox items
+    /// that are due ([`Session::send_pending`]).
     pub fn sync(&mut self, wait: u64) -> Result<Vec<Event>, Error> {
         self.client.purge_expired_messages(messages::now())?;
         let msgs = self.api.fetch(&self.creds, wait)?;
@@ -889,6 +888,7 @@ impl Session {
                 self.client.set_app_data(&key, None)?;
             }
         }
+        events.extend(self.send_pending()?);
         Ok(events)
     }
 

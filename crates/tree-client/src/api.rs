@@ -354,6 +354,13 @@ impl Api {
         self.call(c, Method::POST, "/v1/messages", Some(&req))?.ok()
     }
 
+    /// [`Api::send`] with an idempotency key (PROTOCOL.md 8.10): a retry
+    /// with the same key and request is answered without a second delivery.
+    pub fn send_keyed(&self, c: &Creds, recipients: &[String], body: &[u8], key: &[u8]) -> Result<Value, Error> {
+        let req = json!({ "recipients": recipients, "body": b64(body), "idempotency_key": b64(key) });
+        self.call(c, Method::POST, "/v1/messages", Some(&req))?.ok()
+    }
+
     /// Submits a commit; the caller interprets the reply (200 / 409 / 403).
     pub fn commit(&self, c: &Creds, req: &Value) -> Result<Reply, Error> {
         self.call(c, Method::POST, "/v1/commits", Some(req))

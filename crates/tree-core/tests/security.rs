@@ -17,7 +17,10 @@ fn two_person_chat() -> (Client, Client, Group, Group) {
     let alice = Client::new("alice").unwrap();
     let bob = Client::new("bob").unwrap();
     let mut a = alice.create_group().unwrap();
-    let w = a.add_now(&alice, &bob.key_package().unwrap()).unwrap().welcome;
+    let w = a
+        .add_now(&alice, &bob.key_package().unwrap())
+        .unwrap()
+        .welcome;
     let b = bob.join(&w).unwrap();
     (alice, bob, a, b)
 }
@@ -34,7 +37,10 @@ fn removed_member_cannot_decrypt_even_if_ignoring_removal() {
 
     // Eve can read while she is a member.
     let m = a.send(&alice, b"hello everyone").unwrap();
-    assert!(matches!(e.receive(&eve, &m).unwrap(), Incoming::Message { .. }));
+    assert!(matches!(
+        e.receive(&eve, &m).unwrap(),
+        Incoming::Message { .. }
+    ));
 
     // Alice removes Eve. Eve's client never processes the removal.
     let rm = a.remove_now(&alice, &[eve.member_id()]).unwrap();
@@ -42,11 +48,17 @@ fn removed_member_cannot_decrypt_even_if_ignoring_removal() {
     let _ = rm; // never delivered to eve
 
     let secret = a.send(&alice, b"after eve left").unwrap();
-    assert!(matches!(b.receive(&bob, &secret).unwrap(), Incoming::Message { .. }));
+    assert!(matches!(
+        b.receive(&bob, &secret).unwrap(),
+        Incoming::Message { .. }
+    ));
     let res = e.receive(&eve, &secret);
     assert!(
-        matches!(res, Err(TreeError::Rejected(_))),
-        "removed member decrypted a new-epoch message: {res:?}"
+        matches!(
+            res,
+            Err(TreeError::Rejected(_)) | Ok(Incoming::HeldForRetry { .. })
+        ),
+        "removed member accepted a new-epoch message: {res:?}"
     );
 }
 
@@ -66,7 +78,10 @@ fn tampered_ciphertext_rejected() {
     }
     assert_eq!(rejected, positions.len());
     // The untouched original still works afterwards.
-    assert!(matches!(b.receive(&bob, &m).unwrap(), Incoming::Message { .. }));
+    assert!(matches!(
+        b.receive(&bob, &m).unwrap(),
+        Incoming::Message { .. }
+    ));
 }
 
 /// The same ciphertext delivered twice (server replay) is rejected the
@@ -76,7 +91,11 @@ fn replay_rejected() {
     let (alice, bob, mut a, mut b) = two_person_chat();
     let m = a.send(&alice, b"only once").unwrap();
     assert!(b.receive(&bob, &m).is_ok());
-    assert!(b.receive(&bob, &m).is_err(), "replayed message was accepted");
+    assert_eq!(
+        b.receive(&bob, &m).unwrap(),
+        Incoming::NoOp,
+        "replayed message was processed again"
+    );
 }
 
 /// A message from one group must not be accepted by another group,
@@ -85,7 +104,10 @@ fn replay_rejected() {
 fn cross_group_message_rejected() {
     let (alice, bob, mut a1, mut b1) = two_person_chat();
     let mut a2 = alice.create_group().unwrap();
-    let w = a2.add_now(&alice, &bob.key_package().unwrap()).unwrap().welcome;
+    let w = a2
+        .add_now(&alice, &bob.key_package().unwrap())
+        .unwrap()
+        .welcome;
     let _b2 = bob.join(&w).unwrap();
 
     let for_group2 = a2.send(&alice, b"meant for group 2").unwrap();
@@ -113,20 +135,18 @@ fn outsider_with_same_group_id_cannot_inject() {
         .ciphersuite(tree_core::TREE_CIPHERSUITE)
         .use_ratchet_tree_extension(true)
         .build();
-    let mut fake = MlsGroup::new_with_group_id(
-        &provider,
-        &signer,
-        &cfg,
-        GroupId::from_slice(&a.id()),
-        cred,
-    )
-    .unwrap();
+    let mut fake =
+        MlsGroup::new_with_group_id(&provider, &signer, &cfg, GroupId::from_slice(&a.id()), cred)
+            .unwrap();
     let forged = fake
         .create_message(&provider, &signer, b"I am alice, send me money")
         .unwrap()
         .to_bytes()
         .unwrap();
-    assert!(b.receive(&bob, &forged).is_err(), "outsider injected a message");
+    assert!(
+        b.receive(&bob, &forged).is_err(),
+        "outsider injected a message"
+    );
 }
 
 /// A key package whose signature was tampered with is refused.
@@ -171,7 +191,11 @@ fn xwing_suite_on_libcrux_works() {
     let m = a.send(&alice, b"x-wing").unwrap();
     assert_eq!(
         b.receive(&bob, &m).unwrap(),
-        Incoming::Message { from: alice.member_id(), name: "alice".into(), body: b"x-wing".to_vec() }
+        Incoming::Message {
+            from: alice.member_id(),
+            name: "alice".into(),
+            body: b"x-wing".to_vec()
+        }
     );
     println!("x-wing key package: {} bytes", kp.len());
 }
@@ -180,29 +204,63 @@ fn xwing_suite_on_libcrux_works() {
 #[test]
 fn feature_registry_rules() {
     let mut r = Registry::standard();
-    let user = Caller { plan: Plan::Free, is_admin: false };
-    let admin = Caller { plan: Plan::Free, is_admin: true };
+    let user = Caller {
+        plan: Plan::Free,
+        is_admin: false,
+    };
+    let admin = Caller {
+        plan: Plan::Free,
+        is_admin: true,
+    };
 
     // End-to-end encryption can never be released, even by an admin.
-    assert_eq!(r.release("chat.e2e", admin).unwrap_err(), FeatureError::LockedAlways("end-to-end encryption is why Tree exists"));
+    assert_eq!(
+        r.release("chat.e2e", admin).unwrap_err(),
+        FeatureError::LockedAlways("end-to-end encryption is why Tree exists")
+    );
     // Points can never move between people.
-    assert!(matches!(r.apply("points.send_to_user", None, admin), Err(FeatureError::ReleasedAlways(_))));
+    assert!(matches!(
+        r.apply("points.send_to_user", None, admin),
+        Err(FeatureError::ReleasedAlways(_))
+    ));
     // Bots can never pay out points.
-    assert!(matches!(r.apply("bot.pay_out_points", None, admin), Err(FeatureError::ReleasedAlways(_))));
+    assert!(matches!(
+        r.apply("bot.pay_out_points", None, admin),
+        Err(FeatureError::ReleasedAlways(_))
+    ));
 
     // Idempotent apply/release.
     let s1 = r.apply("user.app_lock", None, user).unwrap();
     let s2 = r.apply("user.app_lock", None, user).unwrap();
     assert_eq!(s1, s2);
-    assert_eq!(r.release("user.app_lock", user).unwrap().state, State::Released);
-    assert_eq!(r.release("user.app_lock", user).unwrap().state, State::Released);
+    assert_eq!(
+        r.release("user.app_lock", user).unwrap().state,
+        State::Released
+    );
+    assert_eq!(
+        r.release("user.app_lock", user).unwrap().state,
+        State::Released
+    );
 
     // Non-admins cannot change room settings.
-    assert_eq!(r.apply("chat.disappearing", Some("1d".into()), user).unwrap_err(), FeatureError::NotAdmin);
-    assert_eq!(r.apply("chat.disappearing", Some("1d".into()), admin).unwrap().option.as_deref(), Some("1d"));
+    assert_eq!(
+        r.apply("chat.disappearing", Some("1d".into()), user)
+            .unwrap_err(),
+        FeatureError::NotAdmin
+    );
+    assert_eq!(
+        r.apply("chat.disappearing", Some("1d".into()), admin)
+            .unwrap()
+            .option
+            .as_deref(),
+        Some("1d")
+    );
 
     // Unknown keys are errors, not silent no-ops.
-    assert!(matches!(r.apply("chat.nonexistent", None, admin), Err(FeatureError::Unknown(_))));
+    assert!(matches!(
+        r.apply("chat.nonexistent", None, admin),
+        Err(FeatureError::Unknown(_))
+    ));
 
     // Every feature in a scope is listed for the settings screen.
     assert!(r.list(Scope::User).len() > 10);

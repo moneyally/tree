@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use ed25519_dalek::{Signer, SigningKey};
-use reqwest::{Method, StatusCode};
+use reqwest::{header::HeaderMap, Method, StatusCode};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tree_server::{Config, Server};
@@ -48,6 +48,7 @@ pub async fn boot(tweak: impl FnOnce(&mut Config)) -> TestServer {
         rate_burst: 10_000.0,
         signup_per_hour: 1_000_000.0,
         signup_burst: 10_000.0,
+        bot_token_hmac_secret: Some([7u8; 32]),
         ..Config::default()
     };
     tweak(&mut cfg);
@@ -200,9 +201,20 @@ impl Api {
 
     /// Sends a signed request with an explicit signature header value.
     pub async fn send_with_sig(&self, s: &Signed, sig: &str) -> (StatusCode, Value) {
+        self.send_with_sig_and_headers(s, sig, HeaderMap::new())
+            .await
+    }
+
+    pub async fn send_with_sig_and_headers(
+        &self,
+        s: &Signed,
+        sig: &str,
+        headers: HeaderMap,
+    ) -> (StatusCode, Value) {
         let mut rb = self
             .http
             .request(s.method.clone(), self.url(&s.path))
+            .headers(headers)
             .header("X-Tree-Timestamp", s.ts.to_string())
             .header("X-Tree-Nonce", &s.nonce)
             .header("X-Tree-Signature", sig);
@@ -218,7 +230,18 @@ impl Api {
     }
 
     pub async fn send(&self, s: &Signed, key: &SigningKey) -> (StatusCode, Value) {
-        self.send_with_sig(s, &s.signature(key)).await
+        self.send_with_sig_and_headers(s, &s.signature(key), HeaderMap::new())
+            .await
+    }
+
+    pub async fn send_with_headers(
+        &self,
+        s: &Signed,
+        key: &SigningKey,
+        headers: HeaderMap,
+    ) -> (StatusCode, Value) {
+        self.send_with_sig_and_headers(s, &s.signature(key), headers)
+            .await
     }
 
     /// Authenticated call as `dev`.
@@ -282,6 +305,43 @@ impl Api {
         .await
     }
 
+    pub async fn get_bot(&self, path: &str, token: &str) -> (StatusCode, Value) {
+        let rb = self
+            .http
+            .get(self.url(path))
+            .header("Authorization", format!("Bot {token}"));
+        decode(rb.send().await.unwrap()).await
+    }
+
+    pub async fn send_bot(&self, path: &str, token: &str) -> (StatusCode, Value) {
+        self.send_bot_with_body(path, token, None).await
+    }
+
+    pub async fn send_bot_json(
+        &self,
+        path: &str,
+        token: &str,
+        body: &Value,
+    ) -> (StatusCode, Value) {
+        self.send_bot_with_body(path, token, Some(body)).await
+    }
+
+    async fn send_bot_with_body(
+        &self,
+        path: &str,
+        token: &str,
+        body: Option<&Value>,
+    ) -> (StatusCode, Value) {
+        let mut rb = self
+            .http
+            .post(self.url(path))
+            .header("Authorization", format!("Bot {token}"));
+        if let Some(body) = body {
+            rb = rb.header("Content-Type", "application/json").json(body);
+        }
+        decode(rb.send().await.unwrap()).await
+    }
+
     pub async fn admin(&self, token: Option<&str>, key: &str, action: &str) -> (StatusCode, Value) {
         let mut rb = self
             .http
@@ -329,12 +389,21 @@ impl Api {
         recipients: &[&str],
         payload: &[u8],
     ) -> (StatusCode, Value) {
-        let body = if payload.is_empty() { vec![] } else { app(payload) };
+        let body = if payload.is_empty() {
+            vec![]
+        } else {
+            app(payload)
+        };
         self.send_raw(dev, recipients, &body).await
     }
 
     /// Sends exactly `body`.
-    pub async fn send_raw(&self, dev: &Device, recipients: &[&str], body: &[u8]) -> (StatusCode, Value) {
+    pub async fn send_raw(
+        &self,
+        dev: &Device,
+        recipients: &[&str],
+        body: &[u8],
+    ) -> (StatusCode, Value) {
         self.call(
             dev,
             Method::POST,
@@ -344,7 +413,64 @@ impl Api {
         .await
     }
 
+    /// Sends exactly body with a stable 16-byte idempotency key.
+    pub async fn send_raw_idempotent(
+        &self,
+        dev: &Device,
+        recipients: &[&str],
+        body: &[u8],
+        key: [u8; 16],
+    ) -> (StatusCode, Value) {
+        self.call(
+            dev,
+            Method::POST,
+            "/v1/messages",
+            Some(json!({
+                "recipients": recipients,
+                "body": b64(body),
+                "idempotency_key": b64(&key),
+            })),
+        )
+        .await
+    }
+
+    /// Creates the fake group roster used by mailbox tests. Production
+    /// requests must establish this roster through the real MLS commit path.
+    pub async fn seed_fake_group(&self, dev: &Device, recipients: &[&Device]) {
+        let body = json!({
+            "group_id": b64(&GROUP),
+            "epoch": 0,
+            "recipients": recipients
+                .iter()
+                .map(|recipient| recipient.device_id.as_str())
+                .collect::<Vec<_>>(),
+            "body": b64(&commit(&GROUP, 0, b"test-roster")),
+            "added": [],
+            "welcome": null,
+            "removed": []
+        });
+        let (st, value) = self
+            .call(dev, Method::POST, "/v1/commits", Some(body))
+            .await;
+        assert_eq!(st, StatusCode::OK, "{value}");
+        for recipient in recipients {
+            let messages = self.fetch(recipient, 0).await;
+            let ids = messages
+                .iter()
+                .filter_map(|message| message["id"].as_str())
+                .collect::<Vec<_>>();
+            if !ids.is_empty() {
+                let (st, value) = self.ack(recipient, &ids).await;
+                assert_eq!(st, StatusCode::OK, "{value}");
+            }
+        }
+    }
+
     pub async fn fetch(&self, dev: &Device, wait: u64) -> Vec<Value> {
+        self.fetch_with_cursor(dev, wait).await.1
+    }
+
+    pub async fn fetch_with_cursor(&self, dev: &Device, wait: u64) -> (i64, Vec<Value>) {
         let path = if wait > 0 {
             format!("/v1/messages?wait={wait}")
         } else {
@@ -352,7 +478,10 @@ impl Api {
         };
         let (st, v) = self.call(dev, Method::GET, &path, None).await;
         assert_eq!(st, StatusCode::OK, "{v}");
-        v["messages"].as_array().unwrap().clone()
+        (
+            v["cursor"].as_i64().unwrap(),
+            v["messages"].as_array().unwrap().clone(),
+        )
     }
 
     pub async fn ack(&self, dev: &Device, ids: &[&str]) -> (StatusCode, Value) {

@@ -33,7 +33,10 @@ fn padding_hides_short_lengths() {
             m.len()
         })
         .collect();
-    assert!(lens.windows(2).all(|w| w[0] == w[1]), "lengths differ: {lens:?}");
+    assert!(
+        lens.windows(2).all(|w| w[0] == w[1]),
+        "lengths differ: {lens:?}"
+    );
     let long = a.send(&alice, &[b'x'; 600]).unwrap();
     assert!(long.len() > lens[0]);
 }
@@ -48,7 +51,10 @@ fn wrong_version_byte_rejected() {
         let mut t = m.clone();
         t[0] = v;
         let r = b.receive(&bob, &t);
-        assert!(matches!(r, Err(TreeError::Malformed(_))), "version {v} accepted: {r:?}");
+        assert!(
+            matches!(r, Err(TreeError::Malformed(_))),
+            "version {v} accepted: {r:?}"
+        );
     }
     assert!(is_message(&b.receive(&bob, &m), b"v1 only"));
 }
@@ -92,7 +98,10 @@ fn correctly_sealed_empty_body_rejected() {
     let (_alice, bob, _a, mut b, mut m) = chat_with_insider("mallory");
     let sealed = m.seal(&[]);
     assert_eq!(sealed.len(), 1 + TAG_LEN);
-    assert!(matches!(b.receive(&bob, &sealed), Err(TreeError::Malformed(_))));
+    assert!(matches!(
+        b.receive(&bob, &sealed),
+        Err(TreeError::Malformed(_))
+    ));
 }
 
 /// Flipping any single bit of the tag is caught by the seal check
@@ -126,7 +135,10 @@ fn compensating_tag_changes_rejected() {
             let mut t = m.clone();
             t[i] ^= bit;
             t[j] ^= bit;
-            assert!(b.receive(&bob, &t).is_err(), "pair ({i},{j}) bit {bit:#x} accepted");
+            assert!(
+                b.receive(&bob, &t).is_err(),
+                "pair ({i},{j}) bit {bit:#x} accepted"
+            );
         }
     }
     // Swapping two tag bytes is also caught.
@@ -150,7 +162,11 @@ fn truncated_or_extended_rejected() {
     for extra in [&[0u8][..], &[0, 0, 0, 0], &[0xff; 64]] {
         let mut t = m.clone();
         t.extend_from_slice(extra);
-        assert!(b.receive(&bob, &t).is_err(), "extended by {} accepted", extra.len());
+        assert!(
+            b.receive(&bob, &t).is_err(),
+            "extended by {} accepted",
+            extra.len()
+        );
     }
     assert!(is_message(&b.receive(&bob, &m), b"exact length"));
 }
@@ -173,7 +189,10 @@ fn sealing_key_differs_between_groups() {
 
     // A genuine message of group 2, sealed for group 2, delivered to group 1.
     let for_g2 = m2.send(b"group 2");
-    assert!(matches!(g1.receive(&alice, &for_g2), Err(TreeError::Rejected(_))));
+    assert!(matches!(
+        g1.receive(&alice, &for_g2),
+        Err(TreeError::Rejected(_))
+    ));
     // The group-2 MLS body re-sealed with the group-1 key passes the seal but
     // MLS still refuses it (wrong group id).
     let raw_g2 = m2.raw_message(b"group 2 again");
@@ -193,7 +212,10 @@ fn sealing_key_changes_every_epoch() {
     let k1 = m.envelope_key();
     assert_ne!(k0, k1);
     // And the insider's sealed message from the new epoch is accepted.
-    assert!(is_message(&b.receive(&bob, &m.send(b"new epoch")), b"new epoch"));
+    assert!(is_message(
+        &b.receive(&bob, &m.send(b"new epoch")),
+        b"new epoch"
+    ));
 }
 
 /// A member's correctly sealed but MLS-tampered message is rejected by MLS.
@@ -227,6 +249,12 @@ fn header_epoch_must_match_envelope_key() {
     m.receive_commit(&c);
     let resealed = m.seal(&old); // same bytes, epoch-3 key
     let r = b.receive(&bob, &resealed);
-    assert!(matches!(r, Err(TreeError::Rejected(ref s)) if s.contains("header")), "{r:?}");
-    assert!(matches!(b.receive(&bob, &honest), Ok(Incoming::Message { .. })));
+    assert!(
+        matches!(r, Err(TreeError::Rejected(ref s)) if s.contains("header")),
+        "{r:?}"
+    );
+    assert!(matches!(
+        b.receive(&bob, &honest),
+        Ok(Incoming::Message { .. })
+    ));
 }

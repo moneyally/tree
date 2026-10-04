@@ -35,7 +35,10 @@ fn all_bytes(dir: &Path) -> Vec<(String, Vec<u8>)> {
         .unwrap()
         .map(|e| {
             let p = e.unwrap().path();
-            (p.file_name().unwrap().to_string_lossy().into_owned(), fs::read(&p).unwrap())
+            (
+                p.file_name().unwrap().to_string_lossy().into_owned(),
+                fs::read(&p).unwrap(),
+            )
         })
         .collect()
 }
@@ -45,7 +48,11 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
 }
 
 /// What an attacker holding the raw files would look for.
-fn needles(client: &Client<StoredProvider>, name: &str, message: &str) -> Vec<(&'static str, Vec<u8>)> {
+fn needles(
+    client: &Client<StoredProvider>,
+    name: &str,
+    message: &str,
+) -> Vec<(&'static str, Vec<u8>)> {
     let json = serde_json::to_value(&client.signer).unwrap();
     let private: Vec<u8> = serde_json::from_value(json["private"].clone()).unwrap();
     assert!(private.len() >= 32, "unexpected private key length");
@@ -54,7 +61,10 @@ fn needles(client: &Client<StoredProvider>, name: &str, message: &str) -> Vec<(&
         ("client name", name.as_bytes().to_vec()),
         ("message plaintext", message.as_bytes().to_vec()),
         ("private key (raw)", private.clone()),
-        ("private key (as stored)", serde_json::to_vec(&private).unwrap()),
+        (
+            "private key (as stored)",
+            serde_json::to_vec(&private).unwrap(),
+        ),
     ]
 }
 
@@ -66,9 +76,15 @@ fn chat(client: &Client<StoredProvider>, message: &str) {
     g.confirm_commit(client).unwrap();
     let mut p = peer.join(added.welcome.as_ref().unwrap()).unwrap();
     let m = g.send(client, message.as_bytes()).unwrap();
-    assert!(matches!(p.receive(&peer, &m).unwrap(), Incoming::Message { .. }));
+    assert!(matches!(
+        p.receive(&peer, &m).unwrap(),
+        Incoming::Message { .. }
+    ));
     let m = p.send(&peer, message.as_bytes()).unwrap();
-    assert!(matches!(g.receive(client, &m).unwrap(), Incoming::Message { .. }));
+    assert!(matches!(
+        g.receive(client, &m).unwrap(),
+        Incoming::Message { .. }
+    ));
     client.key_package().unwrap();
 }
 
@@ -92,9 +108,13 @@ fn files_on_disk_reveal_nothing() {
             .filter(|(_, n)| plain.iter().any(|(_, b)| contains(b, n)))
             .map(|(what, _)| what)
             .collect();
-        // Messages are not stored by the core yet, so only these are expected.
+        // The local message store is encrypted, so the same plaintext must not
+        // become visible in the raw database files.
         for expected in ["sqlite header", "client name", "private key (as stored)"] {
-            assert!(found.contains(&expected), "control scan missed {expected}: found {found:?}");
+            assert!(
+                found.contains(&expected),
+                "control scan missed {expected}: found {found:?}"
+            );
         }
     }
 
@@ -119,6 +139,87 @@ fn files_on_disk_reveal_nothing() {
     let c = Client::open(&path, "pass phrase 1").unwrap();
     assert_eq!(c.name(), name);
     assert_eq!(c.group_ids().unwrap().len(), 1);
+}
+
+#[test]
+fn outbox_is_durable_and_restart_recoverable() {
+    let dir = TempDir::new("outbox");
+    let path = dir.0.join("alice.db");
+    let c = Client::create(&path, "pw", "alice").unwrap();
+
+    let local_id = [0x11u8; 16];
+    let group = b"group";
+    let envelope = b"ciphertext";
+    c.provider
+        .enqueue_outbox(local_id, group, None, 1, envelope, 100)
+        .unwrap();
+
+    // Duplicate enqueue is harmless: the stable local id is the idempotency
+    // boundary for the local queue as well as the network retry key.
+    c.provider
+        .enqueue_outbox(local_id, group, None, 1, b"different", 101)
+        .unwrap();
+    let due = c.due_outbox(101, 10).unwrap();
+    assert_eq!(due.len(), 1);
+    assert_eq!(due[0].envelope, envelope);
+    assert_eq!(due[0].state, crate::messenger_store::OutboxState::Queued);
+    assert_eq!(due[0].attempts, 0);
+
+    assert!(c.mark_outbox_sending(local_id, 101).unwrap());
+    let item = c.due_outbox(101, 10).unwrap();
+    assert!(item.is_empty(), "sending entries are not picked twice");
+
+    // Simulate a process crash after the request may have reached the server.
+    // Recovery must make the exact same local item retryable, preserving its
+    // local id for server-side idempotency.
+    assert_eq!(c.recover_sending_outbox(200).unwrap(), 1);
+    let due = c.due_outbox(200, 10).unwrap();
+    assert_eq!(due.len(), 1);
+    assert_eq!(due[0].local_id, local_id);
+    assert_eq!(due[0].state, crate::messenger_store::OutboxState::Retry);
+    assert_eq!(due[0].last_error_code.as_deref(), Some("CLIENT_RESTART"));
+    assert_eq!(due[0].attempts, 1);
+
+    // A retry is not immediately eligible until its backoff deadline.
+    assert!(c.mark_outbox_sending(local_id, 200).unwrap());
+    c.mark_outbox_retry(local_id, "NETWORK", 205).unwrap();
+    assert!(c.due_outbox(204, 10).unwrap().is_empty());
+    assert_eq!(c.due_outbox(205, 10).unwrap().len(), 1);
+
+    // Successful completion removes it from the due queue permanently.
+    assert!(c.mark_outbox_sending(local_id, 205).unwrap());
+    c.mark_outbox_sent(local_id, "server-123").unwrap();
+    assert!(c.due_outbox(10_000, 10).unwrap().is_empty());
+
+    // Reopen the encrypted profile: terminal state and server id survive.
+    drop(c);
+    let c = Client::open(&path, "pw").unwrap();
+    assert!(c.due_outbox(10_000, 10).unwrap().is_empty());
+
+    // A failed item is also terminal and cannot be accidentally retried.
+    let failed = [0x22u8; 16];
+    c.provider
+        .enqueue_outbox(failed, group, None, 1, envelope, 300)
+        .unwrap();
+    assert!(c.mark_outbox_sending(failed, 300).unwrap());
+    c.mark_outbox_failed(failed, "PERMANENT").unwrap();
+    assert!(c.due_outbox(301, 10).unwrap().is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn create_rejects_preexisting_header_symlink() {
+    use std::os::unix::fs::symlink;
+
+    let dir = TempDir::new("header-symlink");
+    let path = dir.0.join("alice.db");
+    let target = dir.0.join("target");
+    fs::write(&target, b"must-not-change").unwrap();
+    symlink(&target, KeyHeader::path_for(&path)).unwrap();
+
+    assert!(Client::create(&path, "pw", "alice").is_err());
+    assert_eq!(fs::read(&target).unwrap(), b"must-not-change");
+    assert!(!path.exists());
 }
 
 #[cfg(unix)]
@@ -152,16 +253,24 @@ fn schema_v1_is_upgraded() {
     set_version(&path, 1, true);
     let c = Client::open(&path, "pw").unwrap();
     let conn = &c.provider.storage.conn;
-    let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+    let v: i64 = conn
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
     assert_eq!(v, TREE_SCHEMA_VERSION);
     c.provider.save_group_state(b"g", b"state").unwrap();
-    assert_eq!(c.provider.load_group_state(b"g").unwrap(), Some(b"state".to_vec()));
+    assert_eq!(
+        c.provider.load_group_state(b"g").unwrap(),
+        Some(b"state".to_vec())
+    );
     assert_eq!(c.provider.load_group_state(b"other").unwrap(), None);
     drop(c);
     for bad in [0, TREE_SCHEMA_VERSION + 1] {
         let path = dir.0.join(format!("v{bad}.db"));
         drop(Client::create(&path, "pw", "a").unwrap());
         set_version(&path, bad, false);
-        assert!(matches!(Client::open(&path, "pw"), Err(TreeError::Storage(_))), "version {bad}");
+        assert!(
+            matches!(Client::open(&path, "pw"), Err(TreeError::Storage(_))),
+            "version {bad}"
+        );
     }
 }

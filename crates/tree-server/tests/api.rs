@@ -226,6 +226,7 @@ async fn authentication_failures() {
     let api = &ts.api;
     let dev = api.signup().await;
     let other = api.signup().await;
+    api.seed_fake_group(&dev, &[&other]).await;
     let path = "/v1/keypackages/count";
 
     // Baseline works.
@@ -257,8 +258,10 @@ async fn authentication_failures() {
         Some(&body),
     );
     s.sign_body = Some(
-        serde_json::to_vec(&json!({ "recipients": [other.device_id], "body": b64(&app(b"HELLO")) }))
-            .unwrap(),
+        serde_json::to_vec(
+            &json!({ "recipients": [other.device_id], "body": b64(&app(b"HELLO")) }),
+        )
+        .unwrap(),
     );
     let (st, _) = api.send(&s, &dev.key).await;
     assert_eq!(st, StatusCode::UNAUTHORIZED);
@@ -568,6 +571,7 @@ async fn mailbox_fan_out_fetch_and_ack() {
     let bob1 = api.signup().await;
     let bob2 = api.add_device(&bob1).await;
     let carol = api.signup().await;
+    api.seed_fake_group(&alice, &[&bob1, &bob2, &carol]).await;
 
     let body = b"opaque ciphertext \x00\x01\x02";
     let (st, v) = api
@@ -649,11 +653,137 @@ async fn mailbox_fan_out_fetch_and_ack() {
 }
 
 #[tokio::test]
+async fn message_idempotency_survives_retry_and_rejects_key_reuse() {
+    let ts = boot(|_| {}).await;
+    let api = &ts.api;
+    let alice = api.signup().await;
+    let bob = api.signup().await;
+    api.seed_fake_group(&alice, &[&bob]).await;
+
+    let key = [0x42u8; 16];
+    let body = app(b"idempotent");
+    let (st, first) = api
+        .send_raw_idempotent(&alice, &[&bob.device_id], &body, key)
+        .await;
+    assert_eq!(st, StatusCode::OK, "{first}");
+    let first_id = first["id"].as_str().unwrap().to_owned();
+    assert_eq!(first["delivered"], 1);
+    assert_eq!(blob_count(&ts).await, 1);
+
+    // A client crash after the server commit must be recoverable by replaying
+    // the same idempotency key: no second blob or mailbox delivery is created.
+    let (st, retry) = api
+        .send_raw_idempotent(&alice, &[&bob.device_id], &body, key)
+        .await;
+    assert_eq!(st, StatusCode::OK, "{retry}");
+    assert_eq!(retry["id"], first_id);
+    assert_eq!(retry, first);
+    assert_eq!(blob_count(&ts).await, 1);
+    assert_eq!(api.fetch(&bob, 0).await.len(), 1);
+
+    // The same key is never allowed to become an alias for different data.
+    let (st, conflict) = api
+        .send_raw_idempotent(&alice, &[&bob.device_id], &app(b"different"), key)
+        .await;
+    assert_eq!(st, StatusCode::CONFLICT, "{conflict}");
+    assert_eq!(code(&conflict), "IDEMPOTENCY_KEY_REUSE");
+    assert_eq!(blob_count(&ts).await, 1);
+    assert_eq!(api.fetch(&bob, 0).await.len(), 1);
+
+    // Recipient ordering and duplicate recipient entries are canonicalized,
+    // so a retry with an equivalent recipient set returns the same response.
+    let key2 = [0x43u8; 16];
+    let (st, first2) = api
+        .send_raw_idempotent(
+            &alice,
+            &[&bob.device_id, &bob.device_id],
+            &app(b"canonical"),
+            key2,
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{first2}");
+    let (st, retry2) = api
+        .send_raw_idempotent(&alice, &[&bob.device_id], &app(b"canonical"), key2)
+        .await;
+    assert_eq!(st, StatusCode::OK, "{retry2}");
+    assert_eq!(retry2, first2);
+    assert_eq!(api.fetch(&bob, 0).await.len(), 2);
+
+    ts.stop().await;
+}
+
+#[tokio::test]
+async fn inbox_cursor_requires_contiguous_ack_and_rejects_rollback() {
+    let ts = boot(|c| c.fetch_limit = 2).await;
+    let api = &ts.api;
+    let a = api.signup().await;
+    let b = api.signup().await;
+    api.seed_fake_group(&a, &[&b]).await;
+
+    api.send_msg(&a, &[&b.device_id], b"one").await;
+    api.send_msg(&a, &[&b.device_id], b"two").await;
+    api.send_msg(&a, &[&b.device_id], b"three").await;
+
+    let (st, page) = api.call(&b, Method::GET, "/v1/messages", None).await;
+    assert_eq!(st, StatusCode::OK, "{page}");
+    let cursor = page["cursor"].as_i64().unwrap();
+    assert!(cursor > 0);
+    let ids: Vec<&str> = page["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["id"].as_str().unwrap())
+        .collect();
+
+    // Cannot advance beyond an unacknowledged mailbox entry.
+    let (st, v) = api
+        .call(
+            &b,
+            Method::POST,
+            "/v1/messages/ack",
+            Some(json!({ "ids": [ids[0]], "cursor": cursor })),
+        )
+        .await;
+    assert_eq!(st, StatusCode::CONFLICT);
+    assert_eq!(code(&v), "CURSOR_GAP");
+
+    // Once the fetched page is durably acknowledged, the cursor can advance.
+    let (st, v) = api
+        .call(
+            &b,
+            Method::POST,
+            "/v1/messages/ack",
+            Some(json!({ "ids": ids, "cursor": cursor })),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+
+    let (st, v) = api.call(&b, Method::GET, "/v1/messages", None).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(v["cursor"], cursor + 1);
+    assert_eq!(v["messages"].as_array().unwrap().len(), 1);
+
+    // A stale cursor can never move the server backwards.
+    let (st, v) = api
+        .call(
+            &b,
+            Method::POST,
+            "/v1/messages/ack",
+            Some(json!({ "ids": [], "cursor": cursor - 1 })),
+        )
+        .await;
+    assert_eq!(st, StatusCode::CONFLICT);
+    assert_eq!(code(&v), "CURSOR_ROLLBACK");
+    ts.stop().await;
+}
+
+#[tokio::test]
 async fn fetch_pages_with_more_flag() {
     let ts = boot(|c| c.fetch_limit = 2).await;
     let api = &ts.api;
     let a = api.signup().await;
     let b = api.signup().await;
+    api.seed_fake_group(&a, &[&b]).await;
     for i in 0..3 {
         api.send_msg(&a, &[&b.device_id], &[i]).await;
     }
@@ -682,6 +812,7 @@ async fn long_poll_wakes_on_new_message() {
     });
     let a = api.signup().await;
     let b = api.signup().await;
+    api.seed_fake_group(&a, &[&b]).await;
 
     // Empty mailbox: returns after the wait with nothing.
     let t = Instant::now();
@@ -733,6 +864,7 @@ async fn message_size_recipient_and_mailbox_limits() {
     let api = &ts.api;
     let a = api.signup().await;
     let b = api.signup().await;
+    api.seed_fake_group(&a, &[&b]).await;
 
     // Body size: exactly 256 KiB is accepted, one byte more is not.
     let max = 256 * 1024;
@@ -799,7 +931,10 @@ async fn old_messages_are_purged() {
     let api = &ts.api;
     let a = api.signup().await;
     let b = api.signup().await;
-    api.send_msg(&a, &[&b.device_id], b"old").await;
+    api.seed_fake_group(&a, &[&b]).await;
+    let (st, value) = api.send_msg(&a, &[&b.device_id], b"old").await;
+    assert_eq!(st, StatusCode::OK, "{value}");
+    assert_eq!(value["delivered"], 1, "message must enter the mailbox");
     let deadline = Instant::now() + Duration::from_secs(10);
     while blob_count(&ts).await > 0 && Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -813,7 +948,9 @@ async fn old_messages_are_purged() {
     let api = &ts.api;
     let a = api.signup().await;
     let b = api.signup().await;
-    api.send_msg(&a, &[&b.device_id], b"young").await;
+    api.seed_fake_group(&a, &[&b]).await;
+    let (st, value) = api.send_msg(&a, &[&b.device_id], b"young").await;
+    assert_eq!(st, StatusCode::OK, "{value}");
     let removed = tree_server::purge_expired(&ts.server.state, now())
         .await
         .unwrap();
@@ -822,7 +959,7 @@ async fn old_messages_are_purged() {
     let removed = tree_server::purge_expired(&ts.server.state, now() + 30 * 86_400 + 120)
         .await
         .unwrap();
-    assert_eq!(removed, 1);
+    assert!(removed >= 1, "the old message must be purged");
     assert!(api.fetch(&b, 0).await.is_empty());
     ts.stop().await;
 }

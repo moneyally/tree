@@ -8,7 +8,7 @@ use sqlx::Row;
 use crate::auth::{NoBody, Signed};
 use crate::error::{ApiError, ApiResult};
 use crate::util::{b64, b64_exceeds, check_id, unb64};
-use crate::{json_body, AppState};
+use crate::{json_body, social, AppState};
 
 /// Claims cost this many rate-limit tokens on top of the request itself,
 /// so one device cannot quickly drain another account's key packages.
@@ -90,6 +90,24 @@ pub async fn upload(
     }))
 }
 
+/// DELETE /v1/keypackages — revoke every unused key package of this device.
+///
+/// This is an explicit compromise-recovery primitive: once a device suspects
+/// its local key-package store was copied, it can invalidate every package
+/// still waiting on the server before uploading fresh ones.
+pub async fn revoke_all(
+    State(state): State<AppState>,
+    req: Signed<NoBody>,
+) -> ApiResult<Json<serde_json::Value>> {
+    state.rate_device(&req.device.device_id, 1.0)?;
+    let deleted = sqlx::query("DELETE FROM key_packages WHERE device_id = ?")
+        .bind(&req.device.device_id)
+        .execute(&state.db)
+        .await?
+        .rows_affected();
+    Ok(Json(serde_json::json!({ "revoked": deleted })))
+}
+
 #[derive(Deserialize)]
 pub struct ClaimReq {
     pub account_id: String,
@@ -116,6 +134,12 @@ pub async fn claim(
     req: Signed<ClaimReq>,
 ) -> ApiResult<Json<ClaimResp>> {
     check_id(&req.body.account_id, "account_id")?;
+    if social::is_blocked_pair(&state, &req.device.account_id, &req.body.account_id).await? {
+        return Err(ApiError::forbidden(
+            "BLOCKED",
+            "key package claim blocked by account policy",
+        ));
+    }
     state.rate_device(&req.device.device_id, CLAIM_EXTRA_COST)?;
 
     let devices: Vec<String> =

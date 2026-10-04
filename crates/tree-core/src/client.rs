@@ -9,7 +9,10 @@
 
 use std::path::Path;
 
-use openmls::prelude::{tls_codec::{Deserialize, Serialize}, *};
+use openmls::prelude::{
+    tls_codec::{Deserialize, Serialize},
+    *,
+};
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_traits::{crypto::OpenMlsCrypto, storage::StorageProvider as _, OpenMlsProvider};
 
@@ -43,12 +46,21 @@ const META_NAME: &str = "name";
 const META_CIPHERSUITE: &str = "ciphersuite";
 const META_SIGNATURE_KEY: &str = "signature_public_key";
 const META_CREDENTIAL: &str = "credential";
+const META_SERVER_AUTH_SEED: &str = "server_auth_seed";
+const META_SERVER_ACCOUNT: &str = "server_account_id";
+const META_SERVER_DEVICE: &str = "server_device_id";
+const META_RECOVERY_ENTROPY: &str = "recovery_entropy";
 
 impl Client<StoredProvider> {
     /// Creates a new device identity in a new encrypted database at `path`
     /// (plus the key header `<path>.hdr`). Fails if `path` already exists.
     pub fn create(path: impl AsRef<Path>, passphrase: &str, name: &str) -> Result<Self, TreeError> {
-        Self::create_with_key(path, &Passphrase::new(passphrase)?, name, KdfParams::RECOMMENDED)
+        Self::create_with_key(
+            path,
+            &Passphrase::new(passphrase)?,
+            name,
+            KdfParams::RECOMMENDED,
+        )
     }
 
     /// Reopens the identity stored at `path`.
@@ -71,7 +83,10 @@ impl Client<StoredProvider> {
             client.provider.atomically(|| {
                 let p = &client.provider;
                 p.put_meta(META_NAME, client.name.as_bytes())?;
-                p.put_meta(META_CIPHERSUITE, &u16::from(client.ciphersuite).to_be_bytes())?;
+                p.put_meta(
+                    META_CIPHERSUITE,
+                    &u16::from(client.ciphersuite).to_be_bytes(),
+                )?;
                 p.put_meta(META_SIGNATURE_KEY, client.signer.public())?;
                 let cred = client
                     .credential
@@ -90,7 +105,10 @@ impl Client<StoredProvider> {
     }
 
     /// [`Client::open`] with any key source.
-    pub fn open_with_key(path: impl AsRef<Path>, source: &dyn KeySource) -> Result<Self, TreeError> {
+    pub fn open_with_key(
+        path: impl AsRef<Path>,
+        source: &dyn KeySource,
+    ) -> Result<Self, TreeError> {
         let provider = StoredProvider::open(path.as_ref(), source)?;
 
         let name = String::from_utf8(provider.meta(META_NAME)?)
@@ -101,23 +119,196 @@ impl Client<StoredProvider> {
             .map_err(|_| TreeError::Storage("stored ciphersuite is damaged".into()))?;
         let ciphersuite = Ciphersuite::try_from(u16::from_be_bytes(cs))
             .map_err(|_| TreeError::UnsupportedCiphersuite)?;
-        if !provider.crypto().supported_ciphersuites().contains(&ciphersuite) {
+        if !provider
+            .crypto()
+            .supported_ciphersuites()
+            .contains(&ciphersuite)
+        {
             return Err(TreeError::UnsupportedCiphersuite);
         }
         let public = provider.meta(META_SIGNATURE_KEY)?;
-        let signer = SignatureKeyPair::read(provider.storage(), &public, ciphersuite.signature_algorithm())
-            .ok_or_else(|| TreeError::Storage("signing key missing".into()))?;
+        let signer = SignatureKeyPair::read(
+            provider.storage(),
+            &public,
+            ciphersuite.signature_algorithm(),
+        )
+        .ok_or_else(|| TreeError::Storage("signing key missing".into()))?;
         let credential = Credential::tls_deserialize_exact(provider.meta(META_CREDENTIAL)?)
             .map_err(|e| TreeError::Storage(format!("stored credential is damaged: {e:?}")))?;
 
-        let credential = CredentialWithKey { credential, signature_key: public.into() };
-        Ok(Self { name, provider, signer, credential, ciphersuite })
+        let credential = CredentialWithKey {
+            credential,
+            signature_key: public.into(),
+        };
+        Ok(Self {
+            name,
+            provider,
+            signer,
+            credential,
+            ciphersuite,
+        })
     }
 
     /// Ids of all groups this device created or joined, oldest first
     /// (including groups it was later removed from).
     pub fn group_ids(&self) -> Result<Vec<Vec<u8>>, TreeError> {
         self.provider.group_ids()
+    }
+
+    /// Returns due durable outbound messages. Sending state is persisted
+    /// separately so a process crash can be recovered without losing work.
+    pub fn due_outbox(
+        &self,
+        now: i64,
+        limit: u32,
+    ) -> Result<Vec<crate::messenger_store::OutboxItem>, TreeError> {
+        self.provider.due_outbox(now, limit)
+    }
+
+    pub fn mark_outbox_sending(&self, local_id: [u8; 16], now: i64) -> Result<bool, TreeError> {
+        self.provider.mark_outbox_sending(local_id, now)
+    }
+
+    pub fn mark_outbox_sent(&self, local_id: [u8; 16], server_id: &str) -> Result<(), TreeError> {
+        self.provider.mark_outbox_sent(local_id, server_id)
+    }
+
+    pub fn mark_outbox_retry(
+        &self,
+        local_id: [u8; 16],
+        error_code: &str,
+        next_retry_at: i64,
+    ) -> Result<(), TreeError> {
+        self.provider
+            .mark_outbox_retry(local_id, error_code, next_retry_at)
+    }
+
+    pub fn mark_outbox_failed(
+        &self,
+        local_id: [u8; 16],
+        error_code: &str,
+    ) -> Result<(), TreeError> {
+        self.provider.mark_outbox_failed(local_id, error_code)
+    }
+
+    pub fn recover_sending_outbox(&self, now: i64) -> Result<u32, TreeError> {
+        self.provider.recover_sending_outbox(now)
+    }
+
+    /// Stores the 32-byte Ed25519 seed used only to authenticate HTTP
+    /// requests to a Tree server. The value is stored inside the SQLCipher
+    /// database, never in a sidecar plaintext file.
+    pub fn set_server_auth_seed(&self, seed: &[u8; 32]) -> Result<(), TreeError> {
+        self.provider.atomically(|| {
+            self.provider.put_meta(META_SERVER_AUTH_SEED, seed)?;
+            Ok(())
+        })
+    }
+
+    /// Returns the persisted server-auth seed, if this device has been
+    /// registered with a Tree server.
+    pub fn server_auth_seed(&self) -> Result<Option<[u8; 32]>, TreeError> {
+        self.provider
+            .meta_optional(META_SERVER_AUTH_SEED)?
+            .map(|v| {
+                v.try_into()
+                    .map_err(|_| TreeError::Storage("server auth seed is damaged".into()))
+            })
+            .transpose()
+    }
+
+    pub fn set_recovery_phrase(
+        &self,
+        phrase: &crate::recovery::RecoveryPhrase,
+    ) -> Result<(), TreeError> {
+        self.provider.atomically(|| {
+            self.provider
+                .put_meta(META_RECOVERY_ENTROPY, &phrase.entropy_bytes())?;
+            Ok(())
+        })
+    }
+
+    pub fn recovery_phrase(&self) -> Result<Option<crate::recovery::RecoveryPhrase>, TreeError> {
+        self.provider
+            .meta_optional(META_RECOVERY_ENTROPY)?
+            .map(|v| {
+                let entropy: [u8; 32] = v
+                    .try_into()
+                    .map_err(|_| TreeError::Storage("recovery entropy is damaged".into()))?;
+                crate::recovery::RecoveryPhrase::from_entropy_bytes(entropy)
+            })
+            .transpose()
+    }
+
+    /// Stores the server account/device identifiers belonging to this local
+    /// profile. They are metadata, but are kept encrypted with the profile.
+    pub fn set_server_account(&self, account_id: &str, device_id: &str) -> Result<(), TreeError> {
+        self.provider.atomically(|| {
+            self.provider
+                .put_meta(META_SERVER_ACCOUNT, account_id.as_bytes())?;
+            self.provider
+                .put_meta(META_SERVER_DEVICE, device_id.as_bytes())?;
+            Ok(())
+        })
+    }
+
+    pub fn server_account(&self) -> Result<Option<(String, String)>, TreeError> {
+        let account = self.provider.meta_optional(META_SERVER_ACCOUNT)?;
+        let device = self.provider.meta_optional(META_SERVER_DEVICE)?;
+        match (account, device) {
+            (None, None) => Ok(None),
+            (Some(a), Some(d)) => Ok(Some((
+                String::from_utf8(a)
+                    .map_err(|_| TreeError::Storage("server account id is damaged".into()))?,
+                String::from_utf8(d)
+                    .map_err(|_| TreeError::Storage("server device id is damaged".into()))?,
+            ))),
+            _ => Err(TreeError::Storage(
+                "server account metadata is incomplete".into(),
+            )),
+        }
+    }
+
+    /// Stores application-owned state inside the encrypted SQLCipher metadata table.
+    /// Keys are namespaced so application data cannot overwrite Tree identity records.
+    pub fn set_app_data(&self, key: &str, value: Option<&[u8]>) -> Result<(), TreeError> {
+        if key.is_empty()
+            || key.len() > 256
+            || key
+                .chars()
+                .any(|c| !(c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-')))
+        {
+            return Err(TreeError::Storage("invalid app-data key".into()));
+        }
+        let key = format!("app/{key}");
+        self.provider.atomically(|| match value {
+            Some(value) => self.provider.put_meta(&key, value),
+            None => self.provider.delete_meta(&key),
+        })
+    }
+
+    pub fn app_data(&self, key: &str) -> Result<Option<Vec<u8>>, TreeError> {
+        if key.is_empty() || key.len() > 256 || key.chars().any(|c| c.is_control()) {
+            return Err(TreeError::Storage("invalid app-data key".into()));
+        }
+        self.provider.meta_optional(&format!("app/{key}"))
+    }
+
+    pub fn app_data_keys(&self, prefix: &str) -> Result<Vec<String>, TreeError> {
+        if prefix.len() > 256
+            || prefix
+                .chars()
+                .any(|c| !(c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-')))
+        {
+            return Err(TreeError::Storage("invalid app-data prefix".into()));
+        }
+        let prefix = format!("app/{prefix}");
+        Ok(self
+            .provider
+            .meta_keys(&prefix)?
+            .into_iter()
+            .map(|key| key["app/".len()..].to_string())
+            .collect())
     }
 
     /// Loads a stored group. Load each group once and keep the [`Group`]:
@@ -136,12 +327,20 @@ impl Client<StoredProvider> {
 
 impl<P: TreeProvider> Client<P> {
     /// New device identity with an explicit provider and ciphersuite.
-    pub fn with_provider(name: &str, provider: P, ciphersuite: Ciphersuite) -> Result<Self, TreeError> {
+    pub fn with_provider(
+        name: &str,
+        provider: P,
+        ciphersuite: Ciphersuite,
+    ) -> Result<Self, TreeError> {
         provider
             .crypto()
             .supports(ciphersuite)
             .map_err(|_| TreeError::UnsupportedCiphersuite)?;
-        if !provider.crypto().supported_ciphersuites().contains(&ciphersuite) {
+        if !provider
+            .crypto()
+            .supported_ciphersuites()
+            .contains(&ciphersuite)
+        {
             return Err(TreeError::UnsupportedCiphersuite);
         }
 
@@ -156,7 +355,13 @@ impl<P: TreeProvider> Client<P> {
             signature_key: signer.to_public_vec().into(),
         };
 
-        Ok(Self { name: name.to_string(), provider, signer, credential, ciphersuite })
+        Ok(Self {
+            name: name.to_string(),
+            provider,
+            signer,
+            credential,
+            ciphersuite,
+        })
     }
 
     pub fn name(&self) -> &str {
@@ -180,10 +385,46 @@ impl<P: TreeProvider> Client<P> {
     /// Publishes a fresh one-time key package (uploaded to the server so
     /// others can add this device to a group while it is offline). Its
     /// private part stays in this device's store until it is used.
+    /// Lists this device's persistent user-scope feature state.
+    pub fn user_features(
+        &self,
+    ) -> Result<Vec<crate::features::Status>, crate::user_features::UserFeatureError> {
+        crate::user_features::list(&self.provider)
+    }
+
+    pub fn user_feature(
+        &self,
+        key: &str,
+    ) -> Result<crate::features::Status, crate::user_features::UserFeatureError> {
+        crate::user_features::status(&self.provider, key)
+    }
+
+    pub fn apply_user_feature(
+        &self,
+        key: &str,
+        option: Option<String>,
+        plan: crate::features::Plan,
+    ) -> Result<crate::features::Status, crate::user_features::UserFeatureError> {
+        crate::user_features::apply(&self.provider, key, option, plan)
+    }
+
+    pub fn release_user_feature(
+        &self,
+        key: &str,
+        plan: crate::features::Plan,
+    ) -> Result<crate::features::Status, crate::user_features::UserFeatureError> {
+        crate::user_features::release(&self.provider, key, plan)
+    }
+
     pub fn key_package(&self) -> Result<Vec<u8>, TreeError> {
         self.provider.atomically(|| {
             let bundle = KeyPackage::builder()
-                .build(self.ciphersuite, &self.provider, &self.signer, self.credential.clone())
+                .build(
+                    self.ciphersuite,
+                    &self.provider,
+                    &self.signer,
+                    self.credential.clone(),
+                )
                 .map_err(|e| TreeError::Identity(format!("{e:?}")))?;
             bundle
                 .key_package()
@@ -202,8 +443,13 @@ impl<P: TreeProvider> Client<P> {
             .max_past_epochs(Group::PAST_EPOCHS as usize)
             .build();
         self.provider.atomically(|| {
-            let mls = MlsGroup::new(&self.provider, &self.signer, &config, self.credential.clone())
-                .map_err(crate::error::group_err)?;
+            let mls = MlsGroup::new(
+                &self.provider,
+                &self.signer,
+                &config,
+                self.credential.clone(),
+            )
+            .map_err(crate::error::group_err)?;
             self.provider.remember_group(mls.group_id().as_slice())?;
             Ok(Group::new(mls, GroupState::default()))
         })
@@ -240,7 +486,11 @@ impl<P: TreeProvider> Client<P> {
             let result = (|| {
                 let builder = StagedWelcome::build_from_welcome(&self.provider, &config, welcome)
                     .map_err(crate::error::group_err)?;
-                let group_id = builder.processed_welcome().unverified_group_info().group_id().clone();
+                let group_id = builder
+                    .processed_welcome()
+                    .unverified_group_info()
+                    .group_id()
+                    .clone();
                 // A welcome never replaces a group we are still in. A stored copy
                 // of a group we were removed from is replaced (we are being added
                 // back), but only after the welcome has been fully verified.
@@ -255,13 +505,21 @@ impl<P: TreeProvider> Client<P> {
                 };
                 let staged = builder.build().map_err(crate::error::group_err)?;
                 if let Some(mut old) = old {
-                    old.delete(self.provider.storage()).map_err(crate::storage::storage_err)?;
+                    old.delete(self.provider.storage())
+                        .map_err(crate::storage::storage_err)?;
                 }
-                let mls = staged.into_group(&self.provider).map_err(crate::error::group_err)?;
+                let mls = staged
+                    .into_group(&self.provider)
+                    .map_err(crate::error::group_err)?;
                 self.provider.remember_group(mls.group_id().as_slice())?;
                 // Replace the key from the one-time key package soon.
-                let state = GroupState { should_refresh: true, ..GroupState::default() };
-                self.provider.save_group_state(mls.group_id().as_slice(), &state.encode())?;
+                let state = GroupState {
+                    should_refresh: true,
+                    ..GroupState::default()
+                };
+                let encoded_state = state.encode()?;
+                self.provider
+                    .save_group_state(mls.group_id().as_slice(), &encoded_state)?;
                 Ok(Group::new(mls, state))
             })();
             if result.is_err() {

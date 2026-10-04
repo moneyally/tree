@@ -43,12 +43,19 @@ fn open(path: &Path, pass: &str) -> Result<(Stored, Vec<Group>), TreeError> {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dir = std::env::temp_dir().join(format!("tree-persist-demo-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
-    let (pa, pb, pc) = (dir.join("alice.db"), dir.join("bob.db"), dir.join("charlie.db"));
+    let (pa, pb, pc) = (
+        dir.join("alice.db"),
+        dir.join("bob.db"),
+        dir.join("charlie.db"),
+    );
 
     println!("1) create two identities in encrypted databases");
     let t = Instant::now();
     let alice = Client::create(&pa, "alice: correct horse battery", "alice")?;
-    println!("  created alice ({} ms incl. Argon2id)", t.elapsed().as_millis());
+    println!(
+        "  created alice ({} ms incl. Argon2id)",
+        t.elapsed().as_millis()
+    );
     let bob = Client::create(&pb, "bob: staple purple tiger", "bob")?;
 
     let mut a = alice.create_group()?;
@@ -102,8 +109,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     drop((a, alice));
     let (alice, mut ga) = open(&pa, "alice: correct horse battery")?;
     let mut a = ga.remove(0);
-    let again = a.pending_commit().expect("pending commit survives the restart");
-    println!("  pending commit still there after restart: same bytes = {}", again.commit == rm.commit);
+    let again = a
+        .pending_commit()
+        .expect("pending commit survives the restart");
+    println!(
+        "  pending commit still there after restart: same bytes = {}",
+        again.commit == rm.commit
+    );
     // The server accepted it meanwhile; its echo merges it.
     show("alice", &a.receive(&alice, &again.commit)?);
     show("charlie", &c.receive(&charlie, &rm.commit)?);
@@ -116,7 +128,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (charlie, mut gc) = open(&pc, "charlie: river stone lamp")?;
     let (mut a, mut c) = (ga.remove(0), gc.remove(0));
     let names: Vec<String> = a.members().into_iter().map(|m| m.name).collect();
-    println!("  members: {names:?}; bob still a member: {}", gb[0].is_member());
+    println!(
+        "  members: {names:?}; bob still a member: {}",
+        gb[0].is_member()
+    );
     let m = a.send(&alice, "밥 없는 비밀 이야기".as_bytes())?;
     show("charlie", &c.receive(&charlie, &m)?);
     let mut b = gb.into_iter().next().unwrap();
@@ -129,10 +144,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     drop((a, b, c, alice, bob, charlie));
     let raw = std::fs::read(&pa)?;
     let found = |needle: &[u8]| raw.windows(needle.len()).any(|w| w == needle);
-    println!("  alice.db: {} bytes, first 16: {}", raw.len(), hex(&raw[..16]));
-    println!("  contains \"SQLite format 3\": {}", found(b"SQLite format 3"));
+    println!(
+        "  alice.db: {} bytes, first 16: {}",
+        raw.len(),
+        hex(&raw[..16])
+    );
+    println!(
+        "  contains \"SQLite format 3\": {}",
+        found(b"SQLite format 3")
+    );
     println!("  contains the name \"alice\":   {}", found(b"alice"));
-    println!("  key header alice.db.hdr: {} bytes (salt + Argon2id parameters, no secret)", std::fs::metadata(dir.join("alice.db.hdr"))?.len());
+    println!(
+        "  key header alice.db.hdr: {} bytes (salt + Argon2id parameters, no secret)",
+        std::fs::metadata(dir.join("alice.db.hdr"))?.len()
+    );
 
     std::fs::remove_dir_all(&dir)?;
     Ok(())

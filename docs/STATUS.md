@@ -2,7 +2,7 @@
 
 What the design (internal design document v5, not in this repository) asks
 for, what exists in this repository, and in which order the rest is built.
-Updated with every merged step. Last update: 2026-10-01, HANDOFF 3.1.
+Updated 2026-10-03 on branch `claude/full-messenger-v1`; this branch contains unmerged pre-app work.
 
 Legend: **done** = implemented and tested here; **partial** = some of it,
 named; **missing** = not started; **decided otherwise** = deliberately
@@ -47,12 +47,12 @@ in section 5.
 | Forward secrecy / post-compromise security by key refresh | partial | refresh exists; no scheduler that triggers it (PROTOCOL.md 6.9) |
 | Encrypted device storage (SQLCipher, hardware-wrapped key) | partial | SQLCipher + Argon2id done; hardware key (Secure Enclave / Keystore) needs the apps (`KeySource` is the hook) |
 | Feature registry: apply/release for every feature, permanent locks, layers | done | `features.rs`; server, chat, user, bot layers; `LOCKED_BY_CHAT` |
-| All 34 stage-1 feature keys in the registry | partial | 30 of 34; missing `user.username`, `user.note_to_self`, `user.folders`, `user.default_folders` |
-| Behaviour behind the keys (disappearing timer, edit window, view once, ...) | missing | the registry stores the setting; nothing acts on it yet. Chat settings must live in the MLS group context (design: the server never knows them) |
-| Recovery phrase (12-24 words) | missing | threat model in RECOVERY_THREAT_MODEL.md |
-| Safety number / QR comparison, key change warning | missing | format open (Q4); warning is a permanent lock in the registry but has no code |
+| All 34 stage-1 feature keys in the registry | partial | 34 of 34; all stage-1 keys are present in the registry |
+| Behaviour behind the keys (disappearing timer, edit window, view once, ...) | partial | media view-once/timer is implemented in `media.rs`; the remaining message-level edit/disappearing enforcement is still client/UI work. Chat settings remain MLS state. |
+| Recovery phrase (24 words, 256-bit entropy) | partial | `recovery.rs`: BIP-39 phrase + HKDF-derived recovery key; encrypted local persistence; server recovery API. UI confirmation/screenshot protections and external review still missing |
+| Safety number / QR comparison, key change warning | partial | per-device safety fingerprint helper exists; multi-device/person format remains Q4; UI/pinning not built |
 | Device link with confirmation code on both devices | missing | permanent lock in the registry, no code (multi-device is stage 3) |
-| Per-file encryption for attachments | missing | |
+| Per-file encryption for attachments | done | `media.rs`: per-file key, encrypted manifest, AES-256-GCM chunks, preview key derivation, key commitment, lifecycle state machine; `docs/MEDIA.md` |
 | Message franking for reports | missing | |
 | Admin roles inside the group (admins, kick) | missing | today any member may add or remove (PROTOCOL.md 6.4) |
 | Invite links with expiry / use count | missing | |
@@ -71,11 +71,12 @@ in section 5.
 | Size limits for large hybrid groups | done | commits / welcomes 4 MiB, 2048 devices (BENCHMARKS.md rec. 6) |
 | Minimal logs (no IP, no sender, day / minute granularity) | done | SERVER_API.md "What the server stores" |
 | Operator feature flags + audit trail | done | own implementation; section 4.4 |
-| `@username` (hash only, rate-limited search) | missing | |
-| Message request inbox for strangers, blocking | missing | needs server support (who may write to whom) and client UI |
-| Report service (reporter's device submits) | missing | |
+| `@username` (hash only, rate-limited search) | partial | client canonicalization/hash + server claim/lookup/delete; UI/QR not built |
+| Unused key-package revocation after suspected compromise | done | `DELETE /v1/keypackages`; CLI `revoke-keys`; integration coverage |
+| Message request inbox for strangers, blocking | partial | server request/accept/reject + block/unblock APIs; client UI and message delivery policy integration remain |
+| Report service (reporter's device submits) | partial | opaque MLS application envelope transport + evidence hash; message franking not implemented |
 | Spam limits for new accounts | partial | per-device rate limits and signup limits exist; no new-account sending limit |
-| File service (encrypted blobs only) | missing | |
+| File service (encrypted blobs only) | done | legacy opaque file endpoint plus Stage 1C resumable `/v1/media` chunk service; encrypted manifest/ciphertext only |
 | Push relay without content | missing | |
 | Docker Compose + Caddy TLS, one region | partial | files in `deploy/`; never deployed (HANDOFF 3.5) |
 | Stateless, partitionable by user-id hash | partial | the server keeps a replay cache and rate limits in memory (Q7) |
@@ -84,7 +85,7 @@ in section 5.
 
 | Requirement | Status | Note |
 | --- | --- | --- |
-| Command-line client through the server | missing | HANDOFF 3.3: first end-to-end proof through a real server |
+| Command-line client through the server | partial | `crates/tree-cli`: signup, key packages, groups, send/receive/ack, roster/recovery plus Messenger Core media APIs; UI is not built |
 | UniFFI bindings | missing | |
 | Android app (Kotlin + Compose Multiplatform) | missing | |
 | Desktop app (same code) | missing | |
@@ -102,7 +103,7 @@ in section 5.
 | Attack-scenario tests on the core | done | 111 core tests, proptest; TESTING.md |
 | Mutation testing | done for the core | 3.1: 277 mutants of the changed files; TESTING.md |
 | Formal models of Tree's own additions | done | 9 ProVerif models (envelope, commit ordering, removal, PCS, FS), abstract; formal/README.md |
-| Design's "tests not run yet" for stage 1: removed member cannot read (real OpenMLS code) | done | `removed_member_cannot_decrypt_even_if_ignoring_removal` |
+| Design's removed-member E2E test | done | existing core test plus `tree_e2e.rs` real HTTP path; CI result still unavailable |
 | Same: device link code commitment, key-committing file encryption | missing | features not built |
 | Load test | missing | |
 | External review of the crypto code (stage-1 exit criterion) | missing | owner to engage a reviewer |
@@ -157,14 +158,13 @@ Each needs the owner's confirmation; the reasons are in PROTOCOL.md.
 
 1. HANDOFF 3.1 core fixes — done.
 2. HANDOFF 3.2 server commit ordering + size limits — done.
-3. HANDOFF 3.3 command-line client: two devices chat through a local server.
-4. Identity and safety basics in core + server: recovery phrase, safety
-   numbers and key-change warning, usernames (hash) with QR, message
-   requests and blocking, reporting with message franking.
-5. Group administration in the MLS group context: admins, kick, invite
+3. HANDOFF 3.3 command-line client + authenticated group roster — implemented on branch; CI/local compile not yet verified.
+4. Identity basics: recovery primitive/server flow, per-device safety fingerprint, username hash, message requests, blocking, and opaque report transport — implemented on branch; multi-device safety UX and message franking remain.
+5. Next: complete identity semantics and replay/future-epoch handling, then group administration/settings.
+6. Group administration in the MLS group context: admins, kick, invite
    links, chat settings that devices enforce (disappearing, edit window,
    media, ...), the four missing stage-1 keys.
-6. Files: per-file key-committing encryption + encrypted blob service.
+6. **Stage 1C Files/media: implemented.** Per-file key-committing encryption, encrypted manifest, chunked encrypted blob service, preview, view-once/timer lifecycle, zeroizing buffers and multi-device consumption event. Remaining UI rendering is app-layer work.
 7. HANDOFF 3.5 deploy to the owner's server; push relay.
 8. UniFFI bindings, then Android, desktop, iOS apps with registry-driven
    settings, Korean and English, terms screens.

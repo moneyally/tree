@@ -134,6 +134,12 @@ Each package is selected and deleted in one statement, so it is never handed
 out twice, even under concurrent claims. Oldest first. A claim costs extra
 rate-limit tokens. `NOT_FOUND` for an unknown account.
 
+### `DELETE /v1/keypackages` — revoke my unused packages
+
+Deletes every unclaimed key package belonging to the authenticated device.
+Use this after suspected compromise, then upload fresh packages.
+`200` → `{ "revoked": 42 }`.
+
 ### `GET /v1/keypackages/count` — my remaining count
 
 `200` → `{ "count": 42 }`
@@ -236,6 +242,93 @@ transaction ends.
 
 `full_devices` missed the commit (mailbox full) and must be removed from the
 group and added again.
+
+## Identity and social controls
+
+### PUT /v1/username — claim or change a username
+
+The client computes the canonical username and sends only its 32-byte SHA-256
+hash as lowercase hex. The server never receives the clear username.
+
+Request JSON:
+{ "username_hash": "<64 hex characters>" }
+
+200 -> { "username_hash": "<64 hex characters>" }.
+
+The hash is unique per account. 409 ALREADY_EXISTS means another account
+already owns it.
+
+### GET /v1/username/{username_hash} — look up a username
+
+The client hashes its local username input and queries the exact hash.
+200 -> { "account_id": "..." }. 404 means no account owns that hash.
+Lookups are rate-limited.
+
+### DELETE /v1/username — release my username
+
+200 -> { "removed": true }.
+
+### GET /v1/groups/{group_id}/devices — current group routing roster
+
+group_id is lowercase/uppercase hex. Only a device currently present in the
+server's group membership set may call it.
+
+200 ->
+{ "group_id": "<hex>", "devices": ["<device_id>", "..."] }
+
+The endpoint exposes device ids only; the server already requires this set to
+sequence commits and fan out ciphertext.
+
+### POST /v1/message-requests — request a conversation
+
+{ "target_account_id": "..." }
+
+Creates or reopens a pending account-to-account request. BLOCKED is returned
+when either account has blocked the other.
+
+### GET /v1/message-requests — list requests
+
+200 ->
+{
+  "incoming": [{ "account_id": "...", "state": "pending", "updated_at": 0 }],
+  "outgoing": [{ "account_id": "...", "state": "pending", "updated_at": 0 }]
+}
+
+### POST /v1/message-requests/{requester_account_id}/accept
+
+The target account accepts a pending incoming request. A blocked relationship
+cannot be accepted.
+
+### POST /v1/message-requests/{requester_account_id}/reject
+
+The target account rejects a pending incoming request. No message content is
+stored.
+
+### GET /v1/blocks — list blocked accounts
+
+200 -> { "accounts": ["<account_id>", "..."] }.
+
+### POST /v1/blocks/{account_id} — block
+
+Creates an account-level block. Repeating the operation is idempotent.
+
+### DELETE /v1/blocks/{account_id} — unblock
+
+Removes the caller's block.
+
+### POST /v1/reports — submit opaque report evidence
+
+{
+  "group_id": "<group id hex>",
+  "evidence": "<base64 Tree envelope>",
+  "category": "spam"
+}
+
+The evidence must be an MLS application-message envelope. The server stores
+the opaque bytes and a SHA-256 evidence hash; it does not decrypt or store
+message plaintext. This endpoint is the transport layer for reporting only.
+A cryptographic message-franking construction is not claimed by v1 yet.
+
 
 ## Operator feature flags
 

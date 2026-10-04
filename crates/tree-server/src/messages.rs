@@ -12,6 +12,7 @@ use axum::extract::rejection::QueryRejection;
 use axum::extract::{Query, State};
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use sqlx::Row;
 use tokio::time::Instant;
 
@@ -27,13 +28,17 @@ pub const MAX_ACK_IDS: usize = 1000;
 pub struct SendReq {
     pub recipients: Vec<String>,
     pub body: String,
+    /// Stable client-generated key for crash-safe retry. Base64, exactly 16 bytes.
+    pub idempotency_key: Option<String>,
 }
 json_body!(SendReq, |cfg| cfg.max_message_bytes.div_ceil(3) * 4
     + cfg.max_recipients * (ID_LEN + 4)
     + 1024);
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 pub struct SendResp {
+    /// Stable opaque server id for the stored ciphertext blob.
+    pub id: String,
     /// Mailboxes the message was put into.
     pub delivered: usize,
     /// Recipient ids that are not registered devices.
@@ -48,7 +53,11 @@ pub async fn send(
     req: Signed<SendReq>,
 ) -> ApiResult<Json<SendResp>> {
     let cfg = &state.cfg;
-    let SendReq { recipients, body } = req.body;
+    let SendReq {
+        recipients,
+        body,
+        idempotency_key,
+    } = req.body;
     if recipients.is_empty() {
         return Err(ApiError::bad_request("recipients is empty"));
     }
@@ -66,11 +75,22 @@ pub async fn send(
             unique.push(r);
         }
     }
+    unique.sort();
     if b64_exceeds(&body, cfg.max_message_bytes) {
         return Err(ApiError::too_large("message body too large"));
     }
     let bytes = unb64(&body, "body")?;
     drop(body);
+    let idempotency_key = idempotency_key
+        .map(|value| unb64(&value, "idempotency_key"))
+        .transpose()?;
+    if let Some(key) = &idempotency_key {
+        if key.len() != 16 {
+            return Err(ApiError::bad_request(
+                "idempotency_key must decode to exactly 16 bytes",
+            ));
+        }
+    }
     if bytes.is_empty() {
         return Err(ApiError::bad_request("message body is empty"));
     }
@@ -79,36 +99,138 @@ pub async fn send(
     }
     // Only application messages travel here: commits go through
     // /v1/commits, welcomes only with their commit, proposals not at all.
-    match wire::envelope_header(&bytes) {
-        Ok(h) if h.content_type == wire::APPLICATION => {}
+    let header = match wire::envelope_header(&bytes) {
+        Ok(h) if h.content_type == wire::APPLICATION => h,
         Ok(h) if h.content_type == wire::COMMIT => {
             return Err(ApiError::bad_request("commits must be sent to /v1/commits"))
         }
         Ok(_) => return Err(ApiError::bad_request("proposals are not accepted")),
         Err(_) if wire::is_welcome(&bytes) => {
-            return Err(ApiError::bad_request("welcomes travel only with their commit"))
+            return Err(ApiError::bad_request(
+                "welcomes travel only with their commit",
+            ))
         }
         Err(why) => return Err(ApiError::bad_request(format!("body: {why}"))),
-    }
-    // Fan-out to many mailboxes costs more.
-    state.rate_device(&req.device.device_id, (unique.len() / 100) as f64)?;
+    };
 
+    let group_id = header.group_id.to_vec();
+    let sender = &req.device.device_id;
+    let request_hash = {
+        let mut h = Sha256::new();
+        h.update(b"TreeSend/v1");
+        h.update(&group_id);
+        for recipient in &unique {
+            h.update((recipient.len() as u32).to_be_bytes());
+            h.update(recipient.as_bytes());
+        }
+        h.update((bytes.len() as u64).to_be_bytes());
+        h.update(&bytes);
+        h.finalize().to_vec()
+    };
+
+    // Fan-out and membership authorization happen in the same write
+    // transaction. Otherwise a concurrent device removal could race the
+    // membership check and still receive one last unauthorized delivery.
+    state.rate_device(&req.device.device_id, (unique.len() / 100) as f64)?;
     let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
+
+    if let Some(key) = &idempotency_key {
+        if let Some(row) = sqlx::query(
+            "SELECT request_hash, response_json FROM message_idempotency
+             WHERE sender_device_id = ?1 AND idempotency_key = ?2",
+        )
+        .bind(sender)
+        .bind(key)
+        .fetch_optional(&mut *tx)
+        .await?
+        {
+            let stored_hash: Vec<u8> = row.try_get("request_hash")?;
+            if stored_hash != request_hash {
+                return Err(ApiError::conflict(
+                    "IDEMPOTENCY_KEY_REUSE",
+                    "idempotency key was already used for a different request",
+                ));
+            }
+            let response_json: String = row.try_get("response_json")?;
+            let response: SendResp =
+                serde_json::from_str(&response_json).map_err(|_| ApiError::internal())?;
+            return Ok(Json(response));
+        }
+    }
+
+    // The server cannot decrypt the MLS message, but it can enforce that the
+    // authenticated sender and every recipient belong to the same current
+    // server-side group roster. This blocks cross-group mailbox injection.
+    let sender_member =
+        sqlx::query("SELECT 1 FROM group_devices WHERE group_id = ? AND device_id = ?")
+            .bind(&group_id)
+            .bind(sender)
+            .fetch_optional(&mut *tx)
+            .await?
+            .is_some();
+    if !sender_member {
+        return Err(ApiError::forbidden(
+            "NOT_ELIGIBLE",
+            "sender is not a member of this group",
+        ));
+    }
+    for recipient in &unique {
+        let member =
+            sqlx::query("SELECT 1 FROM group_devices WHERE group_id = ? AND device_id = ?")
+                .bind(&group_id)
+                .bind(recipient)
+                .fetch_optional(&mut *tx)
+                .await?
+                .is_some();
+        let known_device = sqlx::query("SELECT 1 FROM devices WHERE id = ?")
+            .bind(recipient)
+            .fetch_optional(&mut *tx)
+            .await?
+            .is_some();
+        // Unknown ids are intentionally passed through to `deliver`, which
+        // reports them as unknown_devices. A registered device in another
+        // group must still be rejected to prevent cross-group injection.
+        if known_device && !member {
+            return Err(ApiError::forbidden(
+                "NOT_ELIGIBLE",
+                "one or more recipients are not members of this group",
+            ));
+        }
+    }
+
     let d = deliver(&mut tx, cfg, &bytes, unique).await?;
+    let response = SendResp {
+        id: d.blob_id.to_string(),
+        delivered: d.delivered.len(),
+        unknown_devices: d.unknown_devices,
+        full_devices: d.full_devices,
+    };
+    if let Some(key) = &idempotency_key {
+        let response_json = serde_json::to_string(&response).map_err(|_| ApiError::internal())?;
+        sqlx::query(
+            "INSERT INTO message_idempotency
+             (sender_device_id,idempotency_key,request_hash,response_json,created_at)
+             VALUES (?1,?2,?3,?4,?)",
+        )
+        .bind(sender)
+        .bind(key)
+        .bind(&request_hash)
+        .bind(response_json)
+        .bind(now_secs())
+        .execute(&mut *tx)
+        .await?;
+    }
     tx.commit().await?;
 
     for id in &d.delivered {
         state.waiters.notify(id);
     }
-    Ok(Json(SendResp {
-        delivered: d.delivered.len(),
-        unknown_devices: d.unknown_devices,
-        full_devices: d.full_devices,
-    }))
+    Ok(Json(response))
 }
 
 /// Outcome of putting one body into several mailboxes.
 pub struct Delivery {
+    pub blob_id: i64,
     pub delivered: Vec<String>,
     pub unknown_devices: Vec<String>,
     pub full_devices: Vec<String>,
@@ -164,13 +286,20 @@ pub async fn deliver(
             .execute(&mut **tx)
             .await?;
     }
-    Ok(Delivery { delivered, unknown_devices, full_devices })
+    Ok(Delivery {
+        blob_id,
+        delivered,
+        unknown_devices,
+        full_devices,
+    })
 }
 
 #[derive(Deserialize)]
 pub struct FetchQuery {
     /// Seconds to wait for a message if the mailbox is empty (long-poll).
     pub wait: Option<u64>,
+    /// Last server cursor durably acknowledged by this device.
+    pub cursor: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -186,30 +315,55 @@ pub struct FetchResp {
     pub messages: Vec<Message>,
     /// More messages are waiting beyond this page.
     pub more: bool,
+    /// Highest delivery sequence included in this page, or the supplied cursor.
+    pub cursor: i64,
 }
 
-async fn load(state: &AppState, device_id: &str) -> ApiResult<FetchResp> {
+pub async fn load(
+    state: &AppState,
+    device_id: &str,
+    requested_cursor: Option<i64>,
+) -> ApiResult<FetchResp> {
+    let stored_cursor: i64 = sqlx::query("SELECT cursor FROM message_cursors WHERE device_id = ?")
+        .bind(device_id)
+        .fetch_optional(&state.db)
+        .await?
+        .map(|r| r.try_get("cursor"))
+        .transpose()?
+        .unwrap_or(0);
+    let cursor = requested_cursor.unwrap_or(stored_cursor);
+    if cursor < stored_cursor {
+        return Err(ApiError::conflict(
+            "CURSOR_ROLLBACK",
+            "message cursor cannot move backwards",
+        ));
+    }
     let limit = state.cfg.fetch_limit as i64;
     let rows = sqlx::query(
-        "SELECT d.id AS id, b.body AS body, b.received_at AS received_at \
-         FROM deliveries d JOIN blobs b ON b.id = d.blob_id \
-         WHERE d.device_id = ? ORDER BY d.seq LIMIT ?",
+        "SELECT d.id AS id, d.seq AS seq, b.body AS body, b.received_at AS received_at          FROM deliveries d JOIN blobs b ON b.id = d.blob_id          WHERE d.device_id = ? AND d.seq > ? ORDER BY d.seq LIMIT ?",
     )
     .bind(device_id)
+    .bind(cursor)
     .bind(limit + 1)
     .fetch_all(&state.db)
     .await?;
     let more = rows.len() as i64 > limit;
     let mut messages = Vec::with_capacity(rows.len());
+    let mut next_cursor = cursor;
     for r in rows.iter().take(limit as usize) {
         let body: Vec<u8> = r.try_get("body")?;
+        next_cursor = r.try_get("seq")?;
         messages.push(Message {
             id: r.try_get("id")?,
             body: b64(&body),
             received_at: r.try_get("received_at")?,
         });
     }
-    Ok(FetchResp { messages, more })
+    Ok(FetchResp {
+        messages,
+        more,
+        cursor: next_cursor,
+    })
 }
 
 /// Removes a long-poll subscription however the request ends.
@@ -238,7 +392,7 @@ pub async fn fetch(
     let wait = q.wait.unwrap_or(0).min(state.cfg.long_poll_max_secs);
     let device_id = req.device.device_id.as_str();
     if wait == 0 {
-        return Ok(Json(load(&state, device_id).await?));
+        return Ok(Json(load(&state, device_id, q.cursor).await?));
     }
 
     let sub = Subscription {
@@ -253,12 +407,12 @@ pub async fn fetch(
         let notified = notify.notified();
         tokio::pin!(notified);
         notified.as_mut().enable();
-        let resp = load(&state, device_id).await?;
+        let resp = load(&state, device_id, q.cursor).await?;
         if !resp.messages.is_empty() || Instant::now() >= deadline {
             break resp;
         }
         if tokio::time::timeout_at(deadline, notified).await.is_err() {
-            break load(&state, device_id).await?;
+            break load(&state, device_id, q.cursor).await?;
         }
     };
     drop(sub);
@@ -268,16 +422,19 @@ pub async fn fetch(
 #[derive(Deserialize)]
 pub struct AckReq {
     pub ids: Vec<String>,
+    /// Highest fetched delivery sequence that the client has durably persisted.
+    pub cursor: Option<i64>,
 }
 json_body!(AckReq, |_cfg| MAX_ACK_IDS * (ID_LEN + 4) + 256);
 
 /// `POST /v1/messages/ack` — deletes the caller's own messages. Ids that are
 /// not in the caller's mailbox are ignored.
-pub async fn ack(
-    State(state): State<AppState>,
-    req: Signed<AckReq>,
-) -> ApiResult<Json<serde_json::Value>> {
-    let ids = &req.body.ids;
+pub async fn ack_ids(
+    state: &AppState,
+    device_id: &str,
+    ids: &[String],
+    cursor: Option<i64>,
+) -> ApiResult<usize> {
     if ids.len() > MAX_ACK_IDS {
         return Err(ApiError::too_large(format!(
             "at most {MAX_ACK_IDS} ids per acknowledgement"
@@ -286,17 +443,62 @@ pub async fn ack(
     for id in ids {
         check_id(id, "message id")?;
     }
-    if ids.is_empty() {
-        return Ok(Json(serde_json::json!({ "deleted": 0 })));
+    if ids.is_empty() && cursor.is_none() {
+        return Ok(0);
     }
-    let ids_json = serde_json::to_string(ids).map_err(|_| ApiError::internal())?;
 
+    let ids_json = serde_json::to_string(ids).map_err(|_| ApiError::internal())?;
     let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
+    let current_cursor: i64 = sqlx::query("SELECT cursor FROM message_cursors WHERE device_id = ?")
+        .bind(device_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .map(|r| r.try_get("cursor"))
+        .transpose()?
+        .unwrap_or(0);
+    let requested_cursor = cursor.unwrap_or(current_cursor);
+    if requested_cursor < current_cursor {
+        return Err(ApiError::conflict(
+            "CURSOR_ROLLBACK",
+            "message cursor cannot move backwards",
+        ));
+    }
+    let max_seq: i64 =
+        sqlx::query("SELECT COALESCE(MAX(seq), 0) AS max_seq FROM deliveries WHERE device_id = ?")
+            .bind(device_id)
+            .fetch_one(&mut *tx)
+            .await?
+            .try_get("max_seq")?;
+    if requested_cursor > max_seq {
+        return Err(ApiError::conflict(
+            "CURSOR_RANGE",
+            "message cursor is beyond the mailbox",
+        ));
+    }
+    if requested_cursor > current_cursor {
+        let pending_before_cursor: i64 = sqlx::query(
+            "SELECT COUNT(*) AS n FROM deliveries
+             WHERE device_id = ?1 AND seq <= ?2
+               AND id NOT IN (SELECT value FROM json_each(?3))",
+        )
+        .bind(device_id)
+        .bind(requested_cursor)
+        .bind(&ids_json)
+        .fetch_one(&mut *tx)
+        .await?
+        .try_get("n")?;
+        if pending_before_cursor != 0 {
+            return Err(ApiError::conflict(
+                "CURSOR_GAP",
+                "cannot acknowledge past an unpersisted mailbox entry",
+            ));
+        }
+    }
     let blob_ids: Vec<i64> = sqlx::query(
-        "DELETE FROM deliveries WHERE device_id = ? AND id IN (SELECT value FROM json_each(?)) \
+        "DELETE FROM deliveries WHERE device_id = ? AND id IN (SELECT value FROM json_each(?))
          RETURNING blob_id",
     )
-    .bind(&req.device.device_id)
+    .bind(device_id)
     .bind(&ids_json)
     .fetch_all(&mut *tx)
     .await?
@@ -306,13 +508,37 @@ pub async fn ack(
     if !blob_ids.is_empty() {
         let blobs_json = serde_json::to_string(&blob_ids).map_err(|_| ApiError::internal())?;
         sqlx::query(
-            "DELETE FROM blobs WHERE id IN (SELECT value FROM json_each(?)) \
+            "DELETE FROM blobs WHERE id IN (SELECT value FROM json_each(?))
              AND NOT EXISTS (SELECT 1 FROM deliveries d WHERE d.blob_id = blobs.id)",
         )
         .bind(&blobs_json)
         .execute(&mut *tx)
         .await?;
     }
+    if requested_cursor > current_cursor {
+        sqlx::query(
+            "INSERT INTO message_cursors (device_id, cursor) VALUES (?1, ?2)
+             ON CONFLICT(device_id) DO UPDATE SET cursor=excluded.cursor",
+        )
+        .bind(device_id)
+        .bind(requested_cursor)
+        .execute(&mut *tx)
+        .await?;
+    }
     tx.commit().await?;
-    Ok(Json(serde_json::json!({ "deleted": blob_ids.len() })))
+    Ok(blob_ids.len())
+}
+
+pub async fn ack(
+    State(state): State<AppState>,
+    req: Signed<AckReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let deleted = ack_ids(
+        &state,
+        &req.device.device_id,
+        &req.body.ids,
+        req.body.cursor,
+    )
+    .await?;
+    Ok(Json(serde_json::json!({ "deleted": deleted })))
 }

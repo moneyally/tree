@@ -9,8 +9,8 @@ use crate::{error::TreeError, DefaultProvider, LibcruxProvider};
 /// In-memory providers use the defaults (nothing to persist). The encrypted
 /// [`crate::storage::StoredProvider`] overrides both methods.
 pub trait TreeProvider: OpenMlsProvider {
-    /// Runs one complete operation (send, receive, add, ...) so that a crash
-    /// can never leave half of it on disk.
+    /// Runs one complete operation (send, receive, add, ...) transactionally.
+    /// A successful operation is committed; an error is rolled back.
     fn atomically<T>(&self, op: impl FnOnce() -> Result<T, TreeError>) -> Result<T, TreeError> {
         op()
     }
@@ -26,6 +26,95 @@ pub trait TreeProvider: OpenMlsProvider {
     /// In-memory providers keep it only in the [`crate::Group`].
     fn save_group_state(&self, _group_id: &[u8], _state: &[u8]) -> Result<(), TreeError> {
         Ok(())
+    }
+
+    /// Reloads Tree's persisted per-group state after a failed atomic
+    /// operation. In-memory providers have nothing to reload.
+    fn load_group_state(&self, _group_id: &[u8]) -> Result<Option<Vec<u8>>, TreeError> {
+        Ok(None)
+    }
+
+    /// Stored providers must reload OpenMLS after a failed transaction because
+    /// the database was rolled back underneath the in-memory group object.
+    /// In-memory providers keep their state local and restore Tree metadata.
+    fn reload_group_after_error(&self) -> bool {
+        false
+    }
+
+    /// Stores small device-local metadata. StoredProvider encrypts it with
+    /// SQLCipher; in-memory providers intentionally discard it.
+    fn put_meta(&self, _key: &str, _value: &[u8]) -> Result<(), TreeError> {
+        Ok(())
+    }
+
+    fn meta_optional(&self, _key: &str) -> Result<Option<Vec<u8>>, TreeError> {
+        Ok(None)
+    }
+
+    fn delete_meta(&self, _key: &str) -> Result<(), TreeError> {
+        Ok(())
+    }
+
+    fn store_message_event(
+        &self,
+        _group_id: &[u8],
+        _event: &crate::message::MessageEvent,
+        _sender: &[u8; 32],
+    ) -> Result<(), TreeError> {
+        Ok(())
+    }
+
+    fn get_messages(
+        &self,
+        _group_id: &[u8],
+        _limit: u32,
+    ) -> Result<Vec<crate::messenger_store::StoredMessage>, TreeError> {
+        Ok(Vec::new())
+    }
+
+    fn enqueue_outbox(
+        &self,
+        _local_id: [u8; 16],
+        _group_id: &[u8],
+        _message_id: Option<crate::message::MessageId>,
+        _kind: u8,
+        _envelope: &[u8],
+        _now: i64,
+    ) -> Result<(), TreeError> {
+        Ok(())
+    }
+
+    fn due_outbox(
+        &self,
+        _now: i64,
+        _limit: u32,
+    ) -> Result<Vec<crate::messenger_store::OutboxItem>, TreeError> {
+        Ok(Vec::new())
+    }
+
+    fn mark_outbox_sending(&self, _local_id: [u8; 16], _now: i64) -> Result<bool, TreeError> {
+        Ok(false)
+    }
+
+    fn mark_outbox_sent(&self, _local_id: [u8; 16], _server_id: &str) -> Result<(), TreeError> {
+        Ok(())
+    }
+
+    fn mark_outbox_retry(
+        &self,
+        _local_id: [u8; 16],
+        _error_code: &str,
+        _next_retry_at: i64,
+    ) -> Result<(), TreeError> {
+        Ok(())
+    }
+
+    fn mark_outbox_failed(&self, _local_id: [u8; 16], _error_code: &str) -> Result<(), TreeError> {
+        Ok(())
+    }
+
+    fn recover_sending_outbox(&self, _now: i64) -> Result<u32, TreeError> {
+        Ok(0)
     }
 }
 

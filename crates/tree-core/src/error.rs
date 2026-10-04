@@ -15,6 +15,8 @@ pub enum TreeError {
     InvalidKeyPackage(String),
     #[error("group operation failed: {0}")]
     Group(String),
+    #[error("file encryption failed: {0}")]
+    FileCrypto(String),
     #[error("message rejected: {0}")]
     Rejected(String),
     #[error("no member {0} in this group")]
@@ -33,6 +35,8 @@ pub enum TreeError {
     /// (The two cannot be told apart: both fail page authentication.)
     #[error("wrong passphrase, or the database is damaged")]
     WrongKey,
+    #[error("invalid usage: {0}")]
+    Usage(String),
     #[error("local storage: {0}")]
     Storage(String),
 }

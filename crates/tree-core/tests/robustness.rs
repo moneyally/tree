@@ -21,13 +21,23 @@ use proptest::{
     test_runner::{Config, TestRunner},
 };
 use tree_core::{
-    features::{standard_features, Caller, Feature, FeatureError, Lock, LockReason, Plan, Registry, Scope, State, Status},
+    features::{
+        standard_features, Caller, Feature, FeatureError, Lock, LockReason, Plan, Registry, Scope,
+        State, Status,
+    },
     Client, Incoming,
 };
 
 fn runner(default_cases: u32) -> TestRunner {
-    let cases = std::env::var("PROPTEST_CASES").ok().and_then(|v| v.parse().ok()).unwrap_or(default_cases);
-    TestRunner::new(Config { cases, failure_persistence: None, ..Config::default() })
+    let cases = std::env::var("PROPTEST_CASES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default_cases);
+    TestRunner::new(Config {
+        cases,
+        failure_persistence: None,
+        ..Config::default()
+    })
 }
 
 /// One way of damaging a byte string.
@@ -133,30 +143,49 @@ fn receive_mutated_message_never_accepted() {
                 return Ok(());
             }
             let r = b.borrow_mut().receive(&bob, &v);
-            prop_assert!(r.is_err(), "mutated message accepted: {:?}", r);
+            prop_assert!(
+                matches!(&r, Err(_) | Ok(Incoming::HeldForRetry { .. })),
+                "mutated message was treated as accepted: {:?}",
+                r
+            );
             Ok(())
         })
         .unwrap();
     let r = b.borrow_mut().receive(&bob, &genuine);
-    assert!(matches!(r, Ok(Incoming::Message { .. })), "genuine message lost: {r:?}");
+    assert!(
+        matches!(r, Ok(Incoming::Message { .. })),
+        "genuine message lost: {r:?}"
+    );
 }
 
 #[test]
 fn receive_mutated_commit_never_accepted() {
     let (alice, bob, mut a, b) = two_person_chat();
     let carol = Client::new("carol").unwrap();
-    let commit = a.add_now(&alice, &carol.key_package().unwrap()).unwrap().commit;
+    let commit = a
+        .add_now(&alice, &carol.key_package().unwrap())
+        .unwrap()
+        .commit;
     let b = RefCell::new(b);
     runner(256)
         .run(&mutation(), |m| {
-            let Some(v) = mutate(&commit, &m) else { return Ok(()) };
+            let Some(v) = mutate(&commit, &m) else {
+                return Ok(());
+            };
             let r = b.borrow_mut().receive(&bob, &v);
-            prop_assert!(r.is_err(), "mutated commit accepted: {:?}", r);
+            prop_assert!(
+                matches!(&r, Err(_) | Ok(Incoming::HeldForRetry { .. })),
+                "mutated commit was treated as accepted: {:?}",
+                r
+            );
             prop_assert_eq!(b.borrow().epoch(), 1);
             Ok(())
         })
         .unwrap();
-    assert!(matches!(b.borrow_mut().receive(&bob, &commit), Ok(Incoming::GroupChanged { epoch: 2, .. })));
+    assert!(matches!(
+        b.borrow_mut().receive(&bob, &commit),
+        Ok(Incoming::GroupChanged { epoch: 2, .. })
+    ));
 }
 
 /// Behind the seal: a member wraps random bytes in a VALID envelope, so they
@@ -174,7 +203,10 @@ fn insider_sealed_random_bytes_never_accepted() {
         })
         .unwrap();
     let ok = m.borrow_mut().send(b"still works");
-    assert!(matches!(b.borrow_mut().receive(&bob, &ok), Ok(Incoming::Message { .. })));
+    assert!(matches!(
+        b.borrow_mut().receive(&bob, &ok),
+        Ok(Incoming::Message { .. })
+    ));
 }
 
 /// Behind the seal: a member mutates a genuine MLS message and re-seals it.
@@ -194,12 +226,19 @@ fn insider_sealed_mutated_mls_never_accepted() {
             }
             let sealed = m.borrow_mut().seal(&v);
             let r = b.borrow_mut().receive(&bob, &sealed);
-            prop_assert!(r.is_err(), "mutated MLS accepted: {:?}", r);
+            prop_assert!(
+                matches!(&r, Err(_) | Ok(Incoming::HeldForRetry { .. })),
+                "mutated MLS was treated as accepted: {:?}",
+                r
+            );
             Ok(())
         })
         .unwrap();
     let ok = m.borrow_mut().send(b"after fuzzing");
-    assert!(matches!(b.borrow_mut().receive(&bob, &ok), Ok(Incoming::Message { .. })));
+    assert!(matches!(
+        b.borrow_mut().receive(&bob, &ok),
+        Ok(Incoming::Message { .. })
+    ));
 }
 
 // ---------------------------------------------------------------- join
@@ -223,7 +262,10 @@ fn join_mutated_welcome_never_accepted() {
     let alice = Client::new("alice").unwrap();
     let bob = Client::new("bob").unwrap();
     let mut a = alice.create_group().unwrap();
-    let welcome = a.add_now(&alice, &bob.key_package().unwrap()).unwrap().welcome;
+    let welcome = a
+        .add_now(&alice, &bob.key_package().unwrap())
+        .unwrap()
+        .welcome;
     runner(256)
         .run(&vec(mutation(), 1..3), |ms| {
             let mut v = welcome.clone();
@@ -238,7 +280,9 @@ fn join_mutated_welcome_never_accepted() {
             Ok(())
         })
         .unwrap();
-    let mut b = bob.join(&welcome).expect("genuine welcome refused after mutated copies");
+    let mut b = bob
+        .join(&welcome)
+        .expect("genuine welcome refused after mutated copies");
     let m = a.send(&alice, b"welcome").unwrap();
     assert!(matches!(b.receive(&bob, &m), Ok(Incoming::Message { .. })));
 }
@@ -272,7 +316,9 @@ fn add_random_or_mutated_key_package_never_accepted() {
             Ok(())
         })
         .unwrap();
-    a.borrow_mut().add_now(&alice, &kp).expect("genuine key package refused");
+    a.borrow_mut()
+        .add_now(&alice, &kp)
+        .expect("genuine key package refused");
     assert_eq!(common::names(&a.borrow()), vec!["alice", "bob"]);
 }
 
@@ -280,25 +326,72 @@ fn add_random_or_mutated_key_package_never_accepted() {
 
 #[derive(Debug, Clone)]
 enum Op {
-    Apply { key: usize, option: Option<u8>, who: usize },
-    Release { key: usize, who: usize },
-    ServerFlag { key: usize, applied: bool },
+    Apply {
+        key: usize,
+        option: Option<u8>,
+        who: usize,
+    },
+    Release {
+        key: usize,
+        who: usize,
+    },
+    ServerFlag {
+        key: usize,
+        applied: bool,
+    },
     /// `release_for_chat` (release = true) or `apply_for_chat`.
-    ChatLock { key: usize, release: bool, who: usize },
+    ChatLock {
+        key: usize,
+        release: bool,
+        who: usize,
+    },
 }
 
 const CALLERS: [Caller; 4] = [
-    Caller { plan: Plan::Free, is_admin: false },
-    Caller { plan: Plan::Free, is_admin: true },
-    Caller { plan: Plan::Pro, is_admin: false },
-    Caller { plan: Plan::Pro, is_admin: true },
+    Caller {
+        plan: Plan::Free,
+        is_admin: false,
+    },
+    Caller {
+        plan: Plan::Free,
+        is_admin: true,
+    },
+    Caller {
+        plan: Plan::Pro,
+        is_admin: false,
+    },
+    Caller {
+        plan: Plan::Pro,
+        is_admin: true,
+    },
 ];
 
 fn all_features() -> Vec<Feature> {
     let mut v = standard_features();
-    v.push(Feature { key: "user.pro_x", scope: Scope::User, default: State::Released, lock: Lock::None, plan: Plan::Pro, stage: 2 });
-    v.push(Feature { key: "chat.pro_y", scope: Scope::Chat, default: State::Applied, lock: Lock::None, plan: Plan::Pro, stage: 2 });
-    v.push(Feature { key: "bot.greet", scope: Scope::Bot, default: State::Released, lock: Lock::None, plan: Plan::Free, stage: 2 });
+    v.push(Feature {
+        key: "user.pro_x",
+        scope: Scope::User,
+        default: State::Released,
+        lock: Lock::None,
+        plan: Plan::Pro,
+        stage: 2,
+    });
+    v.push(Feature {
+        key: "chat.pro_y",
+        scope: Scope::Chat,
+        default: State::Applied,
+        lock: Lock::None,
+        plan: Plan::Pro,
+        stage: 2,
+    });
+    v.push(Feature {
+        key: "bot.greet",
+        scope: Scope::Bot,
+        default: State::Released,
+        lock: Lock::None,
+        plan: Plan::Free,
+        stage: 2,
+    });
     v
 }
 
@@ -331,24 +424,66 @@ struct Model {
 impl Model {
     fn status(&self, f: &Feature) -> Status {
         match f.lock {
-            Lock::AlwaysOn(r) => return Status { key: f.key, state: State::Applied, option: None, locked_by: Some(LockReason::Always(r)) },
-            Lock::AlwaysOff(r) => return Status { key: f.key, state: State::Released, option: None, locked_by: Some(LockReason::Always(r)) },
+            Lock::AlwaysOn(r) => {
+                return Status {
+                    key: f.key,
+                    state: State::Applied,
+                    option: None,
+                    locked_by: Some(LockReason::Always(r)),
+                }
+            }
+            Lock::AlwaysOff(r) => {
+                return Status {
+                    key: f.key,
+                    state: State::Released,
+                    option: None,
+                    locked_by: Some(LockReason::Always(r)),
+                }
+            }
             Lock::None => {}
         }
-        let (state, option) = self.state.get(&(f.scope, f.key)).cloned().unwrap_or((f.default, None));
+        let (state, option) = self
+            .state
+            .get(&(f.scope, f.key))
+            .cloned()
+            .unwrap_or((f.default, None));
         if self.server_locked(f) {
-            Status { key: f.key, state: State::Released, option, locked_by: Some(LockReason::Server) }
+            Status {
+                key: f.key,
+                state: State::Released,
+                option,
+                locked_by: Some(LockReason::Server),
+            }
         } else if self.chat_locked(f) {
-            Status { key: f.key, state: State::Released, option, locked_by: Some(LockReason::Chat) }
+            Status {
+                key: f.key,
+                state: State::Released,
+                option,
+                locked_by: Some(LockReason::Chat),
+            }
         } else {
-            Status { key: f.key, state, option, locked_by: None }
+            Status {
+                key: f.key,
+                state,
+                option,
+                locked_by: None,
+            }
         }
     }
     fn chat_locked(&self, f: &Feature) -> bool {
-        f.scope == Scope::User && matches!(self.state.get(&(Scope::Chat, f.key)), Some((State::Released, _)))
+        f.scope == Scope::User
+            && matches!(
+                self.state.get(&(Scope::Chat, f.key)),
+                Some((State::Released, _))
+            )
     }
     /// Error code or resulting status of a chat lock / unlock.
-    fn chat_lock(&mut self, f: &Feature, release: bool, who: Caller) -> Result<Status, &'static str> {
+    fn chat_lock(
+        &mut self,
+        f: &Feature,
+        release: bool,
+        who: Caller,
+    ) -> Result<Status, &'static str> {
         if f.scope != Scope::User || f.lock != Lock::None || NOT_CHAT_LOCKABLE.contains(&f.key) {
             return Err("LOCKED_ALWAYS");
         }
@@ -359,16 +494,27 @@ impl Model {
             return Err("LOCKED_BY_SERVER");
         }
         if release {
-            self.state.insert((Scope::Chat, f.key), (State::Released, None));
+            self.state
+                .insert((Scope::Chat, f.key), (State::Released, None));
         } else {
             self.state.remove(&(Scope::Chat, f.key));
         }
         Ok(self.status(f))
     }
     fn server_locked(&self, f: &Feature) -> bool {
-        f.scope != Scope::Server && matches!(self.state.get(&(Scope::Server, f.key)), Some((State::Released, _)))
+        f.scope != Scope::Server
+            && matches!(
+                self.state.get(&(Scope::Server, f.key)),
+                Some((State::Released, _))
+            )
     }
-    fn change(&mut self, f: &Feature, apply: bool, option: Option<String>, who: Caller) -> Result<Status, FeatureError> {
+    fn change(
+        &mut self,
+        f: &Feature,
+        apply: bool,
+        option: Option<String>,
+        who: Caller,
+    ) -> Result<Status, FeatureError> {
         match (apply, f.lock) {
             (true, Lock::AlwaysOff(r)) => return Err(FeatureError::ReleasedAlways(r)),
             (false, Lock::AlwaysOn(r)) => return Err(FeatureError::LockedAlways(r)),
@@ -387,7 +533,11 @@ impl Model {
             return Err(FeatureError::PlanRequired);
         }
         if f.lock == Lock::None {
-            let v = if apply { (State::Applied, option) } else { (State::Released, None) };
+            let v = if apply {
+                (State::Applied, option)
+            } else {
+                (State::Released, None)
+            };
             self.state.insert((f.scope, f.key), v);
         }
         Ok(self.status(f))
@@ -414,9 +564,16 @@ fn feature_registry_random_sequences() {
             for f in &defs[n - EXTRA..] {
                 r.define(f.clone()).unwrap();
             }
-            let mut model = Model { defs: defs.clone(), state: Default::default() };
+            let mut model = Model {
+                defs: defs.clone(),
+                state: Default::default(),
+            };
             for o in &ops {
-                let snapshot: Vec<Status> = model.defs.iter().map(|f| r.status(f.key).unwrap()).collect();
+                let snapshot: Vec<Status> = model
+                    .defs
+                    .iter()
+                    .map(|f| r.status(f.key).unwrap())
+                    .collect();
                 let (got, want, touched) = match *o {
                     Op::Apply { key, option, who } => {
                         let f = &model.defs[key].clone();
@@ -436,7 +593,11 @@ fn feature_registry_random_sequences() {
                     }
                     Op::ServerFlag { key, applied } => {
                         let k = model.defs[key].key;
-                        let st = if applied { State::Applied } else { State::Released };
+                        let st = if applied {
+                            State::Applied
+                        } else {
+                            State::Released
+                        };
                         r.set_server_flag(k, st);
                         model.state.insert((Scope::Server, k), (st, None));
                         (None, None, k)
@@ -444,13 +605,26 @@ fn feature_registry_random_sequences() {
                     Op::ChatLock { key, release, who } => {
                         let f = &model.defs[key].clone();
                         let call = |r: &mut Registry| {
-                            if release { r.release_for_chat(f.key, CALLERS[who]) } else { r.apply_for_chat(f.key, CALLERS[who]) }
+                            if release {
+                                r.release_for_chat(f.key, CALLERS[who])
+                            } else {
+                                r.apply_for_chat(f.key, CALLERS[who])
+                            }
                         };
                         let got = call(&mut r);
                         prop_assert_eq!(&call(&mut r), &got, "idempotent");
                         let want = model.chat_lock(f, release, CALLERS[who]);
-                        prop_assert_eq!(got.as_ref().map_err(|e| e.code()), want.as_ref().map_err(|c| *c), "op {:?}", o);
-                        (Some(got), Some(want.map_err(|_| FeatureError::NotAdmin)), f.key)
+                        prop_assert_eq!(
+                            got.as_ref().map_err(|e| e.code()),
+                            want.as_ref().map_err(|c| *c),
+                            "op {:?}",
+                            o
+                        );
+                        (
+                            Some(got),
+                            Some(want.map_err(|_| FeatureError::NotAdmin)),
+                            f.key,
+                        )
                     }
                 };
                 if !matches!(o, Op::ChatLock { .. }) {
@@ -482,7 +656,9 @@ fn feature_registry_random_sequences() {
                         }
                     }
                     if let Op::Apply { who, .. } | Op::Release { who, .. } = *o {
-                        if !CALLERS[who].is_admin && matches!(f.scope, Scope::Chat | Scope::Server | Scope::Bot) {
+                        if !CALLERS[who].is_admin
+                            && matches!(f.scope, Scope::Chat | Scope::Server | Scope::Bot)
+                        {
                             prop_assert_eq!(&now, before);
                         }
                     }

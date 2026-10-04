@@ -248,6 +248,39 @@ impl TreeProvider for StoredProvider {
     ) -> Result<(), TreeError> {
         self.enqueue_outbox(local_id, group_id, message_id, kind, envelope, now)
     }
+
+    fn due_outbox(
+        &self,
+        now: i64,
+        limit: u32,
+    ) -> Result<Vec<crate::messenger_store::OutboxItem>, TreeError> {
+        self.due_outbox(now, limit)
+    }
+
+    fn mark_outbox_sending(&self, local_id: [u8; 16], now: i64) -> Result<bool, TreeError> {
+        self.mark_outbox_sending(local_id, now)
+    }
+
+    fn mark_outbox_sent(&self, local_id: [u8; 16], server_id: &str) -> Result<(), TreeError> {
+        self.mark_outbox_sent(local_id, server_id)
+    }
+
+    fn mark_outbox_retry(
+        &self,
+        local_id: [u8; 16],
+        error_code: &str,
+        next_retry_at: i64,
+    ) -> Result<(), TreeError> {
+        self.mark_outbox_retry(local_id, error_code, next_retry_at)
+    }
+
+    fn mark_outbox_failed(&self, local_id: [u8; 16], error_code: &str) -> Result<(), TreeError> {
+        self.mark_outbox_failed(local_id, error_code)
+    }
+
+    fn recover_sending_outbox(&self, now: i64) -> Result<u32, TreeError> {
+        self.recover_sending_outbox(now)
+    }
 }
 
 impl StoredProvider {

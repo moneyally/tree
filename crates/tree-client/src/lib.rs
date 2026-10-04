@@ -562,7 +562,7 @@ impl Session {
         })?;
         let reply = self
             .api
-            .send(&self.creds, &recipients, &body, Some(message_id.as_bytes()))?;
+            .send_with_idempotency(&self.creds, &recipients, &body, Some(message_id.as_bytes()))?;
         let id = reply.body["id"]
             .as_str()
             .or_else(|| reply.body["message_id"].as_str())

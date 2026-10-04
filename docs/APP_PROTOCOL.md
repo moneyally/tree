@@ -18,16 +18,23 @@ One JSON object per application message, UTF-8, field `t` names the type:
 | `text` | `id` (16 random bytes, hex), `text`; optional `fmt` (true: Tree markup, 1.1), `mentions` (member ids, at most 50), `all` (@all), `preview` (`url`, `title`, `description`: made by the sender's app, which fetched the page; receivers never fetch it; shown only while the receiver's `user.link_preview` is applied), `silent` (true: silent send, receivers' apps do not notify, 6.1) | a chat message | any member; `fmt` only while `chat.formatting` is applied; `all` as `chat.mention_all` allows |
 | `edit` | `id`, `text` | replaces the text of the sender's own message `id` | its sender, if `chat.edit` is applied, within the window |
 | `delete` | `id` | deletes the sender's own message `id` for everyone | its sender, if `chat.delete_for_all` is applied, within the window |
-| `react` | `id`, `emoji` (1 to 8 characters), `remove` (optional) | adds or takes back a reaction | any member, if `chat.reactions` is applied |
-| `profile` | `name` | the sender's own display name | any member, about itself |
+| `react` | `id`, `emoji` (1 to 8 characters), `remove` (optional), `sticker` (optional: `pack` (blob reference of the pack manifest), `index`; a custom emoji, 8.1) | adds or takes back a reaction | any member, if `chat.reactions` is applied; `sticker` counts only while `chat.stickers` is applied (otherwise the plain `emoji`) |
+| `profile` | `name`; `chat` (optional; true: a name for this chat only, 8.7) | the sender's own display name | any member, about itself; `chat` only while `chat.allow_per_chat_profiles` is applied |
 | `roster` | `devices`: member id (hex) -> device id; `names` (optional): member id -> name; `accounts` (optional): member id -> account id; `link` (optional): the nonce (hex) the new member's device sent with its invite-link request (PROTOCOL.md 8.7) | who is reachable at which server device, the sender's view of names, and which account each device belongs to | the member that just added devices (others may too) |
 | `leave` | `quiet` (optional; true: quiet leave, no "left" line, 6.1) | the sender asks to be removed (PROTOCOL.md 6.5) | any member |
 | `remove_device` | `members` (member ids, hex) | the sender unlinked these devices of its own account and asks the admins to remove them (PROTOCOL.md 8.11); shown to admins as a removal request for each named member whose known account is the sender's; an admin decides, apps never carry it out automatically (unlike `leave`), as the account labels are other members' claims | a member that is not an admin |
 | `read` | `ids` (at most 100 message ids) | the sender read these messages | any member, while its `user.read_receipts` is applied; shown only while the receiver's is applied too |
 | `typing` | `on` | the sender started or stopped typing; never stored | any member, both sides `user.typing` |
 | `seen` | — | the sender's app is open; the receiver records its own time | any member, both sides `user.last_seen` (released by default) |
-| `file` | `msg_id`, `view_once` (optional), `voice` and `duration_ms` (optional, voice message), `id`, `key` (base64), `nonce` (base64, 7 bytes), `size`, `ct_sha256`, `pt_sha256` (hex), `name`, `mime` | an encrypted attachment (PROTOCOL.md 6.12) | any member, if `chat.media` is applied (and `chat.view_once` for view-once, `chat.voice` for voice) |
-| `franked` | `p` (the inner `text`, `edit` or `file` payload as a JSON string), `k` (base64), `tag` (base64), `m` (minute) | how every `text`, `edit` and `file` is sent: the inner payload with its franking (PROTOCOL.md 8.5); the receiver keeps `p`, `k`, `tag`, `m` to be able to report it | any member |
+| `file` | `msg_id`, `view_once` (optional), `voice` and `duration_ms` (optional, voice message), `gif` (optional, a GIF found through the relay, 8.2), `video_note` (optional, with `duration_ms`, 8.5), `id`, `key` (base64), `nonce` (base64, 7 bytes), `size`, `ct_sha256`, `pt_sha256` (hex), `name`, `mime` | an encrypted attachment (PROTOCOL.md 6.12) | any member, if `chat.media` is applied (and `chat.view_once` for view-once, `chat.voice` for voice, `chat.gifs` for `gif`, `chat.video_notes` for `video_note`) |
+| `sticker` | `id`, `pack` (blob reference of the pack manifest: `id`, `key`, `nonce`, `size`, `ct_sha256`, `pt_sha256`), `index`, `emoji` (the item's plain emoji, 1 to 8 characters) | a sticker (8.1) | any member, if `chat.stickers` is applied |
+| `location` | `id`, `lat_e7`, `lon_e7` (integers, 10^-7 degrees), `accuracy_m`, `label` (optional, at most 200 characters), `live_secs` (optional, at most 28800: a live location) | a place or the start of a live location (8.3) | any member, if `chat.location` is applied |
+| `live_location` | `id` (of the sender's own live `location`), `lat_e7`, `lon_e7`, `accuracy_m` (optional), `stop` (optional) | a new position, or the end | the location's sender, while it is live, if `chat.location` is applied |
+| `chat_event` | `id`, `title` (1 to 200 characters), `starts_at` (unix seconds), `ends_at`, `place` (at most 200), `description` (at most 2000) (optional) | an event to answer (8.4) | any member, if `chat.events` is applied |
+| `event_edit` | `event` (as `chat_event`, same `id`), `cancelled` (optional) | changes or cancels the event | its creator, if `chat.events` is applied |
+| `rsvp` | `id`, `answer` (`going`, `maybe` or `not`) | the sender's answer; the newest counts | any member, if `chat.events` is applied and the event is not cancelled |
+| `profile_photo` | `photo` (blob reference, optional: none = removed), `mime`, `chat` (optional; for this chat only) | the sender's profile photo (8.6) | any member, about itself; `chat` only while `chat.allow_per_chat_profiles` is applied |
+| `franked` | `p` (the inner `text`, `edit`, `file`, `sticker`, `location` or `chat_event` payload as a JSON string), `k` (base64), `tag` (base64), `m` (minute) | how every `text`, `edit` and `file` is sent: the inner payload with its franking (PROTOCOL.md 8.5); the receiver keeps `p`, `k`, `tag`, `m` to be able to report it | any member |
 
 ```json
 {"t":"text","text":"안녕"}
@@ -43,8 +50,11 @@ sender chooses each time. Both are inside the end-to-end encrypted payload,
 so the server cannot tell a silent or quiet message from any other. Older
 apps ignore both fields (they notify, and show a "left" line).
 
-A `franked` payload whose `p` is not a `text`, `edit` or `file` is dropped,
-and so are `text`, `edit` and `file` sent without franking.
+A `franked` payload whose `p` is not a `text`, `edit`, `file`, `sticker`,
+`location` or `chat_event` is dropped, and so are those sent without
+franking. Older apps drop the new kinds (they cannot decode them) and
+ignore the new optional fields (`gif`, `video_note`, `sticker` in `react`,
+`chat` in `profile`), which are left out when unused.
 
 ### 1.1 Formatting markup (`fmt: true`)
 
@@ -99,6 +109,12 @@ sending device before sending and by every receiving device on arrival
 | `chat.formatting` | applied | markup shown; released: plain text |
 | `chat.mention_all` | applied, option `admins` (default) or `all` | who may send @all; a refused @all is ignored by receivers (the text still arrives); released: nobody |
 | `chat.screenshot_block` | released | apps block screenshots of the chat for every member; a user can also block them for themselves (`screenshot/<group>`). It stops honest apps' screenshot function, not cameras or modified apps |
+| `chat.stickers` | applied | stickers; custom emoji reactions (released: shown as their plain emoji) |
+| `chat.gifs` | applied | files flagged `gif` (the server must also offer the GIF relay for the button to show) |
+| `chat.location` | applied | places, live locations and their updates |
+| `chat.events` | applied | events, changes and answers |
+| `chat.video_notes` | applied | files flagged `video_note` |
+| `chat.allow_per_chat_profiles` | applied | `profile` / `profile_photo` with `chat`; released: receivers ignore them and members' devices go back to their main name and photo |
 
 Durations are whole seconds (`90`) or a whole number with one unit, `s`,
 `m`, `h`, `d` or `w` (`30m`, `1d`, `2w`). Every option is checked against
@@ -240,5 +256,121 @@ In the same encrypted database as the core (`tree_app` table, SCHEMA.md):
 | `linkjoin/<nonce hex>` | the user opened a link of this owner and sent this nonce: owner account and time (one day, used once) |
 | `feature/user.recovery_phrase` | applied while the server holds a recovery key for the account, as last reported by the server (the phrase itself is never stored) |
 | `recovery/release_at` | when the server drops the recovery key after a release without the phrase (unix seconds) |
-| table `tree_messages` | message history with franking records (SCHEMA.md 1.2); also `left` / `removed` lines about members who went (6.1) |
+| `stickerpack/<manifest id>`, `stickermanifest/<id>`, `stickerref/<id>`, `stickerimg/<id>/<index>` | installed packs; manifests seen; pack references learned from messages; cached sticker images (8.1) |
+| `liveout/<group hex>/<id>` | a live location this device shares: end, last update, coordinates waiting for the 30 s interval (8.3) |
+| `location/min_interval` | only in tests: a shorter live-update interval |
+| `profile/photo` | the own profile photo: blob reference, type, upload time, the image (to upload it again) (8.6) |
+| `photoshared/<group hex>` | what the group was last sent: photo attachment id ("" = removed), per-chat or not, the members then |
+| `photo/<group hex>/<member hex>`, `photocache/<attachment id>` | a member's photo reference in the group; the fetched photo |
+| `chatprofile/<group hex>` | the own name and photo for this chat only (8.7) |
+| table `tree_messages` | message history with franking records (SCHEMA.md 1.2); also `left` / `removed` lines about members who went (6.1); kinds `sticker`, `location`, `event` keep their state in `data` (8) |
 | table `tree_outbox` | messages being sent: sealed bytes, recipients, idempotency key, state (SCHEMA.md 1.2) |
+
+## 8. Rich chats (Wave 2 part B)
+
+Code: `crates/tree-client/src/stickers.rs`, `relay.rs`, `location.rs`,
+`chat_events.rs`, `rich.rs` (video notes, routing), `profile.rs`.
+Everything below travels inside MLS application messages; the server sees
+ciphertext and, for stickers and photos, opaque encrypted blobs uploaded
+with the existing attachment API (PROTOCOL.md 6.12: a fresh key per blob,
+hashes of ciphertext and plaintext). Each chat key is checked by the
+sending device and again by every receiving device (section 3); a payload
+a released key forbids is dropped and reported as `Dropped`.
+
+### 8.1 Stickers and custom emoji (`chat.stickers`)
+
+A pack is a set of images (at most 120, each at most 512 KiB, `image/*`),
+each uploaded as an encrypted blob, plus a manifest, itself an encrypted
+blob:
+
+```json
+{"v":1,"title":"…","emoji_pack":false,
+ "items":[{"name":"…","emoji":"😀","mime":"image/png","file":{"id":"…","key":"…","nonce":"…","size":123,"ct_sha256":"…","pt_sha256":"…"}}]}
+```
+
+The pack is shared by a link that carries the manifest's reference and
+key, like a file reference: `tree://stickers/<base64url(JSON blob
+reference)>`. Who has the link can open the pack; the server holds
+blobs it cannot open and never learns names, images or who installed
+what. Installing fetches the manifest and every image (kept on the device);
+removing forgets them on this device only.
+
+A `sticker` message names the pack (its manifest reference with key) and
+the index; a receiver fetches the manifest and the image with those keys
+(cached), whether or not it installed the pack. A custom emoji reaction is a
+`react` with `sticker` and the item's plain `emoji`; it is stored under the
+reaction key `sticker:<manifest id>:<index>` (apps draw the image), or under
+the plain emoji while the chat releases `chat.stickers` (and by older apps).
+
+Blobs expire on the server after the mailbox TTL (30 days): a sticker from
+an older pack opens only on devices that cached it. Re-uploading a pack
+(a new link) is the creator's job; automatic refresh is not built.
+
+### 8.2 GIFs (`chat.gifs`, server `server.gif_relay`)
+
+Search goes through the server's relay (PROTOCOL.md 8.12): the provider
+never sees the user's address; the Tree server sees the search words. The
+user picks a result; the sender's device fetches it through the relay and
+sends it as a normal encrypted attachment flagged `gif`. Receivers open the
+attachment like any file and never contact the relay or the provider. When
+the server offers no GIF relay (`GET /v1/relay` says `gif: false`, the
+search answers `503 RELAY_UNAVAILABLE`), apps hide the GIF button; they also
+hide it while the chat releases `chat.gifs`.
+
+### 8.3 Location and live location (`chat.location`)
+
+`location` carries latitude and longitude as integers in 10^-7 degrees
+(every device reads the same value), the accuracy in metres and an optional
+label. A live location adds `live_secs`: the apps offer 15 minutes, 1 hour
+and 8 hours; receivers accept up to 8 hours and measure it with their own
+clock from when the start arrived. The app hands the client new
+coordinates whenever it has them; the client sends a `live_location` at
+most every 30 seconds (newer coordinates replace waiting ones and go out
+with a later sync) and stops at the end or when the user stops (`stop`).
+Receivers take updates only from the location's sender and only while it
+is live; an expired or stopped live location keeps its last position and
+shows as ended. Map tiles come through the server's optional tile relay
+(`server.map_relay`, PROTOCOL.md 8.12); without one, apps show the
+coordinates and an "open in maps app" action (`geo:` link).
+
+### 8.4 Events with replies (`chat.events`)
+
+`chat_event` (title, start, optional end, place, description), `rsvp`
+(going / maybe / not; the newest answer of a member counts) and
+`event_edit` (only from the creator; `cancelled` ends answering). Every
+device keeps the tally itself from the answers it received, counting
+current members only. Times are what the creator entered (they are content,
+not a clock the protocol relies on).
+
+### 8.5 Round video notes (`chat.video_notes`)
+
+A short (at most 60 s), square video sent as a file with `video_note` and
+`duration_ms`. Apps record and play it as a round video; the desktop app
+attaches a short video file and shows a placeholder to save and play it.
+
+### 8.6 Profile photos (`user.profile_photo_visibility`)
+
+The photo (an image of at most 2 MiB) is uploaded as an encrypted blob;
+the reference goes only inside MLS in `profile_photo`, to the chats the
+setting allows: `chats` (default: every accepted chat), `contacts` (chats
+whose other members are all contacts the user chose and has not blocked,
+each device vouched for as in 5), `nobody` (or released). Every sync
+compares what each chat should have with what it was last sent and sends the
+difference: the photo, or "removed" where it was removed or is no longer
+allowed, and again when members were added. Receivers keep the reference per
+chat and member, fetch the photo once, cache it, and delete both on
+removal. The photo is uploaded again after 20 days, as blobs expire after
+30. Honest limit: a member who already fetched the photo keeps it.
+
+### 8.7 Per-chat profiles (`user.per_chat_profile`, `chat.allow_per_chat_profiles`)
+
+With `user.per_chat_profile` applied (released by default) and the chat
+allowing it, a user can set a display name and photo for one chat only;
+they go to that chat as `profile` / `profile_photo` with `chat: true`. When
+either switch is released, the device sends its main name (and photo) to
+that chat again, and receivers ignore per-chat names and photos while the
+chat releases them. This is a presentation layer: the member keeps the
+same keys and MLS member id in every chat, so someone in two of the user's
+chats can link the names (member ids, safety numbers, the account in
+rosters). A separate cryptographic identity per chat (new keys per chat,
+full unlinkability) is a later step.

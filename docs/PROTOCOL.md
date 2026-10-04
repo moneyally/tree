@@ -669,7 +669,24 @@ Feature options, one table for every scope (`option_format` in
 | `chat.mention_all` | `admins` or `all` | `admins` |
 | `user.group_add` | `contacts` or `nobody` | `contacts` |
 | `user.app_lock` | `passphrase`, `pin` or `bio` | `passphrase` |
-| every other standard feature (also `user.drafts`, `user.unarchive_on_message`, `user.username_link`) | none | |
+| `user.profile_photo_visibility` | `chats` (everyone in my chats), `contacts` or `nobody` | `chats` |
+| every other standard feature (also `user.drafts`, `user.unarchive_on_message`, `user.username_link`, the rich-chat keys below) | none | |
+
+Rich-chat keys (Wave 2 part B, [APP_PROTOCOL.md](APP_PROTOCOL.md) 8), each
+with apply and release, enforced by the sender and every receiver:
+
+| Key | Scope | Default | Effect |
+| --- | --- | --- | --- |
+| `chat.stickers` | chat (admins) | applied | stickers and custom emoji reactions |
+| `chat.gifs` | chat (admins) | applied | GIFs found through the relay (files flagged `gif`) |
+| `chat.location` | chat (admins) | applied | places and live locations |
+| `chat.events` | chat (admins) | applied | events with replies |
+| `chat.video_notes` | chat (admins) | applied | round video notes (files flagged `video_note`) |
+| `chat.allow_per_chat_profiles` | chat (admins) | applied | members may show a name / photo for this chat only |
+| `user.profile_photo_visibility` | user | applied, `chats` | which chats get the profile photo; released = nobody |
+| `user.per_chat_profile` | user | released | this user may set a name / photo for one chat |
+| `server.gif_relay` | server (operator) | released | GIF search relay (also needs `GIF_PROVIDER_URL`), 8.12 |
+| `server.map_relay` | server (operator) | released | map tile relay (also needs `MAP_TILE_URL`), 8.12 |
 
 Mute durations are not a feature option: muting is a per-chat action
 (1 hour, 8 hours, 1 week or until unmuted, APP_PROTOCOL.md 6.1).
@@ -709,6 +726,11 @@ ciphertext; it is useless without the key from the message.
 
 The group's `chat.media` setting (section 6.11) is enforced by every device:
 when released, sending is refused and received references are dropped.
+
+Sticker images and manifests and profile photos are blobs of the same kind
+(APP_PROTOCOL.md 8.1, 8.6): uploaded with this API, a fresh key each, the
+reference (with key and hashes) only inside MLS or in a pack link. The
+server cannot tell them from any other attachment.
 
 ### 6.13 Outbox: reliable sending
 
@@ -1388,6 +1410,39 @@ and confirming a code read to them over the phone still links that device:
 the app says to confirm only while holding both devices. A device linked in
 error is removed as above.
 
+### 8.12 GIF and map relays
+
+Two optional relays let devices use a GIF search service and a map tile
+server without those services learning who asks (code:
+`crates/tree-server/src/relay.rs`). Each is off unless the operator applies
+its flag (`server.gif_relay`, `server.map_relay`, both released by default)
+**and** configures an upstream (`GIF_PROVIDER_URL`, `MAP_TILE_URL`; there is
+no default provider, and a provider key, `GIF_PROVIDER_KEY`, comes from the
+environment only). Otherwise every relay endpoint answers `503
+RELAY_UNAVAILABLE` and the apps hide the GIF button / show coordinates with
+an "open in maps app" action. `GET /v1/relay` tells the apps which relays
+exist.
+
+| Who | Learns | Does not learn |
+| --- | --- | --- |
+| GIF provider / tile server | search words; which GIFs and tiles are fetched; the Tree server's address and the relay's fixed user agent | the user's address, device, account, any Tree header (no forwarding headers are added; the upstream request is built fresh) |
+| Tree server | the search words of each search, which media ids and which tiles (roughly which area, at which zoom) a device fetched, with the authenticated device id of the request, while the request runs; not stored and not logged (logs keep the route template only) | anything about sent GIFs: the sender uploads the chosen GIF as a normal encrypted attachment (6.12), receivers never touch the relay |
+| Receivers of a GIF | the GIF, from the encrypted attachment | — |
+
+Rules: only signed requests of registered devices are relayed, each costs
+rate tokens; a search is 1 to 100 characters and returns at most 50 results;
+only URLs the provider itself returned are fetched, through opaque ids kept
+in memory for an hour; https only, no credentials in URLs, no IP literals
+or localhost, no redirects, a 10 s timeout, answers only `image/*` or
+`video/*` (tiles: `image/*`) of at most `RELAY_MAX_BYTES` (8 MiB). Nothing
+is stored: answers are fetched and passed on.
+
+The provider contract (an operator runs an adapter for whatever service it
+uses): `GET <GIF_PROVIDER_URL>?q=<words>&limit=<n>` with `Accept:
+application/json` and, if set, `Authorization: Bearer <GIF_PROVIDER_KEY>`,
+answering `{"results": [{"title", "url", "preview"?, "width"?, "height"?}]}`.
+Tiles: `MAP_TILE_URL` with `{z}`, `{x}`, `{y}` (zoom 0 to 19).
+
 ---
 
 ## 9. Security claims
@@ -1760,6 +1815,9 @@ the server cannot learn it from what it sees or stores.
 | Feature flags: server scope | public | — | — |
 | Feature flags: chat and user scope | **partially protected** | values are kept on devices / inside the group, never sent to the server in clear; their effects (typing indicators, read receipts) create observable traffic | — |
 | Push notifications | **not protected** from push providers | a content-free wake-up per device | optional push without a platform provider (planned) |
+| GIF searches (if the operator offers the relay) | **not protected** from the server | the search words and fetched media per device, live only (8.12); the provider sees neither the user's address nor the device | a relay outside the Tree server (later) |
+| Map views (if the operator offers the tile relay) | **not protected** from the server | which tiles a device fetched, live only (8.12) | — |
+| Stickers, profile photos, locations, events | protected | opaque blobs (6.12) or ciphertext only; blob sizes and fetch times | — |
 
 ---
 

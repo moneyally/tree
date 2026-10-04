@@ -54,6 +54,35 @@ pub trait TreeProvider: OpenMlsProvider {
     fn delete_meta(&self, _key: &str) -> Result<(), TreeError> {
         Ok(())
     }
+
+    fn store_message_event(
+        &self,
+        _group_id: &[u8],
+        _event: &crate::message::MessageEvent,
+        _sender: &[u8; 32],
+    ) -> Result<(), TreeError> {
+        Ok(())
+    }
+
+    fn get_messages(
+        &self,
+        _group_id: &[u8],
+        _limit: u32,
+    ) -> Result<Vec<crate::messenger_store::StoredMessage>, TreeError> {
+        Ok(Vec::new())
+    }
+
+    fn enqueue_outbox(
+        &self,
+        _local_id: [u8; 16],
+        _group_id: &[u8],
+        _message_id: Option<crate::message::MessageId>,
+        _kind: u8,
+        _envelope: &[u8],
+        _now: i64,
+    ) -> Result<(), TreeError> {
+        Ok(())
+    }
 }
 
 impl TreeProvider for DefaultProvider {}

@@ -241,7 +241,6 @@ fn validate_edit_operation(op: &EditOperation) -> Result<(), TreeError> {
             }
         }
         EditOperation::Rotate(_)
-        | EditOperation::RotateBy(_)
         | EditOperation::FlipHorizontal
         | EditOperation::FlipVertical => {}
         EditOperation::RotateBy(deg) => {
@@ -298,6 +297,7 @@ pub const DEFAULT_CHUNK_SIZE: u32 = 256 * 1024;
 pub const MAX_CHUNK_SIZE: u32 = 1024 * 1024;
 pub const MAX_CHUNKS: u32 = 65_535;
 const KEY_LEN: usize = 32;
+const CAP_BYTES: usize = 32;
 const BASE_NONCE_LEN: usize = 8;
 const NONCE_LEN: usize = 12;
 const ATTACHMENT_ID_LEN: usize = 16;
@@ -1000,9 +1000,12 @@ impl MediaEnvelope {
             }
         }
         Ok(Self {
+            media_id,
+            capability,
             manifest,
             file_key,
             preview,
+            caption: String::new(),
         })
     }
 

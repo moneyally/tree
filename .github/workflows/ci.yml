@@ -61,3 +61,34 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  format_snapshot:
+    name: rustfmt snapshot (temporary)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Format changed Rust files
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main --depth=1
+          base="$(git merge-base HEAD origin/main)"
+          files="$(git diff --name-only "$base...HEAD" -- '*.rs')"
+          rm -rf /tmp/rustfmt-snapshot
+          mkdir -p /tmp/rustfmt-snapshot
+          cargo fmt --all
+          while IFS= read -r file; do
+            [[ -z "$file" ]] && continue
+            mkdir -p "/tmp/rustfmt-snapshot/$(dirname "$file")"
+            cp "$file" "/tmp/rustfmt-snapshot/$file"
+          done <<< "$files"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rustfmt-fixed-files
+          path: /tmp/rustfmt-snapshot
+          if-no-files-found: error

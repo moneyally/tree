@@ -53,6 +53,19 @@ impl MemberId {
                 .into(),
         )
     }
+    pub fn from_hex(s: &str) -> Option<Self> {
+        if s.len() != 64 {
+            return None;
+        }
+        let mut out = [0u8; 32];
+        for (i, pair) in s.as_bytes().chunks_exact(2).enumerate() {
+            let hi = (pair[0] as char).to_digit(16)? as u8;
+            let lo = (pair[1] as char).to_digit(16)? as u8;
+            out[i] = (hi << 4) | lo;
+        }
+        Some(Self(out))
+    }
+
 
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0

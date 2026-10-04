@@ -104,7 +104,20 @@ impl Session {
     /// checks; apps never call it.
     #[doc(hidden)]
     pub fn send_unchecked(&mut self, gid: &[u8], p: &Payload) -> Result<usize, Error> {
-        self.send_payload(gid, p)
+        self.unchecked = true;
+        let r = self.send_payload(gid, p);
+        self.unchecked = false;
+        r
+    }
+
+    /// Makes this device's own roster label `member` as `account` in the
+    /// group: what a modified client puts in the rosters it sends. Only for
+    /// tests of the receiving side's checks; apps never call it.
+    #[doc(hidden)]
+    pub fn set_account_label_unchecked(&self, gid: &[u8], member: &MemberId, account: &str) -> Result<(), Error> {
+        let mut m = self.map(&crate::accounts_key(gid))?;
+        m.insert(member.to_hex(), account.to_string());
+        self.save_map(&crate::accounts_key(gid), &m)
     }
 
     /// Routes a part B rich-chat payload from member `from` (blocked

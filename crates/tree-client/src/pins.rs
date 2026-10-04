@@ -69,6 +69,19 @@ fn valid_ttl(ttl: Option<i64>) -> bool {
 }
 
 impl Session {
+    /// This device's clock for pin expiries.
+    fn pin_now(&self) -> i64 {
+        now() + self.clock_offset
+    }
+
+    /// Moves this device's clock for pin expiries `secs` ahead. Only for
+    /// tests (an expiry is crossed without racing the wall clock); apps
+    /// never call it.
+    #[doc(hidden)]
+    pub fn advance_clock_for_tests(&mut self, secs: i64) {
+        self.clock_offset += secs;
+    }
+
     fn stored_pins(&self, gid: &[u8]) -> Result<Vec<Stored>, Error> {
         Ok(self.client.app_data(&pins_key(gid))?.and_then(|v| serde_json::from_slice(&v).ok()).unwrap_or_default())
     }
@@ -81,7 +94,7 @@ impl Session {
     /// Applies a pin (or unpin) to this device's copy: the same on the
     /// sender and on every receiver.
     fn apply_pin(&self, gid: &[u8], id: &str, by: &MemberId, ttl: Option<i64>, remove: bool) -> Result<(), Error> {
-        let t = now();
+        let t = self.pin_now();
         let mut v = self.stored_pins(gid)?;
         v.retain(|p| p.id != id && p.until.is_none_or(|u| u > t));
         if !remove {
@@ -93,11 +106,12 @@ impl Session {
         self.save_pins(gid, &v)
     }
 
-    /// May this device pin in the chat (`chat.pins` applied, and an admin
-    /// or one of two members)? Apps show the pin action only then.
+    /// May this device pin in the chat (`chat.pins` applied, and an admin,
+    /// a role with `pin`, or one of two members)? Apps show the pin action
+    /// only then.
     pub fn may_pin(&mut self, gid: &[u8]) -> Result<bool, Error> {
         let me = self.member_id();
-        Ok(self.chat_on(gid, "chat.pins")? && self.may_moderate(gid, &me)?)
+        Ok(self.chat_on(gid, "chat.pins")? && (self.may_moderate(gid, &me)? || self.may(gid, tree_core::group_settings::perm::PIN)?))
     }
 
     /// Pins message `id` for everyone, for `ttl` seconds (one of
@@ -117,7 +131,7 @@ impl Session {
             return Err(Error::Feature("LOCKED_BY_CHAT".into()));
         }
         let me = self.member_id();
-        if !self.may_moderate(gid, &me)? {
+        if !self.may_moderate(gid, &me)? && !self.may(gid, tree_core::group_settings::perm::PIN)? {
             return Err(Error::Feature("NOT_ADMIN".into()));
         }
         if !valid_ttl(ttl) {
@@ -135,6 +149,7 @@ impl Session {
         }
         let p = Payload::Pin { id: id.into(), ttl, remove };
         self.queue_payload(gid, &p, None, |s| s.apply_pin(gid, id, &me, ttl, remove))?;
+        self.log_admin(gid, &me, if remove { "unpin" } else { "pin" }, Some(id.to_string()), None)?;
         Ok(())
     }
 
@@ -146,7 +161,7 @@ impl Session {
             return Ok(vec![]);
         }
         self.client.purge_expired_messages(now())?;
-        let t = now();
+        let t = self.pin_now();
         let stored = self.stored_pins(gid)?;
         let mut keep = Vec::new();
         let mut out = Vec::new();
@@ -177,7 +192,7 @@ impl Session {
         let drop = |events: &mut Vec<Event>, why: &str| events.push(Event::Dropped { reason: why.to_string() });
         if !self.chat_on(gid, "chat.pins")? {
             drop(events, "pins are released in this group (chat.pins)");
-        } else if !self.may_moderate(gid, &from)? {
+        } else if !self.may_moderate(gid, &from)? && !self.member_may(gid, &from, tree_core::group_settings::perm::PIN)? {
             drop(events, "only admins pin in this group");
         } else if !valid_ttl(ttl) {
             drop(events, "malformed pin");
@@ -185,6 +200,7 @@ impl Session {
             drop(events, "pin of an unknown message");
         } else {
             self.apply_pin(gid, &id, &from, ttl, remove)?;
+            self.log_admin(gid, &from, if remove { "unpin" } else { "pin" }, Some(id.clone()), None)?;
             events.push(Event::Pinned { group: gid.to_vec(), id, from, pinned: !remove });
         }
         Ok(())

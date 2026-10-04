@@ -12,8 +12,10 @@ use tree_client::{CommitOutcome, Event, FileInfo, GroupStatus, LinkStatus, Media
 uniffi::setup_scaffolding!();
 
 mod device;
+mod groups;
 mod rich;
 mod rich_media;
+pub use groups::*;
 pub use rich_media::*;
 pub use device::*;
 
@@ -148,6 +150,7 @@ impl From<Attachment> for FileInfo {
             height: f.height,
             thumb: f.thumbnail.as_deref().map(tree_client::api::b64),
             fwd: false,
+            topic: None,
         }
     }
 }
@@ -276,6 +279,20 @@ pub enum TreeEvent {
     ProfilePhoto { group: String, member: String, removed: bool },
     /// Another device of this account changed these settings: reload them.
     SettingsSynced { keys: Vec<String> },
+    /// This device just joined; the admins' welcome text (`chat.welcome`).
+    Welcome { group: String, text: String },
+    /// The member that added this device shared `count` recent messages;
+    /// show them with "shared by" (`chat.history_share`).
+    HistoryShared { group: String, by: String, count: u32 },
+    /// An invite-link join waits for an admin (`join_requests`).
+    JoinRequest { group: String, account: String },
+    /// For admins: a message from `member` broke slow mode and was hidden.
+    SlowModeHidden { group: String, member: String },
+    /// Topics changed; read `topics` again.
+    TopicChanged { group: String, id: String, from: String },
+    /// This admin device added `member` to `group` at its request through
+    /// the community `community`.
+    CommunityMemberAdded { community: String, group: String, member: String },
 }
 
 fn ids(v: Vec<MemberId>) -> Vec<String> {
@@ -352,6 +369,14 @@ impl From<Event> for TreeEvent {
             Event::Rsvp { group, id, from, answer } => TreeEvent::Rsvp { group: h(group), id, from: from.to_hex(), answer },
             Event::ProfilePhoto { group, member, removed } => TreeEvent::ProfilePhoto { group: h(group), member: member.to_hex(), removed },
             Event::SettingsSynced { keys } => TreeEvent::SettingsSynced { keys },
+            Event::Welcome { group, text } => TreeEvent::Welcome { group: h(group), text },
+            Event::HistoryShared { group, by, count } => TreeEvent::HistoryShared { group: h(group), by: by.to_hex(), count },
+            Event::JoinRequest { group, account } => TreeEvent::JoinRequest { group: h(group), account },
+            Event::SlowModeHidden { group, member } => TreeEvent::SlowModeHidden { group: h(group), member: member.to_hex() },
+            Event::TopicChanged { group, id, from } => TreeEvent::TopicChanged { group: h(group), id, from: from.to_hex() },
+            Event::CommunityMemberAdded { community, group, member } => {
+                TreeEvent::CommunityMemberAdded { community: h(community), group: h(group), member: member.to_hex() }
+            }
         }
     }
 }
@@ -387,6 +412,14 @@ pub struct Message {
     pub forwarded: bool,
     /// The chat it is in (hex), e.g. to open a search result.
     pub group: String,
+    /// The topic it belongs to (`chat.topics`); null: the main chat.
+    pub topic: Option<String>,
+    /// Re-sent to this device when it joined by this member (hex): the
+    /// author shown is only that member's claim ("shared by", APP_PROTOCOL.md 9.5).
+    pub shared_by: Option<String>,
+    /// The sharer's account, only if this device has the sharer pinned for
+    /// it (never a roster label alone, F-021/F-022).
+    pub shared_by_account: Option<String>,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -403,6 +436,9 @@ impl From<tree_client::StoredMessage> for Message {
             .flatten()
             .map(Attachment::from);
         Message {
+            topic: tree_client::topics::message_topic(&m),
+            shared_by: None,
+            shared_by_account: None,
             forwarded: tree_client::forward::is_forwarded(&m),
             silent: meta.silent,
             who: meta.name,
@@ -454,6 +490,10 @@ pub struct Member {
     pub admin: bool,
     /// For `safety_number` / `verify`.
     pub account: Option<String>,
+    /// Its roles (member tags), while `chat.roles` is applied.
+    pub roles: Vec<RoleInfo>,
+    /// Restricted until then (`chat.restrict`).
+    pub restricted_until: Option<i64>,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -778,10 +818,14 @@ impl TreeSession {
     pub fn members(&self, group: String) -> R<Vec<Member>> {
         let gid = unhex(&group, "group")?;
         let mut s = self.s();
-        let admins = s.group_settings(&gid)?.admins;
+        let st = s.group_settings(&gid)?;
+        let admins = st.admins.clone();
+        let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
         Ok(s.members(&gid)?
             .into_iter()
             .map(|m| Member {
+                roles: st.roles_of(&m.id).into_iter().map(RoleInfo::from).collect(),
+                restricted_until: st.restricted_until(&m.id, t),
                 admin: admins.contains(&m.id),
                 id: m.id.to_hex(),
                 device: m.device,
@@ -907,6 +951,7 @@ impl TreeSession {
             mentions: mentions.iter().map(|m| member(m)).collect::<R<_>>()?,
             all,
             preview: preview.map(|p| tree_client::payload::LinkPreview { url: p.url, title: p.title, description: p.description }),
+            topic: None,
         };
         Ok(self.s().send_text_with(&unhex(&group, "group")?, &text, &o)?)
     }
@@ -1109,15 +1154,20 @@ impl TreeSession {
         let gid = unhex(&group, "group")?;
         let s = self.s();
         let states = s.send_states(&gid)?;
-        Ok(s.history(&gid, limit)?
+        let shared = s.shared_messages(&gid)?;
+        s.history(&gid, limit)?
             .into_iter()
-            .map(|m| {
+            .map(|m| -> R<Message> {
                 let st = states.get(&m.id).copied();
                 let mut m: Message = m.into();
                 m.status = st.map(send_status).unwrap_or_default().to_string();
-                m
+                m.shared_by = shared.get(&m.id).cloned();
+                if m.shared_by.is_some() {
+                    m.shared_by_account = s.shared_by_account(&gid, &m.id)?;
+                }
+                Ok(m)
             })
-            .collect())
+            .collect::<R<Vec<_>>>()
     }
 
     // --- outbox (reliable sending) ---

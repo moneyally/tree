@@ -211,6 +211,77 @@ Classical at 2000 leaves: 3.5 MB, about 75 s, 7 GB.
    after measuring on phones. X-Wing showed no performance gain over the
    current default.
 
+## Groups of 1,000 through the core API (Wave 3)
+
+`crates/tree-core/examples/bench_1000.rs` builds a group through Tree's
+own API (`Client`, `Group`: outer envelope, settings checks, two-phase
+commits), in memory (no SQLCipher, no server), one device per member,
+batches of 100, and lets two joined members (first and last batch) process
+every commit. Hybrid suite.
+
+```sh
+cargo run --release -p tree-core --example bench_1000 -- --members 1000
+```
+
+Machine: 4 vCPU cloud VM **shared with other build jobs (load average 6 to
+10 during the runs)**, so times are wall-clock under contention and rough;
+sizes are exact. One run per size (2026-10-04):
+
+| members | 100 | 500 | 1000 |
+|---|---:|---:|---:|
+| build: creator, all adds and merges | 70 ms | 0.84 s | 2.6 s |
+| add commit, 100 devices, no path | 262 KB | 264 KB | 264 KB |
+| welcome for one batch | 258 KB | 810 KB | 1.46 MB |
+| join (process the welcome) | 9 ms | 47 ms | 95 ms |
+| add 1: commit / create / a receiver | 3.1 KB / 4 ms / 4 ms | 3.1 KB / 25 ms / 33 ms | 3.1 KB / 71 ms / 78 ms |
+| remove 1, cold tree: commit / create / receiver | 125 KB / 10 / 7 ms | 591 KB / 68 / 53 ms | 1.15 MB / 140 / 103 ms |
+| key refresh right after (tree still cold) | 125 KB | 591 KB | 1.15 MB |
+| settings change (Wave 3 fields), cold tree: commit / create / receiver | 133 KB / 11 / 9 ms | 604 KB / 49 / 55 ms | 1.16 MB / 143 / 100 ms |
+| application message, 100 bytes: sealed size / encrypt / decrypt (median of 21) | 351 B / 1.9 / 1.9 ms | 351 B / 12 / 12 ms | 351 B / 20 / 21 ms |
+| settings lookup, permission check, successor rule | < 0.1 ms each | 0.1 ms | 0.1 ms |
+| settings value: 16 roles + 150 assignments | 8.3 KB | 12.1 KB | 12.1 KB |
+| same + 50 restrictions + 50 community chats | 11.2 KB (fits) | 19.2 KB (refused) | 19.2 KB (refused) |
+
+What this shows:
+
+1. **The server limits fit 1,000 members (one or two devices each).**
+   Commits and welcomes may be 4 MiB (largest seen: 1.46 MB welcome, 1.16 MB
+   commit), a send or commit may reach 2,048 devices, and an application
+   message 256 KiB (the history bundle stops at 200 KiB). Not raised.
+   Accounts in their first day (and accounts with verified reports) may
+   reach only 50 (20) devices at once (PROTOCOL.md 8.9), so they cannot
+   write to a large group until then; this is intended.
+2. **Every settings change is a full commit with an update path.** In a
+   cold tree (right after a batched build, or after a removal) that is
+   about 1.15 MB at 1,000 members, sent to every device; in a warm tree
+   about 25 to 40 KB (table above, "commit size"). The client makes one
+   commit per role, assignment or restriction change; admins of large
+   groups should make such changes while the tree is warm, and a later
+   version could batch several admin changes into one commit.
+3. **Messages cost O(n) per message, not O(1).** OpenMLS writes the whole
+   message-secrets store of the group (the secret tree of the current epoch
+   and of the two past epochs Tree keeps, PROTOCOL.md 6.2) to storage on
+   every encrypt and decrypt, JSON-encoded: about 20 ms per message each way
+   at 1,000 members on this loaded box, 2 ms at 100. On a device this is
+   also an encrypted SQLCipher write of that size per message. The
+   per-message numbers in the first tables of this file (0.06 to 0.15 ms)
+   were measured on OpenMLS directly and do not include this write. Fix
+   (not done here): a smaller store per message in the library, or the
+   binary encoding of recommendation 7; until then a busy 1,000-member
+   group costs a phone noticeable CPU per message.
+4. **Client checks are not O(n^2).** Found and fixed while measuring: the
+   member list's duplicate-name check (O(n^2) per call), and the roster and
+   account maps checking each entry against a list of members (O(n^2) per
+   roster, and every add sends a roster to everyone). The member list is
+   now computed once per epoch in the core (`Group::members` hashed every
+   signature key on each settings lookup), so a settings lookup, a
+   permission check and the successor rule take about 0.1 ms at 1,000
+   members.
+5. **Settings fit 16 KiB with room for roles.** The value is refused before
+   anything is sent when it would not fit; the limits per field
+   (PROTOCOL.md 6.11.1) keep a typical large group (16 roles, 150
+   assignments) at about 12 KB.
+
 ## Limits of these measurements
 
 - One 2-vCPU VM, shared; CPU time, not wall-clock. OpenMLS encrypts update

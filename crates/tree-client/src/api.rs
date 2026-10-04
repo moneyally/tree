@@ -491,6 +491,18 @@ impl Api {
         Ok(out)
     }
 
+    /// [`Api::fetch`] with the server's arrival time of each message (unix
+    /// seconds, whole minutes; the server keeps no finer time).
+    pub fn fetch_timed(&self, c: &Creds, wait: u64) -> Result<Vec<(String, Vec<u8>, i64)>, Error> {
+        let path = if wait > 0 { format!("/v1/messages?wait={wait}") } else { "/v1/messages".into() };
+        let v = self.call(c, Method::GET, &path, None)?.ok()?;
+        let mut out = Vec::new();
+        for m in v["messages"].as_array().into_iter().flatten() {
+            out.push((field(m, "id")?, unb64(m["body"].as_str().unwrap_or(""))?, m["received_at"].as_i64().unwrap_or(0)));
+        }
+        Ok(out)
+    }
+
     /// Waits up to `wait` seconds for the mailbox to be non-empty, without
     /// taking anything (the caller then syncs). Lets an app long-poll while
     /// other calls on its session proceed.

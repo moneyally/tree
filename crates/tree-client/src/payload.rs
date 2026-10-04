@@ -35,10 +35,15 @@ pub enum Payload {
         /// sender is not named.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         fwd: bool,
+        /// The topic (thread) it belongs to (`chat.topics`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        topic: Option<String>,
     },
     /// The sender replaces the text of its own message `id` (chat.edit).
     Edit { id: String, text: String },
-    /// The sender deletes its own message `id` for everyone (chat.delete_for_all).
+    /// The sender deletes its own message `id` for everyone
+    /// (chat.delete_for_all), or, as an admin or with a role that may
+    /// delete, another member's message (APP_PROTOCOL.md 9.2).
     Delete { id: String },
     /// The sender adds (or with `remove`, takes back) a reaction (chat.reactions).
     React {
@@ -158,6 +163,25 @@ pub enum Payload {
     },
     /// The sender's answer to event `id`: `going`, `maybe` or `not`.
     Rsvp { id: String, answer: String },
+    /// Creates topic `id` (with `name`), renames it, closes or reopens it
+    /// (`chat.topics`, `topics.rs`).
+    Topic {
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        closed: Option<bool>,
+    },
+    /// The topics the sender knows, sent after it added members so they
+    /// learn the names (`topics.rs`).
+    Topics { list: Vec<TopicDef> },
+    /// Recent messages re-sent by the device that added `to` (member ids,
+    /// hex) for them only (`chat.history_share`, `history_share.rs`).
+    /// Authors and times inside are the sharing device's claims.
+    History { to: Vec<String>, msgs: Vec<SharedMsg> },
+    /// In a community root group: the sender asks to be added to chat
+    /// `chat` (group id, hex) as account `account` (`community.rs`).
+    JoinChat { chat: String, account: String },
     /// The sender's profile photo (an encrypted attachment), or none:
     /// removed. `chat`: for this chat only (`user.per_chat_profile`).
     ProfilePhoto {
@@ -168,6 +192,37 @@ pub enum Payload {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         chat: bool,
     },
+}
+
+/// A topic as a `topics` list carries it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TopicDef {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub closed: bool,
+}
+
+/// One message inside a `history` bundle, as the sharing device has it.
+/// `from`, `name` and `at` are its claims: the original MLS
+/// authentication is not carried (APP_PROTOCOL.md 9.5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SharedMsg {
+    pub id: String,
+    /// Member id (hex) of the original author, as claimed.
+    pub from: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// When the sharing device received it (unix seconds), as claimed.
+    pub at: i64,
+    /// `text` or `file`.
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<FileInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
 }
 
 /// A poll as its creator sent it.
@@ -233,6 +288,7 @@ impl BlobRef {
             height: None,
             thumb: None,
             fwd: false,
+            topic: None,
         }
     }
 }
@@ -347,6 +403,9 @@ pub struct FileInfo {
     /// Forwarded from another chat (`chat.forwarding`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub fwd: bool,
+    /// The topic (thread) it belongs to (`chat.topics`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
 }
 
 /// Largest preview picture in a message (decoded bytes).
@@ -408,7 +467,7 @@ mod tests {
 
     #[test]
     fn round_trip_and_format() {
-        let t = Payload::Text { id: "01".into(), text: "안녕".into(), fmt: false, mentions: vec![], all: false, preview: None, silent: false, fwd: false };
+        let t = Payload::Text { id: "01".into(), text: "안녕".into(), fmt: false, mentions: vec![], all: false, preview: None, silent: false, fwd: false, topic: None };
         assert_eq!(String::from_utf8(t.encode()).unwrap(), r#"{"t":"text","id":"01","text":"안녕"}"#);
         for p in [
             Payload::Edit { id: "01".into(), text: "x".into() },
@@ -438,7 +497,7 @@ mod tests {
         let q = Payload::Leave { quiet: true };
         assert_eq!(q.encode(), br#"{"t":"leave","quiet":true}"#.to_vec());
         assert_eq!(Payload::decode(&q.encode()), Some(q));
-        let s = Payload::Text { id: "02".into(), text: "shh".into(), fmt: false, mentions: vec![], all: false, preview: None, silent: true, fwd: false };
+        let s = Payload::Text { id: "02".into(), text: "shh".into(), fmt: false, mentions: vec![], all: false, preview: None, silent: true, fwd: false, topic: None };
         assert_eq!(String::from_utf8(s.encode()).unwrap(), r#"{"t":"text","id":"02","text":"shh","silent":true}"#);
         assert_eq!(Payload::decode(&s.encode()), Some(s));
         let r = Payload::RemoveDevice { members: vec!["ab".into()] };
@@ -488,6 +547,41 @@ mod tests {
 }
 
 #[cfg(test)]
+mod group_tests {
+    use super::*;
+
+    /// Wave 3 payloads round-trip, and the new optional fields are left out
+    /// when unused, so older apps read texts and files unchanged.
+    #[test]
+    fn wave3_payloads() {
+        let t = Payload::Text { id: "01".into(), text: "hi".into(), fmt: false, mentions: vec![], all: false, preview: None, silent: false, fwd: false, topic: Some("t1".into()) };
+        assert_eq!(String::from_utf8(t.encode()).unwrap(), r#"{"t":"text","id":"01","text":"hi","topic":"t1"}"#);
+        let all = [
+            t,
+            Payload::Topic { id: "t1".into(), name: Some("일정".into()), closed: None },
+            Payload::Topic { id: "t1".into(), name: None, closed: Some(true) },
+            Payload::Topics { list: vec![TopicDef { id: "t1".into(), name: "n".into(), closed: false }] },
+            Payload::History {
+                to: vec!["ab".into()],
+                msgs: vec![SharedMsg { id: "1".into(), from: "cd".into(), name: Some("bob".into()), at: 5, kind: "text".into(), text: Some("x".into()), file: None, topic: None }],
+            },
+            Payload::JoinChat { chat: "00".into(), account: "acc".into() },
+        ];
+        for p in all {
+            assert_eq!(Payload::decode(&p.encode()), Some(p.clone()), "{p:?}");
+            assert!(!matches!(p, Payload::Topic { .. } | Payload::Topics { .. } | Payload::History { .. } | Payload::JoinChat { .. }) || !p.is_franked_kind());
+        }
+        assert_eq!(String::from_utf8(Payload::Topic { id: "t".into(), name: None, closed: Some(false) }.encode()).unwrap(), r#"{"t":"topic","id":"t","closed":false}"#);
+        let v: serde_json::Value = serde_json::from_slice(&Payload::File(blob_file()).encode()).unwrap();
+        assert!(v.get("topic").is_none(), "no topic field unless set");
+    }
+
+    fn blob_file() -> FileInfo {
+        BlobRef { id: "a".into(), key: "k".into(), size: 3, pt_sha256: "p".into(), v: 2 }.file("x", "y")
+    }
+}
+
+#[cfg(test)]
 mod rich_tests {
     use super::*;
 
@@ -511,7 +605,7 @@ mod rich_tests {
             assert_eq!(Payload::decode(&p.encode()), Some(p.clone()));
             assert!(!matches!(p, Payload::Vote { .. } | Payload::Pin { .. } | Payload::PollClose { .. }) || !p.is_franked_kind());
         }
-        let f = Payload::Text { id: "03".into(), text: "hi".into(), fmt: false, mentions: vec![], all: false, preview: None, silent: false, fwd: true };
+        let f = Payload::Text { id: "03".into(), text: "hi".into(), fmt: false, mentions: vec![], all: false, preview: None, silent: false, fwd: true, topic: None };
         assert_eq!(String::from_utf8(f.encode()).unwrap(), r#"{"t":"text","id":"03","text":"hi","fwd":true}"#);
         assert_eq!(Payload::decode(&f.encode()), Some(f));
         // A file reference without `fwd` (older apps) reads as not forwarded.

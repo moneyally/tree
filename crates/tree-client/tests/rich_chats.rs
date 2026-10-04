@@ -75,13 +75,24 @@ fn pins_are_shared_expire_are_limited_and_follow_chat_pins() {
     // An expiry is counted on each device from arrival; expired pins drop off.
     let m2 = alice.send_text(&g, "today only").unwrap();
     bob.sync(0).unwrap();
-    alice.pin_message(&g, &m2, Some(1)).unwrap();
+    // (One hour, crossed with each device's test clock, not the wall
+    // clock: a one-second expiry raced slow test machines.)
+    alice.pin_message(&g, &m2, Some(3600)).unwrap();
     bob.sync(0).unwrap();
     carol.sync(0).unwrap(); // (a device that syncs later keeps it that much longer)
     assert_eq!(pinned_ids(&mut bob, &g), vec![m2.clone(), m1.clone()], "newest first");
-    sleep(2);
+    for s in [&mut alice, &mut bob] {
+        s.advance_clock_for_tests(3600 - 60);
+    }
+    assert_eq!(pinned_ids(&mut bob, &g), vec![m2.clone(), m1.clone()], "not yet expired");
+    for s in [&mut alice, &mut bob] {
+        s.advance_clock_for_tests(61);
+    }
     assert_eq!(pinned_ids(&mut bob, &g), vec![m1.clone()]);
     assert_eq!(pinned_ids(&mut alice, &g), vec![m1.clone()]);
+    assert_eq!(pinned_ids(&mut carol, &g), vec![m2.clone(), m1.clone()], "carol's clock has not moved");
+    carol.advance_clock_for_tests(3601);
+    assert_eq!(pinned_ids(&mut carol, &g), vec![m1.clone()]);
     assert!(alice.pin_message(&g, &m2, Some(0)).is_err(), "0 seconds is not an expiry");
 
     // At most ten pins.

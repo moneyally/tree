@@ -576,5 +576,13 @@ fn print_event(ev: &Event) {
             println!("[{}] {} {} a profile photo", &hex(group)[..8], &member.to_hex()[..8], if *removed { "removed" } else { "set" })
         }
         Event::SettingsSynced { keys } => println!("settings from another device of yours: {}", keys.join(", ")),
+        Event::Welcome { group, text } => println!("[{}] welcome: {text}", &hex(group)[..8]),
+        Event::HistoryShared { group, by, count } => {
+            println!("[{}] {} shared {count} recent message(s) (authors as {} claims them)", &hex(group)[..8], &by.to_hex()[..8], &by.to_hex()[..8])
+        }
+        Event::JoinRequest { group, account } => println!("[{}] {account} asks to join through your invite link", &hex(group)[..8]),
+        Event::SlowModeHidden { group, member } => println!("[{}] a message from {} broke slow mode and was hidden", &hex(group)[..8], &member.to_hex()[..8]),
+        Event::TopicChanged { group, id, .. } => println!("[{}] topic {id} changed", &hex(group)[..8]),
+        Event::CommunityMemberAdded { group, member, .. } => println!("[{}] added {} at its request (community)", &hex(group)[..8], &member.to_hex()[..8]),
     }
 }

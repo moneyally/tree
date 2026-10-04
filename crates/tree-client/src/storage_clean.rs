@@ -187,6 +187,7 @@ mod tests {
             height: None,
             thumb: None,
             fwd: false,
+            topic: None,
         };
         assert_eq!(cache_name(&f), "etcpasswd.JPG");
         let g = FileInfo { pt_sha256: "ab/cd".repeat(10), ..f };

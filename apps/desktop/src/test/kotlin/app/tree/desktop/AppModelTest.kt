@@ -462,4 +462,112 @@ class AppModelTest {
         assertEquals("alice", bob.state.value.names[aliceId])
         alice.stop(); bob.stop()
     }
+
+    /**
+     * Wave 3 through the model: topics with unread counts, roles as member
+     * tags with a permission, the history-sharing notice, the welcome text,
+     * the admin log, join requests from an invite link, restricting a
+     * member, slow mode and a community with a chat to join.
+     */
+    @Test
+    fun groupsThroughTheModel() = runBlocking {
+        val alice = AppModel(this, Dispatchers.IO)
+        val bob = AppModel(this, Dispatchers.IO)
+        val carol = AppModel(this, Dispatchers.IO)
+        assertTrue(alice.createAccount("$dir/g-alice.db", "alice pass", "alice", url, 8u))
+        assertTrue(bob.createAccount("$dir/g-bob.db", "bob pass", "bob", url, 8u))
+        assertTrue(carol.createAccount("$dir/g-carol.db", "carol pass", "carol", url, 8u))
+        val g = assertNotNull(alice.newChat())
+        assertTrue(alice.invite(g, bob.state.value.account))
+        bob.syncNow()
+        bob.accept(g)
+        alice.syncNow()
+        alice.openChat(g)
+        bob.openChat(g)
+        val bobId = bob.session!!.memberId()
+
+        // Topics: released by default; applied, the admin makes one.
+        assertTrue(alice.state.value.groups.topics.isEmpty())
+        assertTrue(alice.setChatFeature(g, "chat.topics", true))
+        val t = assertNotNull(alice.createTopic(g, "일정"))
+        bob.syncNow()
+        assertEquals(listOf("일정"), bob.state.value.groups.topics.map { it.name })
+        assertTrue(!bob.state.value.groups.mayCreateTopics)
+        alice.openTopic(t)
+        assertTrue(alice.sendInTopic(g, "토요일?"))
+        bob.syncNow()
+        assertEquals(1u, bob.state.value.groups.topics.single().unread)
+        bob.openTopic(t)
+        assertEquals(listOf("토요일?"), bob.state.value.groups.topicMessages.map { it.text })
+        assertEquals(0u, bob.state.value.groups.topics.single().unread)
+        bob.openTopic(null)
+        assertTrue(bob.state.value.messages.none { it.text == "토요일?" && it.topic == null })
+
+        // Roles: a tag on bob with the delete permission.
+        val role = assertNotNull(alice.createRole(g, "모더", "#ff8800", listOf("delete")))
+        assertTrue(alice.assignRole(g, bobId, role, true))
+        bob.syncNow()
+        assertEquals(listOf("모더"), bob.state.value.members.single { it.id == bobId }.roles.map { it.name })
+        assertTrue(bob.state.value.groups.mayDelete)
+        alice.openTopic(null)
+        assertTrue(alice.send(g, "oops"))
+        bob.syncNow()
+        val oops = bob.state.value.messages.last { it.text == "oops" }.id
+        assertTrue(bob.deleteAsModerator(g, oops))
+        alice.syncNow()
+        assertTrue(alice.state.value.messages.single { it.id == oops }.deleted)
+
+        // Notices and admin tools.
+        assertTrue(alice.setChatFeature(g, "chat.history_share", true, "25"))
+        assertTrue(alice.setWelcome(g, "어서 오세요"))
+        bob.syncNow()
+        assertEquals(25, bob.state.value.groups.historyShare)
+        assertEquals("어서 오세요", bob.state.value.groups.welcome)
+        val log = alice.state.value.groups.adminLog
+        assertTrue(log.any { it.action == "role_assign" }, "$log")
+        assertTrue(log.all { alice.describeLog(it, alice.state.value.names).isNotBlank() })
+        assertTrue(bob.state.value.groups.adminLog.isEmpty(), "admins only")
+
+        // Join approval: carol uses the link, alice approves.
+        assertTrue(alice.setChatFeature(g, "chat.join_approval", true))
+        val link = assertNotNull(alice.inviteLink(g))
+        assertTrue(carol.joinLink(link))
+        alice.syncNow()
+        assertEquals(listOf(carol.state.value.account), alice.state.value.groups.joinRequests.map { it.account })
+        assertTrue(alice.approveJoin(g, carol.state.value.account))
+        carol.syncNow()
+        assertEquals("accepted", carol.state.value.chats.single { it.id == g }.status)
+        carol.openChat(g)
+        assertTrue(carol.state.value.messages.any { it.kind == "welcome" })
+        assertTrue(carol.state.value.messages.any { it.sharedBy == alice.session!!.memberId() })
+
+        // Restricted: bob reads but cannot send.
+        bob.syncNow()
+        assertTrue(alice.restrict(g, bobId, 3600))
+        bob.syncNow()
+        assertNotNull(bob.state.value.groups.restrictedUntil)
+        assertTrue(!bob.send(g, "hello?"))
+        assertEquals("RESTRICTED", bob.state.value.error)
+        bob.clearMessages()
+        assertTrue(alice.restrict(g, bobId, null))
+        // Slow mode for members.
+        assertTrue(alice.setChatFeature(g, "chat.slow_mode", true, "1h"))
+        bob.syncNow()
+        assertEquals(3600L, bob.state.value.groups.slowMode)
+
+        // A community with the chat in it; carol asks to join another chat.
+        val c = assertNotNull(alice.createCommunity("동네 모임"))
+        val other = assertNotNull(alice.newChat())
+        assertTrue(alice.addCommunityChat(c, other))
+        assertTrue(alice.invite(c, carol.state.value.account))
+        carol.syncNow()
+        val community = carol.state.value.groups.communities.single()
+        assertEquals("동네 모임", community.name)
+        assertTrue(!community.chats.single().joined)
+        assertTrue(carol.joinCommunityChat(c, other))
+        alice.syncNow()
+        carol.syncNow()
+        assertTrue(carol.state.value.groups.communities.single().chats.single().joined)
+        alice.stop(); bob.stop(); carol.stop()
+    }
 }

@@ -310,6 +310,14 @@ impl<P: TreeProvider> Client<P> {
 
     /// Joins a conversation from a welcome message produced by [`Group::add`].
     pub fn join(&self, welcome: &[u8]) -> Result<Group, TreeError> {
+        self.join_from(welcome).map(|(g, _)| g)
+    }
+
+    /// [`Client::join`], also returning the member that added this device:
+    /// the signer of the welcome's group info, as MLS verified it (the
+    /// committer of the add). Apps use it where only the adder is trusted
+    /// (history for new members).
+    pub fn join_from(&self, welcome: &[u8]) -> Result<(Group, MemberId), TreeError> {
         let msg = MlsMessageIn::tls_deserialize_exact(welcome)
             .map_err(|e| TreeError::Malformed(format!("{e:?}")))?;
         let welcome = match msg.extract() {
@@ -353,6 +361,9 @@ impl<P: TreeProvider> Client<P> {
                     None => builder,
                 };
                 let staged = builder.build().map_err(crate::error::group_err)?;
+                let adder = MemberId::of(
+                    staged.welcome_sender().map_err(|e| TreeError::Group(format!("{e:?}")))?.signature_key().as_slice(),
+                );
                 if let Some(mut old) = old {
                     old.delete(self.provider.storage()).map_err(crate::storage::storage_err)?;
                 }
@@ -361,7 +372,7 @@ impl<P: TreeProvider> Client<P> {
                 // Replace the key from the one-time key package soon.
                 let state = GroupState { should_refresh: true, ..GroupState::default() };
                 self.provider.save_group_state(mls.group_id().as_slice(), &state.encode())?;
-                Ok(Group::new(mls, state))
+                Ok((Group::new(mls, state), adder))
             })();
             if result.is_err() {
                 // F-006: put back the one-time key package a failed join consumed.

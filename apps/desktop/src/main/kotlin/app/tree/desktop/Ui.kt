@@ -201,6 +201,7 @@ private fun Chats(model: AppModel, state: UiState, requests: Boolean) {
                 Button(onClick = { scope.launch { model.newChat() } }) { Text(Strings.t("new_group")) }
                 JoinLink(model)
                 SearchBox(model)
+                CommunitySidebar(model, state)
                 // Folders: all, user folders, built-in ones.
                 Row {
                     TextButton(onClick = { model.showFolder(null) }) { Text(Strings.t("all")) }
@@ -402,21 +403,27 @@ private fun ChatView(model: AppModel, state: UiState, chat: Chat) {
             SafetyPanel(model, state)
             TextButton(onClick = { settingsOpen = !settingsOpen }) { Text(Strings.t("group_settings")) }
             if (settingsOpen) GroupSettingsPanel(model, state, chat.id)
+            if (settingsOpen) GroupTools(model, state, chat)
             // Pins on top; scheduled messages, reminders, export (RichViews.kt).
             PinsBar(model, state, chat.id)
             ChatExtras(model, state, chat.id)
+            // History sharing notice, restriction, slow mode; topics (GroupsView.kt).
+            GroupNotices(state)
+            TopicBar(model, state, chat)
         }
         if (state.typing.isNotEmpty()) {
             Text(state.typing.joinToString(", ") { state.names[it] ?: it.take(6) } + " " + Strings.t("typing"),
                 style = MaterialTheme.typography.bodySmall)
         }
         LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
-            items(state.messages, key = { it.id }) { m ->
+            items(shownMessages(state), key = { it.id }) { m ->
                 val body = when {
                     m.kind == "left" || m.kind == "removed" -> "${m.who ?: m.sender.take(6)} ${Strings.t(m.kind)}"
+                    m.kind == "welcome" -> "${Strings.t("welcome_notice")}: ${m.text ?: ""}"
                     m.deleted -> Strings.t("deleted")
                     else -> (if (m.forwarded) "↪ ${Strings.t("forwarded")}: " else "") +
-                        (m.text ?: "") + if (m.edited) " (${Strings.t("edited")})" else ""
+                        (m.text ?: "") + (if (m.edited) " (${Strings.t("edited")})" else "") +
+                        (sharedLabel(state, m)?.let { " $it" } ?: "")
                 }
                 Column {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -442,6 +449,7 @@ private fun ChatView(model: AppModel, state: UiState, chat: Chat) {
                     TextButton(onClick = { scope.launch { model.report(chat.id, listOf(m.id), "user report") } }) {
                         Text(Strings.t("report"))
                     }
+                    ModeratorDelete(model, state, chat.id, m)
                     MessageMenu(model, state, chat.id, m)
                 }
                 if (m.kind == "poll") PollWidget(model, state, chat.id, m)
@@ -478,7 +486,13 @@ private fun ChatView(model: AppModel, state: UiState, chat: Chat) {
             ComposerExtras(model, chat.id, draft, silent) { draft = ""; scope.launch { model.saveDraft(chat.id, "") } }
             Checkbox(silent, { silent = it })
             Text(Strings.t("silent"), style = MaterialTheme.typography.bodySmall)
-            Button(onClick = { scope.launch { if (model.send(chat.id, draft, silent)) { model.typing(chat.id, false); draft = "" } } }) { Text(Strings.t("send")) }
+            Button(onClick = {
+                scope.launch {
+                    // In the topic shown, if any (chat.topics).
+                    val sent = if (state.groups.topic != null) model.sendInTopic(chat.id, draft) else model.send(chat.id, draft, silent)
+                    if (sent) { model.typing(chat.id, false); draft = "" }
+                }
+            }) { Text(Strings.t("send")) }
         }
         if (chat.status != "request") RichComposer(model, state, chat)
     }

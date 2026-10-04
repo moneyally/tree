@@ -120,12 +120,27 @@ parts are merged in `claude/wave2`.
 
 ## Wave 3 — groups and communities
 
-Topics (`chat.topics`), roles and member tags (`chat.roles`), admin log
-(`chat.admin_log`), welcome message (`chat.welcome`), history sharing for
-new members (`chat.history_share`, re-encrypted by an existing member's
-device), owner succession, join approval, slow mode, restricting members,
-groups up to 1,000 (benchmark first), communities (several chats under
-one roof).
+**Built** (branch `claude/groups`; APP_PROTOCOL.md 9, PROTOCOL.md 6.11.1,
+BENCHMARKS.md "Groups of 1,000 through the core API"):
+
+| Item | Status |
+| --- | --- |
+| Topics: threads in a group, create / rename / close by admins (option: members create), per-topic unread counts (`chat.topics`) | built |
+| Roles and member tags with permissions `pin`, `delete`, `add`, `topics` in the group settings (`chat.roles`; adds by permission: `chat.member_adds`) | built |
+| Admin log, device-local, actor authenticated by MLS (`chat.admin_log`) | built |
+| Welcome message in the group settings (`chat.welcome`, up to 500 characters) | built |
+| History for new members: one MLS message from the adding device, authors as its claims, "shared by" label and notice (`chat.history_share`, 25 to 100) | built |
+| Owner succession: the last admin names the lowest-leaf member before leaving (`chat.owner_succession`) | built |
+| Join approval for invite links (`chat.join_approval`) | built |
+| Slow mode, sender and receivers, server arrival minute (`chat.slow_mode`, 10 s to 1 h) | built |
+| Restricting members until a time (`chat.restrict`) | built |
+| Groups up to 1,000: server limits checked, an O(n^2) member list fixed, settings lookups cached per epoch, benchmark | built |
+| Communities: a root group listing chats, join a chat through the community's admins | built |
+
+The desktop app has the screens (topic bar, roles editor, member tags,
+restrict action, admin log, welcome text, history-sharing switch with its
+notice, slow-mode choices, join requests, community sidebar); Android
+shares the model (no screens for these yet).
 
 ## Wave 4 — public groups and channels (not end-to-end, labelled)
 

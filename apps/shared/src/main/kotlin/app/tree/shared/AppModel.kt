@@ -102,6 +102,8 @@ data class UiState(
     val devices: List<String> = emptyList(),
     /** Pins, polls, scheduled messages, reminders of the open chat (RichChats.kt). */
     val rich: RichUi = RichUi(),
+    /** Topics, roles, admin log, join requests, moderation, communities (Groups.kt). */
+    val groups: GroupsUi = GroupsUi(),
     val notice: String? = null,
     val error: String? = null,
 )
@@ -319,6 +321,11 @@ class AppModel(
             is TreeEvent.ChatEvent -> maybeNotify(e.group, false, e.title)
             // Another device of this account changed settings (self group).
             is TreeEvent.SettingsSynced -> loadFeatures()
+            // Wave 3 (Groups.kt).
+            is TreeEvent.Welcome -> _state.update { it.copy(notice = Strings.t("welcome_notice") + ": " + e.text) }
+            is TreeEvent.HistoryShared -> _state.update { it.copy(notice = Strings.t("history_received")) }
+            is TreeEvent.JoinRequest -> _state.update { it.copy(notice = Strings.t("join_request_notice")) }
+            is TreeEvent.SlowModeHidden -> _state.update { it.copy(notice = Strings.t("slow_mode_hidden")) }
             else -> {}
         }
     }
@@ -372,6 +379,7 @@ class AppModel(
         }
         loadRich()
         rich.refresh(open, messages)
+        loadGroups()
     }
 
     suspend fun openChat(group: String?) {

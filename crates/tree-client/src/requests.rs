@@ -577,6 +577,47 @@ mod tests {
         assert!(matches!(dave.group_status(&g).unwrap(), GroupStatus::Request { .. }));
     }
 
+    /// Join approval (`chat.join_approval`) keeps the invite-link rules of
+    /// F-025: the admin's device keeps the opened nonce of a version 2
+    /// request, and approving later puts it in the roster from the device
+    /// the link names, so the joiner accepts the group; a version 1 link's
+    /// group still lands in the request inbox after approval.
+    #[test]
+    fn join_approval_keeps_the_link_version_rules() {
+        let srv = Server::new("approvallinks");
+        let mut alice = srv.device("alice");
+        let mut dave = srv.device("dave");
+        let mut erin = srv.device("erin");
+        let carol = srv.device("carol");
+        let g = alice.create_group().unwrap();
+        alice.invite(&g, carol.account_id()).unwrap();
+        let link = alice.create_invite_link(&g, 3600, 10).unwrap();
+        alice.set_chat_feature(&g, "chat.join_approval", true, None).unwrap();
+        // Version 2: held, then approved; the joiner accepts it.
+        dave.join_invite_link(&link).unwrap();
+        let sent = dave.client.app_data_keys("linkjoin/").unwrap()[0]["linkjoin/".len()..].to_string();
+        let ev = alice.sync(0).unwrap();
+        assert!(ev.iter().any(|e| matches!(e, Event::JoinRequest { .. })), "{ev:?}");
+        let req = alice.join_requests(&g).unwrap().into_iter().find(|r| r.account == dave.account_id()).unwrap();
+        assert_eq!(req.nonce.as_deref(), Some(sent.as_str()), "the opened nonce, not the sealed bytes");
+        assert!(matches!(alice.approve_join(&g, dave.account_id()).unwrap(), crate::CommitOutcome::Accepted { .. }));
+        dave.sync(0).unwrap();
+        assert_eq!(dave.group_status(&g).unwrap(), GroupStatus::Accepted);
+        // Version 1: held, approved, and still a request on the joiner's side.
+        let token = [7u8; 16];
+        let h = crate::invites::token_hash(&token);
+        alice.api.invite_create(&alice.creds, &h, 3600, 10).unwrap();
+        alice.client.set_app_data(&format!("invite/{}", hex::encode(h)), Some(&serde_json::to_vec(&crate::invites::InviteLink { group: hex::encode(&g), expires_at: crate::messages::now() + 3600, max_uses: 10 }).unwrap())).unwrap();
+        let old = format!("tree://join/{}", base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, token));
+        erin.join_invite_link(&old).unwrap();
+        alice.sync(0).unwrap();
+        assert!(alice.join_requests(&g).unwrap().iter().any(|r| r.account == erin.account_id()));
+        assert!(matches!(alice.approve_join(&g, erin.account_id()).unwrap(), crate::CommitOutcome::Accepted { .. }));
+        let ev = erin.sync(0).unwrap();
+        assert!(ev.iter().any(|e| matches!(e, Event::Request { .. })), "{ev:?}");
+        assert!(matches!(erin.group_status(&g).unwrap(), GroupStatus::Request { .. }));
+    }
+
     /// F-035: a stranger who floods this device with messages for groups it
     /// is not in cannot push out a genuine held message (one waiting for
     /// its welcome): at most 32 per group id, and when everything is full

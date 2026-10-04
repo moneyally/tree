@@ -172,3 +172,40 @@ fn only_own_devices_change_settings_and_locks_hold() {
     assert_eq!(synced_keys(&phone.sync(0).unwrap()), vec!["feature/user.read_receipts".to_string()]);
     assert_eq!(state(&phone, "user.read_receipts"), State::Released);
 }
+
+/// Group roles and restrictions never hold back settings sync, and the
+/// self group is never a community and takes no topics, whatever its
+/// settings say (Wave 3 group features against the self group).
+#[test]
+fn group_rules_do_not_touch_the_self_group() {
+    let env = Env::new("selfsync-groups");
+    let mut phone = env.device("alice");
+    let mut desk = link(&env, &mut phone, "alice");
+    let own = phone.self_group().unwrap().expect("made by the first link");
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    // The phone takes the desktop's admin rights in the self group,
+    // restricts it there and
+    // makes the group a community root and topics applied.
+    phone.make_admin(&own, desk.member_id(), false).unwrap();
+    phone.restrict_member(&own, &desk.member_id(), Some(now + 3600)).unwrap();
+    phone.set_chat_feature(&own, "chat.topics", true, Some("all".into())).unwrap();
+    let mut s = phone.group_settings(&own).unwrap();
+    s.community = Some(Default::default());
+    phone.change_group_settings(&own, &s).unwrap();
+    desk.sync(0).unwrap();
+    assert!(desk.group_settings(&own).unwrap().restricted.contains_key(&desk.member_id()));
+    assert!(!desk.is_community(&own).unwrap() && desk.communities().unwrap().is_empty());
+    // A restricted device still syncs its settings both ways.
+    desk.release_feature("user.typing").unwrap();
+    desk.sync(0).unwrap();
+    let ev = phone.sync(0).unwrap();
+    assert!(synced_keys(&ev).iter().any(|k| k == "feature/user.typing"), "{ev:?}");
+    assert_eq!(state(&phone, "user.typing"), State::Released);
+    // Topics and community joins are not taken in the self group.
+    desk.send_unchecked(&own, &Payload::Topic { id: "t1".into(), name: Some("x".into()), closed: None }).unwrap();
+    desk.send_unchecked(&own, &Payload::JoinChat { chat: hex::encode(&own), account: desk.account_id().to_string() }).unwrap();
+    let ev = phone.sync(0).unwrap();
+    let dropped = ev.iter().filter(|e| matches!(e, Event::Dropped { reason } if reason.contains("self group"))).count();
+    assert_eq!(dropped, 2, "{ev:?}");
+    assert!(phone.topics(&own).unwrap().is_empty());
+}

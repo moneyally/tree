@@ -49,6 +49,34 @@ moderate by default (256 to 512 per property) and can be raised with
 | desktop `MediaEditTest` | crop, rotate, stroke, blur (detail gone, outside unchanged), text, order of operations, thumbnail size, a JPEG with GPS EXIF exported without it, safe file names |
 | desktop `MediaModelTest` | an edited picture with its preview, auto-download on Wi-Fi only, upload progress in slices, save as, through the model against a real server |
 
+### Groups and communities (Wave 3, APP_PROTOCOL.md 9)
+
+Every chat key is toggled both ways through a real server, and for every
+permission a member whose own checks are bypassed (`send_unchecked`, or a
+raw MLS commit from the `Insider` fixture) is refused by the honest devices.
+
+| Test | What it proves |
+| --- | --- |
+| `tree-core` `group_settings::tests::roles_restrictions_community` | role, assignment, restriction and community limits; permissions through roles only while `chat.roles` is applied; `chat.member_adds`; entries of departed members dropped on read; older encodings unchanged |
+| `tree-core` `membership.rs` `member_adds_follow_settings_and_roles` | with `chat.member_adds` released an honest member's add is refused and a raw MLS add commit by a member without `add` is rejected by every device; a role with `add` allows it; `GroupChanged.by` is the committer |
+| `membership.rs` `successor_is_the_same_everywhere` | every member computes the same successor; restricted members are skipped |
+| `tree-client` `groups.rs` `topics_hold_threads_with_unread_counts_and_follow_chat_topics` | `chat.topics` both ways, option `admins` / `all`, forged topic dropped, per-topic history and unread, closed topic (sender refuses, forged message dropped), role with `topics`, topic list for new members, released: topic ignored |
+| `groups.rs` `roles_grant_permissions_that_every_receiver_enforces` | `pin` and `delete` through a role, forged pin and delete dropped, `chat.roles` both ways, `chat.member_adds` both ways with an `add` role, role deletion |
+| `groups.rs` `admin_log_records_what_admins_did_with_the_authenticated_actor` | settings, adds and pins logged with the authenticated actor, own commits too, dropped actions not logged, admins only, `chat.admin_log` both ways |
+| `groups.rs` `welcome_text_is_shown_to_new_members_only` | `chat.welcome` both ways, option limit, only the joiner sees it |
+| `groups.rs` `history_is_shared_with_new_members_by_their_adder_only` | `chat.history_share` both ways and its option range, N newest with "shared by" and the claimed authors, the sharer's account only when pinned (a label alone gives none), a second bundle and one from another member dropped, released: none sent and a forged one dropped |
+| `groups.rs` `the_last_admin_names_the_next_one_before_leaving` | `chat.owner_succession` both ways |
+| `groups.rs` `join_approval_holds_link_joins_for_an_admin` | `chat.join_approval` both ways, approve (joiner accepts) and decline, admins only |
+| `groups.rs` `slow_mode_spaces_messages_of_members_on_both_sides` | `chat.slow_mode` both ways, sender refusal, admins exempt, forged fast message hidden by receivers, admins told |
+| `groups.rs` `restricted_members_read_but_cannot_send` | `chat.restrict` both ways, sender refusal, forged message dropped, still reads, lifted and expired restrictions |
+| `groups.rs` `communities_list_chats_and_members_join_them` | community list, join through the admin device, a request naming another account refused, unlisted chat refused, chat removed from the list |
+| `groups.rs` `a_stranger_naming_another_account_is_not_added_even_if_a_roster_labels_it` | a stranger's device labelled (first label, by itself) as another person's account, and one naming the admin's own account, is not added; the contact never vouches for it; the real account's device is added |
+| `tree-client` `requests::tests::join_approval_keeps_the_link_version_rules` | join approval with invite links v2 (opened nonce kept, joiner accepts after approval) and v1 (still a request after approval) |
+| `tree-core` `membership.rs` `the_welcome_names_the_member_that_added` | the joiner learns its adder from the welcome's verified group info (history sharing trusts only it) |
+| `settings_sync.rs` `group_rules_do_not_touch_the_self_group` | a restricted own device still syncs settings; the self group is never a community and takes no topics or community joins |
+| `tree-client` `groups::tests::slow_mode_rule` | an honest sender at exactly the interval always passes for every option and start second |
+| desktop `AppModelTest.groupsThroughTheModel` | topics, role tags, moderator delete, notices, admin log, join approval with welcome and shared history, restriction, slow mode, a community join, through the model |
+
 Tests marked **KNOWN LIMITATION** / **KNOWN ISSUE** pin the current behaviour of
 an open finding. When the finding is fixed, the test must be changed to assert
 the fixed behaviour. (None are open in the core after HANDOFF 3.1.)

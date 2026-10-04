@@ -511,8 +511,10 @@ whose committer is not a member (external commit) is rejected as well.
 Because an add carries no UpdatePath, it does not refresh the adder's own
 keys; its next key refresh does (section 6.9).
 
-Any member may add members; only admins may remove others or change the
-group settings (section 6.11). Finer roles are stage 3.
+Any member may add members while `chat.member_adds` is applied (the
+default); released, only admins and members whose role has `add` may
+(section 6.11.1). Only admins may remove others or change the group
+settings (section 6.11).
 
 ### 6.5 Proposals from others
 
@@ -640,7 +642,7 @@ never sees it:
 | Item | Value |
 | --- | --- |
 | Extension type | `0xF2E0` (RFC 9420 §17.3 private-use range) |
-| Content | JSON: `admins` (member ids, hex), optional `name` (at most 128 characters), optional `features` (chat-scope key -> `{applied, option}`) |
+| Content | JSON: `admins` (member ids, hex), optional `name` (at most 128 characters), optional `features` (chat-scope key -> `{applied, option}`); optional since Wave 3: `roles`, `member_roles`, `restricted`, `community` (section 6.11.1) |
 | Size | at most 16 KiB |
 | Required capabilities | the group context also carries RequiredCapabilities naming `0xF2E0`, so every added device must support it (Tree key packages declare it) |
 
@@ -683,6 +685,10 @@ Feature options, one table for every scope (`option_format` in
 | `user.app_lock` | `passphrase`, `pin` or `bio` | `passphrase` |
 | `user.storage_clean` | duration, 1 s to 365 days (the apps offer `30d`, `90d`, `365d`) | `90d` is stored |
 | `user.profile_photo_visibility` | `chats` (everyone in my chats), `contacts` or `nobody` | `chats` |
+| `chat.topics` | `admins` or `all` (who creates topics) | `admins` |
+| `chat.welcome` | a text of 1 to 500 characters (no control characters but line breaks) | none (no text shown) |
+| `chat.history_share` | a whole number, 25 to 100 (messages) | `50` is stored |
+| `chat.slow_mode` | duration, 10 s to 1 h | `30s` is stored |
 | every other standard feature (also `user.drafts`, `user.unarchive_on_message`, `user.username_link`, the rich-chat keys below) | none | |
 
 Rich-chat keys (Wave 2 part B, [APP_PROTOCOL.md](APP_PROTOCOL.md) 8), each
@@ -718,6 +724,78 @@ reminders never leave the device before they are sent).
 
 Chat features are stored here; what they enforce on each device (media off,
 edit window, disappearing timer, ...) is implemented feature by feature.
+
+### 6.11.1 Wave 3: roles, adds, restrictions, communities, the next admin
+
+Four optional fields of the settings JSON. Older versions ignore unknown
+fields, and every field is left out while empty, so groups that use none of
+them encode exactly as before.
+
+| Field | Content | Limits (checked by every receiver, `GroupSettings::check`) |
+| --- | --- | --- |
+| `roles` | role id (1 to 16 of `a-z`, `0-9`, `_`) -> `{name, color, perms}` | at most 16 roles; name 1 to 32 characters; colour `#rrggbb`; `perms` a subset of `pin`, `delete`, `add`, `topics` |
+| `member_roles` | member id (hex) -> role ids | 1 to 4 roles per member, only existing roles; at most 150 assignments per group |
+| `restricted` | member id (hex) -> until (unix seconds) | at most 50; an admin cannot be restricted |
+| `community` | `{chats: [{id, name}]}`: the root of a community | at most 50 chats; id a 16-byte group id in lowercase hex, listed once; name at most 64 characters |
+
+All of it counts against the same 16 KiB. Measured
+([BENCHMARKS.md](BENCHMARKS.md)): 16 roles with 150 assignments take about
+12 KB; with 50 restrictions and 50 community chats on top (19 KB) the value
+no longer fits and the change is refused before anything is sent. Entries
+about members who left stay in the value until the next settings change
+(which drops them) and are ignored when read (`Group::settings`).
+
+**Permissions.** Admins hold every permission; others hold those of their
+roles while `chat.roles` is applied (`GroupSettings::may`). What a
+permission allows is in [APP_PROTOCOL.md](APP_PROTOCOL.md) 9.2; all of it is
+checked by the receiving devices with the MLS-authenticated sender.
+
+**Adds (a new commit rule).** In addition to rules 1 to 4 of section 6.11,
+judged by the settings before the commit:
+
+5. A commit with an Add proposal must come from a member who may add:
+   anyone while `chat.member_adds` is applied, otherwise an admin or a
+   member whose role has `add` (`GroupSettings::may_add`).
+
+A device of an older version does not check rule 5; a group that releases
+`chat.member_adds` therefore needs all its members on a version that does,
+or an add by a member without the permission would be merged by the older
+devices and refused by the newer ones.
+
+**Restrictions** are judged by each receiver's clock against the stored
+time, and only while `chat.restrict` is applied.
+
+**The next admin (`chat.owner_succession`).** The successor of a set of
+leaving devices is the member in the lowest leaf of the ratchet tree that
+is not leaving and not restricted (`Group::successor`). It depends only on
+the tree and the settings, so every member computes the same one; because
+MLS places each added device in the leftmost free leaf, it is the
+longest-standing member unless a removal freed an earlier leaf. While the
+key is applied, the group's only admin, before it sends its leave request,
+commits a settings change naming the successor as admin (an ordinary admin
+commit, checked by rules 1 to 5); the new admin then removes it. A last
+admin cannot be removed otherwise: only admins remove (rule 1) and no device
+removes itself (section 6.4).
+
+**History for new members** travels as one MLS application message from
+the adding device, addressed inside the encrypted payload to the new
+members ([APP_PROTOCOL.md](APP_PROTOCOL.md) 9.5). The authors and times
+inside are that device's claims: MLS authenticates the bundle's sender,
+not the original senders, and the original signatures are not carried.
+The receiver takes it only from the member that added it, which it learns
+from the welcome: the signer of the welcome's group info (RFC 9420 12.4.3.1),
+verified by MLS when it joins (`Client::join_from`), never from a later
+roster.
+
+**The self group** (8.14) is not a chat: roles, restrictions and slow mode
+never apply in it on the sending or the receiving side, it is never a
+community, and `topic`, `topics`, `history` and `join_chat` messages in it
+are dropped.
+
+**What the server learns.** Nothing new: the fields above are inside the
+group context; topics, the admin log, join requests and history bundles
+are application messages or device data; slow mode reads only the arrival
+minute the mailbox already returned.
 
 ### 6.12 Attachments
 

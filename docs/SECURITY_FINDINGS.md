@@ -614,3 +614,57 @@ Issues found by testing Tree's own design. Each one has a regression test.
   genuine envelopes for unknown groups.
 - **Test:** `requests::tests::a_flood_of_unreadable_messages_keeps_the_genuine_held_one`
   (fails before: the genuine message was evicted).
+
+## F-036: shared history trusted the first roster's sender as the adder (fixed before release)
+
+- **Found:** 2026-10-04, review while merging Wave 3 groups into wave 2.
+- **What:** a new member took a `history` bundle only from "the member
+  that added this device", but learned that member as the sender of the
+  first roster it received after joining. Any member that processed the
+  add commit could send a roster (and a bundle) before the adder's roster
+  arrived, for example while the adder's device was slow or offline, and
+  then put made-up messages under any member's name into the new member's
+  history, labelled "shared by" itself.
+- **Severity:** low to medium (forged history shown to new members; the
+  "shared by" label still named the real sender).
+- **Fix:** the joiner records its adder from the welcome itself: the
+  signer of the welcome's group info, which MLS verifies at the join
+  (`Client::join_from`, openmls `welcome_sender`). A device added again
+  takes a new bundle from its new adder. "Shared by" names the sharer's
+  account only when this device has the sharer pinned for it
+  (`shared_by_account`, `vouched_account`), never from a roster label.
+- **Test:** `membership.rs` `the_welcome_names_the_member_that_added`,
+  `groups.rs` `history_is_shared_with_new_members_by_their_adder_only`
+  (a bundle from a non-adder dropped; no account for a sharer known only by
+  label).
+
+## F-037: Wave 3 group rules against the wave 2 trust rules (fixed before release)
+
+- **Found:** 2026-10-04, review while merging Wave 3 groups into wave 2.
+- **What:** the groups branch was written before F-021, F-022, F-024 and
+  the self group. A community admin added a requester when the server's
+  key-package claim for the named account included the requesting device,
+  without the rule that only a pinned device counts as a contact (a
+  verified contact's safety number was not consulted, and the admin's own
+  account was judged by the claim rather than by `own/members`); join
+  approval stored the joiner's sealed nonce as an older client's clear one;
+  and the self group used for settings sync was subject to group roles,
+  restrictions, topics and community settings, so one own device could
+  silence another's settings sync or make the self group look like a
+  community.
+- **Severity:** low (each needed a malicious server or one of the user's
+  own devices; nothing was released).
+- **Fix:** a community join adds a requester only if it is vouched for the
+  named account (`vouches_for`; own devices from `own/members`): the claim
+  made for the add pins as `confirm_contact` does, a verified contact whose
+  pins leave the requester out is refused before anything is claimed, and
+  blocked accounts or devices are refused; the request is still carried out
+  after the mailbox pass (F-024). Join approval keeps the opened version 2
+  nonce, so approval keeps the F-025 consent rules (version 1 requests stay
+  requests). In the self group, roles, restrictions and slow mode are never
+  applied, it is never a community, and topic, topic list, history and
+  community-join messages are dropped.
+- **Test:** `groups.rs`
+  `a_stranger_naming_another_account_is_not_added_even_if_a_roster_labels_it`,
+  `requests::tests::join_approval_keeps_the_link_version_rules`,
+  `settings_sync.rs` `group_rules_do_not_touch_the_self_group`.

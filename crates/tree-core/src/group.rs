@@ -53,19 +53,25 @@ impl MemberId {
                 .into(),
         )
     }
+
+    /// Member id the device behind a key package will have.
+    pub fn of_key_package(key_package: &[u8]) -> Result<Self, TreeError> {
+        let kp = KeyPackageIn::tls_deserialize_exact(key_package)
+            .map_err(|e| TreeError::Malformed(format!("{e:?}")))?;
+        Ok(Self::of(kp.unverified_credential().signature_key.as_slice()))
+    }
+
+    /// Parses 64 lowercase or uppercase hex digits.
     pub fn from_hex(s: &str) -> Option<Self> {
-        if s.len() != 64 {
+        if s.len() != 64 || !s.is_ascii() {
             return None;
         }
         let mut out = [0u8; 32];
-        for (i, pair) in s.as_bytes().chunks_exact(2).enumerate() {
-            let hi = (pair[0] as char).to_digit(16)? as u8;
-            let lo = (pair[1] as char).to_digit(16)? as u8;
-            out[i] = (hi << 4) | lo;
+        for (i, b) in out.iter_mut().enumerate() {
+            *b = u8::from_str_radix(&s[2 * i..2 * i + 2], 16).ok()?;
         }
         Some(Self(out))
     }
-
 
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0

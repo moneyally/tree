@@ -54,7 +54,7 @@ pub fn ciphertext_len(size: u64) -> u64 {
 
 fn random<const N: usize>() -> Result<[u8; N], TreeError> {
     let mut b = [0u8; N];
-    getrandom::getrandom(&mut b).map_err(|e| TreeError::Identity(format!("random: {e}")))?;
+    getrandom::fill(&mut b).map_err(|e| TreeError::Identity(format!("random: {e}")))?;
     Ok(b)
 }
 

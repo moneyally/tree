@@ -2,7 +2,7 @@ use axum::http::{HeaderMap, Method, StatusCode};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use tree_core::media::{
-    EncryptedChunk, MediaEnvelope, MediaKey, MediaManifest, PreviewMode, ViewPolicy,
+    decrypt_manifest, encrypt_manifest, EncryptedChunk, MediaEnvelope, MediaKey, MediaManifest, PreviewMode, ViewPolicy,
 };
 use tree_core::MessageId;
 
@@ -45,7 +45,7 @@ async fn encrypted_media_can_resume_finalize_and_download_without_plaintext() {
     .unwrap();
     let commitment = manifest.key_commitment(&key).unwrap();
     let body = json!({
-        "manifest": b64(&manifest.encode().unwrap()),
+        "manifest": b64(&encrypt_manifest(&key, &manifest).unwrap()),
         "key_commitment": hex::encode(commitment),
         "plaintext_size": 5,
         "chunk_size": manifest.chunk_size,
@@ -97,8 +97,8 @@ async fn encrypted_media_can_resume_finalize_and_download_without_plaintext() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(value["finalized"], true);
     assert_eq!(
-        value["manifest"].as_str().unwrap(),
-        b64(&manifest.encode().unwrap())
+        decrypt_manifest(&key, &common::unb64(value["manifest"].as_str().unwrap())).unwrap(),
+        manifest
     );
 
     let (status, value) = signed_with_media_cap(

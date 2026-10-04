@@ -169,6 +169,10 @@ impl Session {
     pub fn update_live_location(&mut self, gid: &[u8], id: &str, lat: f64, lon: f64, accuracy_m: Option<u32>) -> Result<bool, Error> {
         let mut out: LiveOut = self.app_get(&live_key(gid, id))?.ok_or_else(|| Error::Usage("this live location has ended".into()))?;
         let t = now();
+        if !self.chat_feature(gid, "chat.location")?.0 {
+            self.app_put::<LiveOut>(&live_key(gid, id), None)?;
+            return Err(Error::Feature("LOCKED_BY_CHAT".into()));
+        }
         if t >= out.until {
             self.app_put::<LiveOut>(&live_key(gid, id), None)?;
             return Err(Error::Usage("this live location has ended".into()));
@@ -228,13 +232,14 @@ impl Session {
             let mut parts = k["liveout/".len()..].splitn(2, '/');
             let (Some(g), Some(id)) = (parts.next(), parts.next()) else { continue };
             let Ok(gid) = hex::decode(g) else { continue };
-            if t >= out.until || !self.client.group_ids()?.contains(&gid) {
+            // Ended, gone, or the chat released locations: stop sharing.
+            if t >= out.until || !self.client.group_ids()?.contains(&gid) || !self.chat_feature(&gid, "chat.location")?.0 {
                 self.app_put::<LiveOut>(&k, None)?;
                 continue;
             }
             if let Some(c) = out.pending.filter(|_| t - out.last_sent >= interval) {
                 let id = id.to_string();
-                self.send_live(&gid, &id, c, false)?;
+                let _ = self.send_live(&gid, &id, c, false);
                 out.last_sent = t;
                 out.pending = None;
                 self.app_put(&k, Some(&out))?;

@@ -209,9 +209,13 @@ fn locations_and_live_locations() {
     alice.send_unchecked(&g, &Payload::Location(too_long)).unwrap();
     assert!(dropped(&bob.sync(0).unwrap(), "malformed location"));
 
-    // Released: refused and dropped; applied again: works.
+    // Released: refused and dropped, a live location stops; applied again: works.
+    let sharing = alice.start_live_location(&g, 2.0, 2.0, None, 3600).unwrap();
+    settle(&mut [&mut bob, &mut carol]);
     alice.set_chat_feature(&g, "chat.location", false, None).unwrap();
     settle(&mut [&mut bob, &mut carol]);
+    assert!(locked(alice.update_live_location(&g, &sharing, 3.0, 3.0, None)));
+    assert!(alice.update_live_location(&g, &sharing, 3.0, 3.0, None).is_err(), "no longer shared");
     assert!(locked(alice.send_location(&g, 1.0, 1.0, None, None)));
     assert!(locked(alice.start_live_location(&g, 1.0, 1.0, None, 900)));
     let l = LocationInfo { id: "5e0c".into(), lat_e7: 0, lon_e7: 0, accuracy_m: None, label: None, live_secs: None };

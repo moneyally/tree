@@ -255,7 +255,8 @@ pub struct Message {
     pub id: String,
     pub sender: String,
     pub received_at: i64,
-    /// `text`, `file`, or a line about a member who went: `left` (asked to
+    /// `text`, `file`, `sticker` (`text`: its emoji), `location` (`text`: its
+    /// label), `event` (`text`: its title), or a line about a member who went: `left` (asked to
     /// leave) or `removed` (`sender` is that member, `who` its name). A
     /// quiet leave has no line.
     pub kind: String,

@@ -121,9 +121,12 @@ impl Session {
 
     /// What every sync does for rich chats: live locations due for their
     /// next update go out, and every group gets the profile photo and
-    /// per-chat profile it should have.
+    /// per-chat profile it should have. Best effort: a failure (no network
+    /// for an upload, a refused send, which the outbox shows) is tried
+    /// again by the next sync and never fails the sync itself.
     pub(crate) fn rich_sync(&mut self) -> Result<(), Error> {
-        self.flush_live_locations()?;
-        self.share_profiles()
+        let _ = self.flush_live_locations();
+        let _ = self.share_profiles();
+        Ok(())
     }
 }

@@ -267,7 +267,7 @@ impl Session {
         let per_chat_on = self.is_applied(PER_CHAT)?;
         let mut main = self.app_get::<OwnPhoto>(OWN_PHOTO)?;
         if let Some(p) = main.as_mut() {
-            if self.fresh(p)? {
+            if self.fresh(p).unwrap_or(false) {
                 self.app_put(OWN_PHOTO, Some(&*p))?;
             }
         }
@@ -281,11 +281,12 @@ impl Session {
             if cp.is_some() && !(per_chat_on && self.chat_feature(&gid, CHAT_KEY)?.0) {
                 self.app_put::<ChatProfile>(&cp_key, None)?;
                 cp = None;
-                self.announce_name(&gid, self.name().to_string(), false)?;
+                // A refused send stays in the outbox (retry / cancel there).
+                let _ = self.announce_name(&gid, self.name().to_string(), false);
             }
             let mut chat_photo = cp.and_then(|c| c.photo);
             if let Some(p) = chat_photo.as_mut() {
-                if self.fresh(p)? {
+                if self.fresh(p).unwrap_or(false) {
                     let mut c = self.app_get::<ChatProfile>(&cp_key)?.unwrap_or_default();
                     c.photo = Some(p.clone());
                     self.app_put(&cp_key, Some(&c))?;
@@ -311,7 +312,10 @@ impl Session {
                 continue;
             }
             let p = Payload::ProfilePhoto { photo: want.as_ref().map(|p| p.blob.clone()), mime: want.map(|p| p.mime), chat };
-            self.send_payload(&gid, &p)?;
+            // Queued in the outbox; a refused send stays there to retry, so
+            // it is recorded as sent either way (one group never blocks the
+            // others).
+            let _ = self.send_payload(&gid, &p);
             self.app_put(&skey, Some(&target))?;
         }
         Ok(())

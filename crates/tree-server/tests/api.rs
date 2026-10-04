@@ -823,7 +823,9 @@ async fn old_messages_are_purged() {
     let api = &ts.api;
     let a = api.signup().await;
     let b = api.signup().await;
-    api.send_msg(&a, &[&b.device_id], b"young").await;
+    api.seed_fake_group(&a, &[&b]).await;
+    let (st, value) = api.send_msg(&a, &[&b.device_id], b"young").await;
+    assert_eq!(st, StatusCode::OK, "{value}");
     let removed = tree_server::purge_expired(&ts.server.state, now())
         .await
         .unwrap();

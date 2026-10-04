@@ -405,12 +405,18 @@ async fn messages_endpoint_refuses_commits_proposals_welcomes() {
     }
     assert!(api.fetch(&b, 0).await.is_empty());
     assert_eq!(
-        api.send_raw(&a, &[&b.device_id], &app(b"ok")).await.0,
+        api.send_raw(&a, &[&b.device_id], &envelope(&G, 0, 1, b"ok"))
+            .await
+            .0,
         StatusCode::OK
     );
     let outsider = api.signup().await;
     let (st, v) = api
-        .send_raw(&a, &[&outsider.device_id], &app(b"cross-group"))
+        .send_raw(
+            &a,
+            &[&outsider.device_id],
+            &envelope(&G, 0, 1, b"cross-group"),
+        )
         .await;
     assert_eq!((st, code(&v)), (StatusCode::FORBIDDEN, "NOT_ELIGIBLE"));
     assert!(api.fetch(&outsider, 0).await.is_empty());
@@ -462,6 +468,7 @@ async fn purge_expired_messages_removes_mailbox_rows() {
     .await;
     let api = &ts.api;
     let (a, b) = (api.signup().await, api.signup().await);
+    api.seed_fake_group(&a, &[&b]).await;
 
     let (st, v) = api.send_raw(&a, &[&b.device_id], &app(b"expired")).await;
     assert_eq!(st, StatusCode::OK, "{v}");

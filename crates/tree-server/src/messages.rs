@@ -450,14 +450,13 @@ pub async fn ack_ids(
 
     let ids_json = serde_json::to_string(ids).map_err(|_| ApiError::internal())?;
     let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
-    let current_cursor: i64 =
-        sqlx::query("SELECT cursor FROM message_cursors WHERE device_id = ?")
-            .bind(device_id)
-    .fetch_optional(&mut *tx)
-    .await?
-    .map(|r| r.try_get("cursor"))
-    .transpose()?
-    .unwrap_or(0);
+    let current_cursor: i64 = sqlx::query("SELECT cursor FROM message_cursors WHERE device_id = ?")
+        .bind(device_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .map(|r| r.try_get("cursor"))
+        .transpose()?
+        .unwrap_or(0);
     let requested_cursor = cursor.unwrap_or(current_cursor);
     if requested_cursor < current_cursor {
         return Err(ApiError::conflict(

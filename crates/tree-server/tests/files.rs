@@ -115,10 +115,18 @@ async fn encrypted_file_expires_and_server_purge_removes_it() {
         .await
         .unwrap();
 
-    let removed = tree_server::purge_expired(&ts.server.state, 100)
+    // The server's background purger may already have removed the row before
+    // this explicit call. Assert the durable postcondition rather than the
+    // number removed by this particular invocation.
+    let _removed = tree_server::purge_expired(&ts.server.state, 100)
         .await
         .unwrap();
-    assert!(removed >= 1);
+    let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM files WHERE id = ?")
+        .bind(file_id)
+        .fetch_one(&ts.server.state.db)
+        .await
+        .unwrap();
+    assert_eq!(remaining, 0);
 
     let mut headers = HeaderMap::new();
     headers.insert(

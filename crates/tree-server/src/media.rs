@@ -72,7 +72,7 @@ pub async fn init(
     }
 
     let mut cap_raw = [0u8; CAP_BYTES];
-    getrandom::fill(&mut cap_raw).map_err(|_| ApiError::internal())?;
+    getrandom::getrandom(&mut cap_raw).map_err(|_| ApiError::internal())?;
     let cap_hash: [u8; 32] = Sha256::digest(cap_raw).into();
     let manifest_hash: [u8; 32] = Sha256::digest(&manifest).into();
     let now = now_secs();

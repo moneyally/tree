@@ -89,7 +89,7 @@ async fn bot_token_lifecycle_and_gateway_device_are_isolated() {
         .await;
     assert_eq!(st, StatusCode::OK);
 
-    let (st, _) = api.send_bot("/v1/bot/getMe", &token).await;
+    let (st, _) = api.get_bot("/v1/bot/getMe", &token).await;
     assert_eq!(st, StatusCode::UNAUTHORIZED);
 
     ts.stop().await;

@@ -316,7 +316,7 @@ pub async fn confirm_initiator(
         verification_code: Some(verification_code(&challenge, &init_pub, &joiner)),
         initiator_confirmed: true,
         joiner_confirmed: _join_ok,
-        expires_at: _expires_at,
+        expires_at,
     }))
 }
 
@@ -355,7 +355,7 @@ pub async fn confirm_join(
         .try_into()
         .map_err(|_| ApiError::bad_request("proof must be 64 bytes"))?;
 
-    let (initiator, challenge, joiner, _init_ok, _join_ok, _expires_at) =
+    let (initiator, challenge, joiner, init_ok, _join_ok, expires_at) =
         load_session(&state, &link_id).await?;
     if joiner.as_deref() != Some(&new_pub[..]) {
         return Err(ApiError::unauthorized("device-link joiner key mismatch"));

@@ -243,7 +243,9 @@ impl Session {
         preview_plaintext: Option<&[u8]>,
     ) -> Result<SentMedia, Error> {
         composer.edit.validate()?;
-        self.send_media_with_caption(
+        let edit_script_hash = composer.edit.edit_script_hash()?;
+        let output_commitment = Sha256::digest(rendered_plaintext).into();
+        self.send_media_with_options(
             gid,
             rendered_plaintext,
             media_type,
@@ -253,6 +255,7 @@ impl Session {
             composer.preview_mode,
             preview_plaintext,
             &composer.edit.caption,
+            Some((edit_script_hash, output_commitment)),
         )
     }
 
@@ -282,6 +285,33 @@ impl Session {
         preview_plaintext: Option<&[u8]>,
         caption: &str,
     ) -> Result<SentMedia, Error> {
+        self.send_media_with_options(
+            gid,
+            plaintext,
+            media_type,
+            filename,
+            mime,
+            policy,
+            preview_mode,
+            preview_plaintext,
+            caption,
+            None,
+        )
+    }
+
+    fn send_media_with_options(
+        &self,
+        gid: &[u8],
+        plaintext: &[u8],
+        media_type: &str,
+        filename: &str,
+        mime: &str,
+        policy: ViewPolicy,
+        preview_mode: PreviewMode,
+        preview_plaintext: Option<&[u8]>,
+        caption: &str,
+        edit_binding: Option<([u8; 32], [u8; 32])>,
+    ) -> Result<SentMedia, Error> {
         if plaintext.is_empty() {
             return Err(Error::Usage("media cannot be empty".into()));
         }
@@ -299,6 +329,12 @@ impl Session {
             policy,
             preview_mode,
         )?;
+        let manifest = match edit_binding {
+            Some((edit_script_hash, output_commitment)) => {
+                manifest.with_edit_binding(edit_script_hash, output_commitment)?
+            }
+            None => manifest,
+        };
         let key_commitment = manifest.key_commitment(&key)?;
         let upload = self.api.media_init(
             &self.creds,
@@ -344,6 +380,7 @@ impl Session {
             key,
             preview,
         )?
+        .with_caption(caption)
         .encode()?;
         let view_once = matches!(policy, ViewPolicy::ViewOnce);
         let ttl_secs = match policy {

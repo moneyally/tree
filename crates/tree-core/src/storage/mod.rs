@@ -368,6 +368,19 @@ impl StoredProvider {
             .map_err(storage_err)
     }
 
+    pub(crate) fn meta_keys(&self, prefix: &str) -> Result<Vec<String>, TreeError> {
+        let mut stmt = self
+            .storage
+            .conn
+            .prepare("SELECT key FROM tree_meta WHERE key LIKE ?1 ORDER BY key")
+            .map_err(storage_err)?;
+        let pattern = format!("{prefix}%");
+        let rows = stmt
+            .query_map(params![pattern], |r| r.get(0))
+            .map_err(storage_err)?;
+        rows.collect::<Result<Vec<String>, _>>().map_err(storage_err)
+    }
+
     pub(crate) fn group_ids(&self) -> Result<Vec<Vec<u8>>, TreeError> {
         let mut stmt = self
             .storage

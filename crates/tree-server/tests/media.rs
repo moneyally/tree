@@ -2,8 +2,8 @@ use axum::http::{HeaderMap, Method, StatusCode};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use tree_core::media::{
-    decrypt_manifest, encrypt_manifest, EncryptedChunk, MediaEnvelope, MediaManifest,
-    PreviewMode, ViewPolicy,
+    decrypt_manifest, encrypt_manifest, EncryptedChunk, MediaEnvelope, MediaManifest, PreviewMode,
+    ViewPolicy,
 };
 use tree_core::MessageId;
 

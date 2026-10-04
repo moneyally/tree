@@ -324,14 +324,13 @@ pub async fn load(
     device_id: &str,
     requested_cursor: Option<i64>,
 ) -> ApiResult<FetchResp> {
-    let stored_cursor: i64 =
-        sqlx::query("SELECT cursor FROM message_cursors WHERE device_id = ?")
-            .bind(device_id)
-            .fetch_optional(&state.db)
-            .await?
-            .map(|r| r.try_get("cursor"))
-            .transpose()?
-            .unwrap_or(0);
+    let stored_cursor: i64 = sqlx::query("SELECT cursor FROM message_cursors WHERE device_id = ?")
+        .bind(device_id)
+        .fetch_optional(&state.db)
+        .await?
+        .map(|r| r.try_get("cursor"))
+        .transpose()?
+        .unwrap_or(0);
     let cursor = requested_cursor.unwrap_or(stored_cursor);
     if cursor < stored_cursor {
         return Err(ApiError::conflict(

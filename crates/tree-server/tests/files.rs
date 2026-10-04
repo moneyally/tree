@@ -100,7 +100,7 @@ async fn encrypted_file_expires_and_server_purge_removes_it() {
         .await;
     assert_eq!(st, StatusCode::OK, "{v}");
     let file_id = v["file_id"].as_str().unwrap();
-    let _cap = v["capability"].as_str().unwrap();
+    let cap = v["capability"].as_str().unwrap().to_string();
     let path = format!("/v1/files/{file_id}");
 
     sqlx::query("UPDATE files SET expires_at = 0 WHERE id = ?")
@@ -114,7 +114,13 @@ async fn encrypted_file_expires_and_server_purge_removes_it() {
         .unwrap();
     assert!(removed >= 1);
 
-    let (st, _) = api.call(&alice, Method::GET, &path, None).await;
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        tree_server::files::FILE_CAPABILITY_HEADER,
+        cap.parse().unwrap(),
+    );
+    let signed = Signed::new(Method::GET, &path, Some(&alice.device_id), None);
+    let (st, _) = api.send_with_headers(&signed, &alice.key, headers).await;
     assert_eq!(st, StatusCode::NOT_FOUND);
 
     ts.stop().await;

@@ -298,6 +298,8 @@ pub async fn deliver(
 pub struct FetchQuery {
     /// Seconds to wait for a message if the mailbox is empty (long-poll).
     pub wait: Option<u64>,
+    /// Last server cursor durably acknowledged by this device.
+    pub cursor: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -313,6 +315,8 @@ pub struct FetchResp {
     pub messages: Vec<Message>,
     /// More messages are waiting beyond this page.
     pub more: bool,
+    /// Highest delivery sequence included in this page, or the supplied cursor.
+    pub cursor: i64,
 }
 
 pub async fn load(state: &AppState, device_id: &str) -> ApiResult<FetchResp> {
@@ -328,15 +332,21 @@ pub async fn load(state: &AppState, device_id: &str) -> ApiResult<FetchResp> {
     .await?;
     let more = rows.len() as i64 > limit;
     let mut messages = Vec::with_capacity(rows.len());
+    let mut next_cursor = cursor;
     for r in rows.iter().take(limit as usize) {
         let body: Vec<u8> = r.try_get("body")?;
+        next_cursor = r.try_get("seq")?;
         messages.push(Message {
             id: r.try_get("id")?,
             body: b64(&body),
             received_at: r.try_get("received_at")?,
         });
     }
-    Ok(FetchResp { messages, more })
+    Ok(FetchResp {
+        messages,
+        more,
+        cursor: next_cursor,
+    })
 }
 
 /// Removes a long-poll subscription however the request ends.
@@ -365,7 +375,7 @@ pub async fn fetch(
     let wait = q.wait.unwrap_or(0).min(state.cfg.long_poll_max_secs);
     let device_id = req.device.device_id.as_str();
     if wait == 0 {
-        return Ok(Json(load(&state, device_id).await?));
+        return Ok(Json(load(&state, device_id, q.cursor).await?));
     }
 
     let sub = Subscription {
@@ -380,12 +390,12 @@ pub async fn fetch(
         let notified = notify.notified();
         tokio::pin!(notified);
         notified.as_mut().enable();
-        let resp = load(&state, device_id).await?;
+        let resp = load(&state, device_id, q.cursor).await?;
         if !resp.messages.is_empty() || Instant::now() >= deadline {
             break resp;
         }
         if tokio::time::timeout_at(deadline, notified).await.is_err() {
-            break load(&state, device_id).await?;
+            break load(&state, device_id, q.cursor).await?;
         }
     };
     drop(sub);
@@ -395,6 +405,8 @@ pub async fn fetch(
 #[derive(Deserialize)]
 pub struct AckReq {
     pub ids: Vec<String>,
+    /// Highest fetched delivery sequence that the client has durably persisted.
+    pub cursor: Option<i64>,
 }
 json_body!(AckReq, |_cfg| MAX_ACK_IDS * (ID_LEN + 4) + 256);
 
@@ -415,6 +427,41 @@ pub async fn ack_ids(state: &AppState, device_id: &str, ids: &[String]) -> ApiRe
 
     let ids_json = serde_json::to_string(ids).map_err(|_| ApiError::internal())?;
     let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
+    let current_cursor: i64 = sqlx::query(
+        "SELECT cursor FROM message_cursors WHERE device_id = ?",
+    )
+    .bind(device_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .map(|r| r.try_get("cursor"))
+    .transpose()?
+    .unwrap_or(0);
+    let requested_cursor = cursor.unwrap_or(current_cursor);
+    if requested_cursor < current_cursor {
+        return Err(ApiError::conflict(
+            "CURSOR_ROLLBACK",
+            "message cursor cannot move backwards",
+        ));
+    }
+    if requested_cursor > current_cursor {
+        let pending_before_cursor: i64 = sqlx::query(
+            "SELECT COUNT(*) AS n FROM deliveries
+             WHERE device_id = ?1 AND seq <= ?2
+               AND id NOT IN (SELECT value FROM json_each(?3))",
+        )
+        .bind(device_id)
+        .bind(requested_cursor)
+        .bind(&ids_json)
+        .fetch_one(&mut *tx)
+        .await?
+        .try_get("n")?;
+        if pending_before_cursor != 0 {
+            return Err(ApiError::conflict(
+                "CURSOR_GAP",
+                "cannot acknowledge past an unpersisted mailbox entry",
+            ));
+        }
+    }
     let blob_ids: Vec<i64> = sqlx::query(
         "DELETE FROM deliveries WHERE device_id = ? AND id IN (SELECT value FROM json_each(?))
          RETURNING blob_id",
@@ -433,6 +480,16 @@ pub async fn ack_ids(state: &AppState, device_id: &str, ids: &[String]) -> ApiRe
              AND NOT EXISTS (SELECT 1 FROM deliveries d WHERE d.blob_id = blobs.id)",
         )
         .bind(&blobs_json)
+        .execute(&mut *tx)
+        .await?;
+    }
+    if requested_cursor > current_cursor {
+        sqlx::query(
+            "INSERT INTO message_cursors (device_id, cursor) VALUES (?1, ?2)
+             ON CONFLICT(device_id) DO UPDATE SET cursor=excluded.cursor",
+        )
+        .bind(device_id)
+        .bind(requested_cursor)
         .execute(&mut *tx)
         .await?;
     }

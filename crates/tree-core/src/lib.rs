@@ -69,5 +69,4 @@ pub type DefaultProvider = openmls_rust_crypto::OpenMlsRustCrypto;
 pub type LibcruxProvider = openmls_libcrux_crypto::Provider;
 
 pub mod attachment;
-pub mod group_settings;
 pub mod safety;

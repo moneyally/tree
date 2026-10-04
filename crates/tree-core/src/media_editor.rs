@@ -6,6 +6,7 @@
 //! No editor operation changes the attachment cryptographic identity.
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::error::TreeError;
 
@@ -13,6 +14,50 @@ pub const EDITOR_VERSION: u8 = 1;
 pub const MAX_TEXT_LAYERS: usize = 64;
 pub const MAX_DRAW_STROKES: usize = 4096;
 pub const MAX_FILTERS: usize = 16;
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BrushSettings {
+    pub size: f32,
+    pub opacity: f32,
+    pub hardness: f32,
+    pub smoothing: f32,
+    pub pressure_sensitivity: f32,
+    pub rotation_deg: f32,
+}
+
+impl Default for BrushSettings {
+    fn default() -> Self {
+        Self {
+            size: 12.0,
+            opacity: 1.0,
+            hardness: 1.0,
+            smoothing: 0.5,
+            pressure_sensitivity: 1.0,
+            rotation_deg: 0.0,
+        }
+    }
+}
+
+impl BrushSettings {
+    pub fn validate(self) -> Result<(), TreeError> {
+        if !self.size.is_finite()
+            || !self.opacity.is_finite()
+            || !self.hardness.is_finite()
+            || !self.smoothing.is_finite()
+            || !self.pressure_sensitivity.is_finite()
+            || !self.rotation_deg.is_finite()
+            || !(0.5..=512.0).contains(&self.size)
+            || !(0.0..=1.0).contains(&self.opacity)
+            || !(0.0..=1.0).contains(&self.hardness)
+            || !(0.0..=1.0).contains(&self.smoothing)
+            || !(0.0..=1.0).contains(&self.pressure_sensitivity)
+            || !(-180.0..=180.0).contains(&self.rotation_deg)
+        {
+            return Err(TreeError::Usage("invalid editor brush settings".into()));
+        }
+        Ok(())
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Point {
@@ -142,7 +187,7 @@ impl TextLayer {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DrawStroke {
     pub points: Vec<Point>,
     pub brush: BrushSettings,
@@ -179,7 +224,7 @@ pub enum Filter {
     HighContrast,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MediaEditRecipe {
     pub source_width: u32,
     pub source_height: u32,
@@ -247,18 +292,25 @@ impl MediaEditRecipe {
         }
     }
 
-    /// Canonical recipe bytes are used for cache identity and audit/debugging.
-    /// They are not a cryptographic signature and must not be trusted as proof
-    /// that a renderer actually applied an edit.
-    pub fn encode(&self) -> Result<Vec<u8>, TreeError> {
+    /// Canonical recipe bytes are used for cache identity and cryptographic
+    /// binding. The hash binds the exact editor instructions, not the renderer.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, TreeError> {
         self.validate()?;
         let json = serde_json::to_vec(self)
             .map_err(|e| TreeError::Usage(format!("editor recipe encode failed: {e}")))?;
-        let mut out = Vec::with_capacity(8 + json.len());
+        let mut out = Vec::with_capacity(9 + json.len());
         out.extend_from_slice(b"TREEEDIT");
         out.push(EDITOR_VERSION);
         out.extend_from_slice(&json);
         Ok(out)
+    }
+
+    pub fn edit_script_hash(&self) -> Result<[u8; 32], TreeError> {
+        Ok(Sha256::digest(self.canonical_bytes()?).into())
+    }
+
+    pub fn encode(&self) -> Result<Vec<u8>, TreeError> {
+        self.canonical_bytes()
     }
 }
 
@@ -295,6 +347,10 @@ mod tests {
         assert!(recipe.validate().is_ok());
         assert_eq!(recipe.output_dimensions(), (600, 800));
         assert!(!recipe.encode().unwrap().is_empty());
+        assert_eq!(
+            recipe.edit_script_hash().unwrap(),
+            Sha256::digest(recipe.encode().unwrap()).into()
+        );
     }
 
     #[test]

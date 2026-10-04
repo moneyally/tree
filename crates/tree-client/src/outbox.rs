@@ -100,7 +100,9 @@ impl Session {
     /// delivered to now (0 if it waits in the outbox).
     pub(crate) fn send_payload(&mut self, gid: &[u8], p: &Payload) -> Result<usize, Error> {
         if ephemeral(p) {
-            if self.client.outbox_unsent(Some(gid))?.iter().any(|i| i.state != OutboxState::Failed) {
+            // Typing and presence are worthless later: never from inside a
+            // receive batch (F-024), and never ahead of older items.
+            if self.api.receiving() || self.client.outbox_unsent(Some(gid))?.iter().any(|i| i.state != OutboxState::Failed) {
                 return Ok(0);
             }
             let to = self.other_devices(gid)?;
@@ -149,11 +151,16 @@ impl Session {
             return Ok(0);
         }
         let inner = p.encode();
+        // Inside a receive batch nothing goes to the network (F-024): the
+        // item is sealed now only if that needs no server call (a chat
+        // message needs the franking tag), and it is sent after the batch.
+        let receiving = self.api.receiving();
         // Seal now unless it is a file, or an older item of this group still
         // waits for its seal (it must keep its place).
         let behind_unsealed =
             self.client.outbox_unsent(Some(gid))?.iter().any(|i| i.body.is_none() && i.state != OutboxState::Failed);
-        let encoded = if behind_unsealed || upload.is_some() {
+        let needs_server = Payload::decode(&inner).is_some_and(|p| p.is_franked_kind());
+        let encoded = if behind_unsealed || upload.is_some() || (receiving && needs_server) {
             None
         } else {
             match self.seal_payload(gid, &inner) {
@@ -173,6 +180,9 @@ impl Session {
         });
         self.end_batch()?;
         r?;
+        if receiving {
+            return Ok(0);
+        }
         match take(self.drive_outbox(Some(gid))?, &local_id) {
             Some(Attempt::Sent(n)) => Ok(n),
             Some(Attempt::Failed(e)) => Err(e),

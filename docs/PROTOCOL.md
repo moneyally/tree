@@ -855,6 +855,15 @@ States: `queued -> sending -> sent | retry -> sending ... | failed`.
    needs the server; if the server cannot be reached for the tag, the
    encoded payload waits in the outbox and the first attempt that obtains
    the tag seals it, once. The unsealed payload is erased when sealed.
+   **No network inside a receive (F-024).** A received message is handled
+   in one database batch (F-016). Anything its handling sends (a decline's
+   `leave`, a roster, a profile) is sealed and enqueued inside that batch
+   and nothing else: no server call (a chat message that needs a franking
+   tag is enqueued unsealed), and the outbox is driven only after the batch
+   committed (`sync` does it after the mailbox loop). Otherwise a crash
+   after the server took a request but before the batch committed would
+   roll back the keys that sealed it, and the next attempt would seal other
+   bytes with the same keys. Debug builds assert this in every request.
 3. **Idempotency key.** Fixed when the item is sealed:
 
    ```text

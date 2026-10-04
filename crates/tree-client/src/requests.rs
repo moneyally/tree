@@ -449,6 +449,37 @@ mod tests {
         assert!(bob.photo_allowed(&g).unwrap());
     }
 
+    /// F-024: handling a received message sends nothing over the network.
+    /// A decline (here: a blocked account's new chat) seals its leave
+    /// request into the outbox inside the receive batch, which commits; the
+    /// request goes out only when the outbox is driven afterwards.
+    #[test]
+    fn a_decline_is_only_queued_inside_the_receive_batch() {
+        let srv = Server::new("batchsend");
+        let mut bob = srv.device("bob");
+        let mut mallory = srv.device("mallory");
+        bob.block(mallory.account_id()).unwrap();
+        let g = mallory.create_group().unwrap();
+        mallory.invite(&g, bob.account_id()).unwrap();
+        let mut events = Vec::new();
+        for (_, body) in bob.api.fetch(&bob.creds, 0).unwrap() {
+            // Debug builds also stop at any request made in here
+            // (`Api::assert_not_receiving`).
+            bob.handle_durably(&body, &mut events, true).unwrap();
+        }
+        assert!(events.iter().any(|e| matches!(e, Event::Declined { reason, .. } if reason == "blocked")), "{events:?}");
+        assert_eq!(bob.group_status(&g).unwrap(), GroupStatus::Declined, "the batch committed");
+        let queued = bob.outbox().unwrap();
+        assert_eq!(queued.len(), 1, "the leave request waits in the outbox: {queued:?}");
+        assert_eq!(queued[0].state, tree_core::storage::outbox::OutboxState::Queued);
+        assert!(!mallory.sync(0).unwrap().iter().any(|e| matches!(e, Event::LeaveRequested { .. })), "nothing was sent yet");
+        // After the batch: the outbox sends the sealed bytes.
+        bob.send_pending().unwrap();
+        assert!(bob.outbox().unwrap().is_empty());
+        let ev = mallory.sync(0).unwrap();
+        assert!(ev.iter().any(|e| matches!(e, Event::LeaveRequested { .. })), "{ev:?}");
+    }
+
     /// F-018: someone else who saw a public invite link cannot pull the
     /// joiner into their own group by claiming to be the link's owner: only
     /// the owner's device learns the nonce of the join request.

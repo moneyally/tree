@@ -411,3 +411,24 @@ Issues found by testing Tree's own design. Each one has a regression test.
   holds the key.
 - **Test:** `records_do_not_link_the_sender_to_a_stored_body` (fails before:
   the stored value was the recomputable hash), `records_are_bounded_and_purged`.
+
+## F-024: network sends inside the crash-safe receive batch (fixed)
+
+- **Found:** 2026-10-04, security review of wave 2.
+- **What:** a received message is handled inside one database savepoint
+  (F-016), but a handler that declined a group sent the leave request
+  through the outbox at once, and the outbox then sent every due item of
+  every group, all before the savepoint was released. A crash after the
+  server took a request but before the release rolled back the key state
+  that sealed it: the message was received again, and the leave request
+  sealed again with the same MLS generation for other bytes; other items
+  sent in that pass could go twice or be lost.
+- **Severity:** medium (durability; a key reused for a second ciphertext,
+  mostly saved by the MLS reuse guard).
+- **Fix:** `Api` knows when a receive batch is open; inside it the outbox
+  only seals (when no server call is needed) and enqueues, ephemeral
+  signals are skipped, and nothing is driven; `sync` drives the outbox
+  after the mailbox loop. Every request asserts (debug builds) that no
+  receive batch is open; the whole client test suite runs with it.
+- **Test:** `requests::tests::a_decline_is_only_queued_inside_the_receive_batch`
+  (fails before: the request is made inside the batch).

@@ -1349,9 +1349,19 @@ impl Session {
     /// the stored message land together, so a crash in between cannot use
     /// up a message's keys without keeping the message. The server copy is
     /// acknowledged only after this returns.
+    ///
+    /// No network request goes out inside the batch (F-024): whatever the
+    /// handler sends (a decline's leave request, a roster, a profile) is
+    /// only sealed and queued in the outbox, in the same batch, and the
+    /// outbox is driven after the batch is committed (`sync` does it).
+    /// Otherwise a crash after the server took a request but before the
+    /// batch committed would roll back the keys used to seal it, and the
+    /// next attempt would seal different bytes with the same keys.
     fn handle_durably(&mut self, body: &[u8], events: &mut Vec<Event>, may_hold: bool) -> Result<bool, Error> {
         self.client.begin_batch()?;
+        self.api.set_receiving(true);
         let r = self.handle(body, events, may_hold);
+        self.api.set_receiving(false);
         self.end_batch()?;
         r
     }
@@ -1372,7 +1382,9 @@ impl Session {
             let Some(body) = self.client.app_data(&key)? else { continue };
             let mut ev = Vec::new();
             self.client.begin_batch()?;
+            self.api.set_receiving(true);
             let r = self.handle(&body, &mut ev, false);
+            self.api.set_receiving(false);
             let r = match r {
                 Ok(m) => self.client.set_app_data(&key, None).map(|_| m).map_err(Error::from),
                 e => e,

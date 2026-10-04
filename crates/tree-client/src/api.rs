@@ -79,6 +79,9 @@ impl UploadStatus {
 pub struct Api {
     base: String,
     http: Http,
+    /// Set while a received message is handled inside its database batch
+    /// (`Session::handle_durably`): no request may go out then (F-024).
+    receiving: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Someone used one of this device's invite links.
@@ -140,7 +143,25 @@ impl Api {
             .timeout(Duration::from_secs(60))
             .build()
             .map_err(|e| Error::Network(e.to_string()))?;
-        Ok(Self { base: base.trim_end_matches('/').to_string(), http })
+        Ok(Self { base: base.trim_end_matches('/').to_string(), http, receiving: Default::default() })
+    }
+
+    /// Marks the start or end of handling a received message in its batch.
+    pub(crate) fn set_receiving(&self, on: bool) {
+        self.receiving.store(on, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// True while a received message is handled inside its batch: anything
+    /// to send then is only queued, and sent after the batch is committed.
+    pub(crate) fn receiving(&self) -> bool {
+        self.receiving.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// A request while a receive batch is open would be undone on disk by a
+    /// crash before the batch commits, though the server already acted on
+    /// it (F-024). Debug builds stop at once; release builds go on.
+    fn assert_not_receiving(&self, path: &str) {
+        debug_assert!(!self.receiving(), "network request {path} inside a receive batch");
     }
 
     /// Sends a request signed by `key`; `device_id` is empty only for signup.
@@ -152,6 +173,7 @@ impl Api {
         path: &str,
         body: Option<&Value>,
     ) -> Result<Reply, Error> {
+        self.assert_not_receiving(path);
         let body = body.map(|b| serde_json::to_vec(b).expect("JSON value")).unwrap_or_default();
         let ts = now().to_string();
         let nonce = URL_SAFE_NO_PAD.encode(random::<16>());
@@ -398,6 +420,7 @@ impl Api {
 
     /// A signed request with a raw (non-JSON) body; returns the response.
     fn request_raw(&self, key: &SigningKey, device_id: &str, method: Method, path: &str, body: Vec<u8>) -> Result<reqwest::blocking::Response, Error> {
+        self.assert_not_receiving(path);
         let ts = now().to_string();
         let nonce = URL_SAFE_NO_PAD.encode(random::<16>());
         let signing = format!(

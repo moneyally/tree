@@ -69,6 +69,13 @@ const TOKEN_HASH: &str = "bot/token_sha256";
 const OFF_UNTIL: &str = "bot/platform_off_until";
 /// How long that answer is used before asking again (seconds).
 pub const OFF_RECHECK: i64 = 60;
+/// A device sends its group's bots a contentless [`Payload::LaneTick`]
+/// after this many of its own application messages. A receiver's MLS
+/// ratchet refuses a message more than 1,000 generations ahead of the last
+/// one it read from that sender (`tree_core` sender ratchet), and privacy
+/// mode keeps most messages from bots: without the tick a talkative member's
+/// next command would be unreadable for the bot until the next commit.
+pub const LANE_TICK_EVERY: u32 = 256;
 
 fn info_key(account: &str) -> String {
     format!("botinfo/{account}")
@@ -84,6 +91,9 @@ fn press_key(g: &[u8], id: &str) -> String {
 }
 fn query_key(g: &[u8], id: &str) -> String {
     format!("botquery/{}/{id}", hex::encode(g))
+}
+fn sealed_key(g: &[u8]) -> String {
+    format!("botlane-sealed/{}", hex::encode(g))
 }
 pub(crate) fn inner_key(local_id: &str) -> String {
     format!("botlane-item/{local_id}")
@@ -564,6 +574,14 @@ impl Session {
     /// second value says whether there were any.
     pub(crate) fn lane_recipients(&mut self, gid: &[u8], inner: &[u8], all: Vec<String>) -> Result<(Vec<String>, bool), Error> {
         let Some(p) = Payload::decode(inner) else { return Ok((all, false)) };
+        if matches!(p, Payload::LaneTick) {
+            // Bots' devices only, and none while bots are kept out.
+            let lane = self.lane(gid)?;
+            if self.bots_off()? || !self.chat_feature(gid, "chat.bots")?.0 {
+                return Ok((Vec::new(), false));
+            }
+            return Ok((all.into_iter().filter(|d| lane.bots.contains_key(d)).collect(), false));
+        }
         let roster = self.roster(gid)?;
         if let Payload::Callback { bot: m, .. } | Payload::CallbackAnswer { to: m, .. } = &p {
             let target = roster.get(m).cloned();
@@ -598,6 +616,36 @@ impl Session {
             }
         }
         Ok((out, unchecked))
+    }
+
+    /// Counts one application message this device sealed for the group
+    /// (each one moves its MLS sender ratchet on), in groups with bots.
+    pub(crate) fn note_sealed(&mut self, gid: &[u8]) -> Result<(), Error> {
+        if self.lane(gid)?.bots.is_empty() {
+            return Ok(());
+        }
+        let n = self.sealed_count(gid)?.saturating_add(1);
+        Ok(self.client.set_app_data(&sealed_key(gid), Some(n.to_string().as_bytes()))?)
+    }
+
+    fn sealed_count(&self, gid: &[u8]) -> Result<u32, Error> {
+        Ok(self.client.app_data(&sealed_key(gid))?.and_then(|v| String::from_utf8(v).ok()).and_then(|s| s.parse().ok()).unwrap_or(0))
+    }
+
+    /// After [`LANE_TICK_EVERY`] sealed messages: queues a
+    /// [`Payload::LaneTick`] for the group's bots (through the outbox, so
+    /// also inside a receive batch without network I/O, F-024). Counting
+    /// every message, not only those a bot missed, keeps this simple; a
+    /// commit starts the ratchets over anyway.
+    pub(crate) fn lane_tick_if_due(&mut self, gid: &[u8]) -> Result<(), Error> {
+        if self.sealed_count(gid)? < LANE_TICK_EVERY {
+            return Ok(());
+        }
+        self.client.set_app_data(&sealed_key(gid), None)?;
+        // The message that got here went out; a tick the server refuses
+        // must not turn that into an error.
+        let _ = self.queue_payload(gid, &Payload::LaneTick, None, |_| Ok(()));
+        Ok(())
     }
 
     // --- buttons and callbacks ---

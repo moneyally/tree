@@ -109,7 +109,9 @@ impl Session {
             if to.is_empty() {
                 return Ok(0);
             }
-            return self.send_encoded(gid, &to, &p.encode());
+            let n = self.send_encoded(gid, &to, &p.encode())?;
+            self.lane_tick_if_due(gid)?;
+            return Ok(n);
         }
         self.queue_payload(gid, p, None, |_| Ok(()))
     }
@@ -194,6 +196,10 @@ impl Session {
         });
         self.end_batch()?;
         r?;
+        // A bot kept from many messages gets a contentless tick (`bots.rs`).
+        if !matches!(p, Payload::LaneTick) {
+            self.lane_tick_if_due(gid)?;
+        }
         if receiving {
             return Ok(0);
         }
@@ -216,6 +222,7 @@ impl Session {
         match encoded {
             Some(enc) => {
                 let body = self.with(gid, |g, c| g.send(c, &enc))?;
+                self.note_sealed(gid)?;
                 let key = idempotency_key(gid, &self.member_id().0, &item.local_id, &body);
                 item.body = Some(body);
                 item.recipients = to;
@@ -304,6 +311,7 @@ impl Session {
             }
             self.client.begin_batch()?;
             let sealed = self.with(&gid, |g, c| g.send(c, &enc)).and_then(|body| {
+                self.note_sealed(&gid)?;
                 let key = idempotency_key(&gid, &self.member_id().0, &item.local_id, &body);
                 self.client.outbox_seal(&item.local_id, &body, &to, &key)?;
                 Ok(())

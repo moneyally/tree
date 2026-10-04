@@ -215,6 +215,11 @@ pub enum Payload {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         alert: bool,
     },
+    /// No content. Sent only to bots' devices, which privacy mode keeps
+    /// from most messages, so that the sender's MLS ratchet never runs
+    /// further ahead of a bot than the receiver allows (PROTOCOL.md 8.16,
+    /// `bots::LANE_TICK_EVERY`). Ignored on receipt.
+    LaneTick,
 }
 
 /// An inline button: the text shown and the data the bot gets when it is

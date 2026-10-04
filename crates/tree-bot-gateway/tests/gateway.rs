@@ -185,6 +185,41 @@ fn privacy_mode_decides_what_the_bot_sees() {
     g.stop();
 }
 
+/// Privacy mode keeps most of a talkative member's messages from the bot,
+/// and an MLS receiver refuses a message more than 1,000 sender-ratchet
+/// generations ahead of the last one it read. The members' devices send
+/// the bot a contentless tick every `LANE_TICK_EVERY` messages, so a
+/// command after 1,100 messages the bot never got is still read, and the
+/// ticks never show up for anyone.
+#[test]
+fn a_bot_still_reads_commands_after_many_messages_it_was_not_sent() {
+    let env = Env::new("ticks");
+    let mut alice = env.device("alice");
+    let mut bob = env.device("bob");
+    let (_bot, token, g) = env.bot(&alice, "tick_bot");
+    let gid = alice.create_group().unwrap();
+    bob.confirm_contact(alice.account_id()).unwrap();
+    alice.invite(&gid, bob.account_id()).unwrap();
+    alice.add_bot(&gid, "@tick_bot").unwrap();
+    bob.sync(0).unwrap();
+    for i in 0..1100 {
+        alice.send_text(&gid, &format!("chatter {i}")).unwrap();
+        if i % 200 == 0 {
+            bob.sync(0).unwrap();
+        }
+    }
+    alice.send_text(&gid, "/status@tick_bot").unwrap();
+    let got = updates(&g, &token, 6);
+    assert_eq!(texts(&got), vec!["/status@tick_bot"], "{got:?}");
+    // People never see a tick: no "unsupported" drops on their side.
+    let mut bob_events = Vec::new();
+    for _ in 0..3 {
+        bob_events.extend(bob.sync(1).unwrap());
+    }
+    assert!(!bob_events.iter().any(|e| matches!(e, Event::Dropped { .. })), "{bob_events:?}");
+    g.stop();
+}
+
 /// Buttons under a bot's message; a press reaches the bot, the bot's
 /// answer reaches the presser only.
 #[test]

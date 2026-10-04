@@ -43,6 +43,7 @@ pub(crate) fn is_speech(p: &Payload) -> bool {
             | Payload::Read { .. }
             | Payload::Typing { .. }
             | Payload::Seen
+            | Payload::LaneTick
     )
 }
 

@@ -1168,6 +1168,7 @@ impl Session {
     /// without the outbox (typing and presence only; see `outbox.rs`).
     fn send_encoded(&mut self, gid: &[u8], to: &[String], encoded: &[u8]) -> Result<usize, Error> {
         let bytes = self.with(gid, |g, c| g.send(c, encoded))?;
+        self.note_sealed(gid)?;
         self.note_traffic(gid)?;
         let v: Value = self.api.send(&self.creds, to, &bytes)?;
         Ok(v["delivered"].as_u64().unwrap_or(0) as usize)
@@ -1558,6 +1559,8 @@ impl Session {
             Some(Payload::Settings { s }) => self.on_settings(gid, from, s, events)?,
             Some(Payload::Callback { id, msg, data, bot }) => self.on_callback(gid, from, id, msg, data, bot, events)?,
             Some(Payload::CallbackAnswer { id, to, text, alert }) => self.on_callback_answer(gid, from, id, to, text, alert, events)?,
+            // Only keeps a bot's ratchet in reach (`bots.rs`): nothing to do.
+            Some(Payload::LaneTick) => {}
             Some(Payload::Franked { .. }) | None => events.push(Event::Dropped { reason: format!("unsupported message from {}", &from.to_hex()[..8]) }),
         }
         Ok(())

@@ -237,32 +237,30 @@ impl crate::storage::StoredProvider {
             .collect()
     }
 
-    pub(crate) fn due_outbox(
-        &self,
-        now: i64,
-        limit: u32,
-    ) -> Result<Vec<OutboxItem>, TreeError> {
+    pub(crate) fn due_outbox(&self, now: i64, limit: u32) -> Result<Vec<OutboxItem>, TreeError> {
         let mut stmt = self.connection().prepare(
             "SELECT local_id,group_id,message_id,kind,envelope,state,attempts,next_retry_at,created_at,last_error_code,server_id
              FROM tree_outbox
              WHERE (state='queued' OR state='retry') AND next_retry_at <= ?1
              ORDER BY created_at, local_id LIMIT ?2",
         ).map_err(storage_err)?;
-        let rows = stmt.query_map(params![now, i64::from(limit.min(1000))], |row| {
-            Ok((
-                row.get::<_, Vec<u8>>(0)?,
-                row.get::<_, Vec<u8>>(1)?,
-                row.get::<_, Option<Vec<u8>>>(2)?,
-                row.get::<_, i64>(3)?,
-                row.get::<_, Vec<u8>>(4)?,
-                row.get::<_, String>(5)?,
-                row.get::<_, i64>(6)?,
-                row.get::<_, i64>(7)?,
-                row.get::<_, i64>(8)?,
-                row.get::<_, Option<String>>(9)?,
-                row.get::<_, Option<String>>(10)?,
-            ))
-        }).map_err(storage_err)?;
+        let rows = stmt
+            .query_map(params![now, i64::from(limit.min(1000))], |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, Option<Vec<u8>>>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, Vec<u8>>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, i64>(8)?,
+                    row.get::<_, Option<String>>(9)?,
+                    row.get::<_, Option<String>>(10)?,
+                ))
+            })
+            .map_err(storage_err)?;
         let mut out = Vec::new();
         for row in rows {
             let (local, group, message, kind, envelope, state, attempts, next_retry, created, error, server) =
@@ -274,7 +272,9 @@ impl crate::storage::StoredProvider {
             out.push(OutboxItem {
                 local_id: parse_id(local, "outbox local_id")?,
                 group_id: group,
-                message_id: message.map(|v| parse_id(v, "outbox message_id").map(MessageId)).transpose()?,
+                message_id: message
+                    .map(|v| parse_id(v, "outbox message_id").map(MessageId))
+                    .transpose()?,
                 kind,
                 envelope,
                 state: OutboxState::parse(&state)?,
@@ -293,11 +293,14 @@ impl crate::storage::StoredProvider {
         local_id: [u8; 16],
         now: i64,
     ) -> Result<bool, TreeError> {
-        let changed = self.connection().execute(
-            "UPDATE tree_outbox SET state='sending', attempts=attempts+1
-             WHERE local_id=?1 AND (state='queued' OR (state='retry' AND next_retry_at <= ?2))",
-            params![local_id.as_slice(), now],
-        ).map_err(storage_err)?;
+        let changed = self
+            .connection()
+            .execute(
+                "UPDATE tree_outbox SET state='sending', attempts=attempts+1
+                 WHERE local_id=?1 AND (state='queued' OR (state='retry' AND next_retry_at <= ?2))",
+                params![local_id.as_slice(), now],
+            )
+            .map_err(storage_err)?;
         Ok(changed == 1)
     }
 

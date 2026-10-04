@@ -226,7 +226,7 @@ impl TreeProvider for StoredProvider {
         event: &crate::message::MessageEvent,
         sender: &[u8; 32],
     ) -> Result<(), TreeError> {
-        crate::messenger_store::StoredProvider::store_message_event(self, group_id, event, sender)
+        self.store_message_event(group_id, event, sender)
     }
 
     fn get_messages(
@@ -234,7 +234,7 @@ impl TreeProvider for StoredProvider {
         group_id: &[u8],
         limit: u32,
     ) -> Result<Vec<crate::messenger_store::StoredMessage>, TreeError> {
-        crate::messenger_store::StoredProvider::list_messages(self, group_id, limit)
+        self.list_messages(group_id, limit)
     }
 
     fn enqueue_outbox(
@@ -246,9 +246,7 @@ impl TreeProvider for StoredProvider {
         envelope: &[u8],
         now: i64,
     ) -> Result<(), TreeError> {
-        crate::messenger_store::StoredProvider::enqueue_outbox(
-            self, local_id, group_id, message_id, kind, envelope, now,
-        )
+        self.enqueue_outbox(local_id, group_id, message_id, kind, envelope, now)
     }
 }
 

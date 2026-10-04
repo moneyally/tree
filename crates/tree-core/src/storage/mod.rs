@@ -254,6 +254,26 @@ impl StoredProvider {
         Ok(Self { crypto: RustCrypto::default(), storage: SqlStorage { conn } })
     }
 
+    /// Opens an outer unit of work around several operations: what they
+    /// store reaches the disk together at [`StoredProvider::end_batch`], or,
+    /// after a crash before it, not at all. Nests the per-operation
+    /// savepoints of [`TreeProvider::atomically`].
+    pub(crate) fn begin_batch(&self) -> Result<(), TreeError> {
+        self.storage.conn.execute_batch("SAVEPOINT tree_batch").map_err(storage_err)
+    }
+
+    /// Closes the unit of work opened by [`StoredProvider::begin_batch`],
+    /// keeping everything in it (also after a failed step: the in-memory
+    /// state already reflects it, as in `atomically`).
+    pub(crate) fn end_batch(&self) -> Result<(), TreeError> {
+        let conn = &self.storage.conn;
+        if let Err(e) = conn.execute_batch("RELEASE tree_batch") {
+            let _ = conn.execute_batch("ROLLBACK TO tree_batch; RELEASE tree_batch");
+            return Err(TreeError::Storage(format!("could not save; reload the groups before continuing: {e}")));
+        }
+        Ok(())
+    }
+
     pub(crate) fn put_app(&self, key: &str, value: Option<&[u8]>) -> Result<(), TreeError> {
         let conn = &self.storage.conn;
         match value {

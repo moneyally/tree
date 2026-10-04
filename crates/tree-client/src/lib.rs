@@ -868,7 +868,7 @@ impl Session {
         let mut ids = Vec::new();
         let mut moved = false;
         for (id, body) in msgs {
-            moved |= self.handle(&body, &mut events, true)?;
+            moved |= self.handle_durably(&body, &mut events, true)?;
             ids.push(id);
         }
         self.api.ack(&self.creds, &ids)?;
@@ -1072,17 +1072,43 @@ impl Session {
         Ok(false)
     }
 
+    /// [`Session::handle`] as one unit on disk: the group's new key state and
+    /// the stored message land together, so a crash in between cannot use
+    /// up a message's keys without keeping the message. The server copy is
+    /// acknowledged only after this returns.
+    fn handle_durably(&mut self, body: &[u8], events: &mut Vec<Event>, may_hold: bool) -> Result<bool, Error> {
+        self.client.begin_batch()?;
+        let r = self.handle(body, events, may_hold);
+        self.end_batch()?;
+        r
+    }
+
+    fn end_batch(&mut self) -> Result<(), Error> {
+        if let Err(e) = self.client.end_batch() {
+            // Rolled back: the loaded groups are ahead of the disk.
+            self.groups.clear();
+            return Err(e.into());
+        }
+        Ok(())
+    }
+
     /// Tries every held message once. Returns true if one changed an epoch.
     fn retry_held(&mut self, events: &mut Vec<Event>) -> Result<bool, Error> {
         let mut moved = false;
         for key in self.client.app_data_keys("held/")? {
             let Some(body) = self.client.app_data(&key)? else { continue };
             let mut ev = Vec::new();
-            match self.handle(&body, &mut ev, false) {
+            self.client.begin_batch()?;
+            let r = self.handle(&body, &mut ev, false);
+            let r = match r {
+                Ok(m) => self.client.set_app_data(&key, None).map(|_| m).map_err(Error::from),
+                e => e,
+            };
+            self.end_batch()?;
+            match r {
                 Ok(m) => {
                     moved |= m;
                     events.extend(ev);
-                    self.client.set_app_data(&key, None)?;
                 }
                 Err(Error::Protocol(_)) => {} // still not readable: keep it
                 Err(e) => return Err(e),

@@ -479,3 +479,43 @@ fn message_history() {
     let raw = std::fs::read(&p).unwrap();
     assert!(!raw.windows(4).any(|w| w == b"9f1d"));
 }
+
+/// A crash inside a batch (receive, then store the message) loses both
+/// steps, so the message can be received again; after the batch ends both
+/// are kept and the message's keys are used up.
+#[test]
+fn batch_is_all_or_nothing() {
+    let dir = TempDir::new("batch");
+    let (pa, pb) = (dir.db("alice"), dir.db("bob"));
+    let alice = Client::create(&pa, "alice pass", "alice").unwrap();
+    let bob = Client::create(&pb, "bob pass", "bob").unwrap();
+    let mut a = alice.create_group().unwrap();
+    let w = a.add_now(&alice, &bob.key_package().unwrap()).unwrap().welcome;
+    let b = bob.join(&w).unwrap();
+    let gid = b.id();
+    drop(b);
+    let m = a.send(&alice, b"hi").unwrap();
+
+    // Crash before end_batch: nothing of it is on disk.
+    let mut b = bob.load_group(&gid).unwrap();
+    bob.begin_batch().unwrap();
+    says(b.receive(&bob, &m).unwrap(), &alice, "hi");
+    bob.set_app_data("history/1", Some(b"hi")).unwrap();
+    drop(b);
+    drop(bob);
+    let bob = Client::open(&pb, "bob pass").unwrap();
+    assert_eq!(bob.app_data("history/1").unwrap(), None);
+    let mut b = bob.load_group(&gid).unwrap();
+
+    // Delivered again after the restart: still readable; this time kept.
+    bob.begin_batch().unwrap();
+    says(b.receive(&bob, &m).unwrap(), &alice, "hi");
+    bob.set_app_data("history/1", Some(b"hi")).unwrap();
+    bob.end_batch().unwrap();
+    drop(b);
+    drop(bob);
+    let bob = Client::open(&pb, "bob pass").unwrap();
+    assert_eq!(bob.app_data("history/1").unwrap().as_deref(), Some(&b"hi"[..]));
+    let mut b = bob.load_group(&gid).unwrap();
+    assert!(b.receive(&bob, &m).is_err(), "keys used up");
+}

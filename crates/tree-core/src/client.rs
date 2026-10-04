@@ -132,6 +132,18 @@ impl Client<StoredProvider> {
         self.provider.atomically(|| self.provider.put_app(key, value))
     }
 
+    /// Starts a unit of work spanning several calls (receive a message, then
+    /// store it in the history): a crash before [`Client::end_batch`] loses
+    /// all of it, never half. Always pair with `end_batch`.
+    pub fn begin_batch(&self) -> Result<(), TreeError> {
+        self.provider.begin_batch()
+    }
+
+    /// Ends the unit of work started by [`Client::begin_batch`].
+    pub fn end_batch(&self) -> Result<(), TreeError> {
+        self.provider.end_batch()
+    }
+
     /// App data keys starting with `prefix`, sorted.
     pub fn app_data_keys(&self, prefix: &str) -> Result<Vec<String>, TreeError> {
         self.provider.app_keys(prefix)

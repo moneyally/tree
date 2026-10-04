@@ -130,7 +130,7 @@ impl Session {
         if !packages.is_empty() {
             self.api.upload_key_packages(&self.creds, &packages)?;
         }
-        Ok(self.api.key_package_count(&self.creds)?)
+        self.api.key_package_count(&self.creds)
     }
 
     /// Creates a local MLS group and records this device as the initial roster

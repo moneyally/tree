@@ -142,7 +142,7 @@ async fn media_envelope_keeps_key_off_server_and_binds_it_to_message_epoch() {
         PreviewMode::Blurred,
     )
     .unwrap();
-    let envelope = MediaEnvelope::new(manifest.clone(), key.clone(), None)
+    let envelope = MediaEnvelope::new("media123".into(), [8; 32], manifest.clone(), key.clone(), None)
         .unwrap()
         .encode()
         .unwrap();

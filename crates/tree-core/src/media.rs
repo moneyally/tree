@@ -172,6 +172,11 @@ impl MediaEditPlan {
         Ok(())
     }
 
+    pub fn validate(&self) -> Result<(), TreeError> {
+        for op in &self.operations { validate_edit_operation(op)?; }
+        Ok(())
+    }
+
     pub fn undo(&mut self) -> Option<EditOperation> {
         self.operations.pop()
     }

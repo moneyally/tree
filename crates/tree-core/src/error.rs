@@ -35,6 +35,8 @@ pub enum TreeError {
     /// (The two cannot be told apart: both fail page authentication.)
     #[error("wrong passphrase, or the database is damaged")]
     WrongKey,
+    #[error("invalid usage: {0}")]
+    Usage(String),
     #[error("local storage: {0}")]
     Storage(String),
 }

@@ -744,9 +744,8 @@ impl Session {
         // Advance the server cursor only after every fetched entry through
         // this cursor has been durably handled. A still-held future-epoch
         // entry intentionally prevents cursor advancement.
-        if !had_held {
-            self.api.ack_with_cursor(&self.creds, &ack, Some(cursor))?;
-        } else if retry_completed {
+        let cursor_ready = !had_held || retry_completed;
+        if cursor_ready {
             self.api.ack_with_cursor(&self.creds, &ack, Some(cursor))?;
         }
 

@@ -47,7 +47,7 @@ in section 5.
 | Forward secrecy / post-compromise security by key refresh | partial | refresh exists; no scheduler that triggers it (PROTOCOL.md 6.9) |
 | Encrypted device storage (SQLCipher, hardware-wrapped key) | partial | SQLCipher + Argon2id done; hardware key (Secure Enclave / Keystore) needs the apps (`KeySource` is the hook) |
 | Feature registry: apply/release for every feature, permanent locks, layers | done | `features.rs`; server, chat, user, bot layers; `LOCKED_BY_CHAT` |
-| All 34 stage-1 feature keys in the registry | partial | 30 of 34; missing `user.username`, `user.note_to_self`, `user.folders`, `user.default_folders` |
+| All 34 stage-1 feature keys in the registry | partial | 34 of 34; all stage-1 keys are present in the registry |
 | Behaviour behind the keys (disappearing timer, edit window, view once, ...) | missing | the registry stores the setting; nothing acts on it yet. Chat settings must live in the MLS group context (design: the server never knows them) |
 | Recovery phrase (24 words, 256-bit entropy) | partial | `recovery.rs`: BIP-39 phrase + HKDF-derived recovery key; encrypted local persistence; server recovery API. UI confirmation/screenshot protections and external review still missing |
 | Safety number / QR comparison, key change warning | partial | per-device safety fingerprint helper exists; multi-device/person format remains Q4; UI/pinning not built |

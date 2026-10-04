@@ -15,7 +15,7 @@ use thiserror::Error;
 
 use tree_core::{
     group::{Group, Incoming, MemberId, PendingCommit},
-    media::{decrypt_preview, EncryptedChunk, MediaEnvelope, MediaKey, MediaLifecycle, MediaManifest, MediaViewEvent, SecureMediaBytes, PreviewMode, ViewPolicy},
+    media::{decrypt_preview, encrypt_manifest, EncryptedChunk, MediaEnvelope, MediaKey, MediaLifecycle, MediaManifest, MediaViewEvent, SecureMediaBytes, PreviewMode, ViewPolicy},
     storage::StoredProvider,
     Client, TreeError,
 };
@@ -256,7 +256,7 @@ impl Session {
         let key_commitment = manifest.key_commitment(&key)?;
         let upload = self.api.media_init(
             &self.creds,
-            &manifest.encode()?,
+            &encrypt_manifest(&key, &manifest)?,
             &key_commitment,
             manifest.plaintext_size,
             manifest.chunk_size,

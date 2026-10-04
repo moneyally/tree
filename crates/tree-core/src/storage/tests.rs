@@ -108,7 +108,8 @@ fn files_on_disk_reveal_nothing() {
             .filter(|(_, n)| plain.iter().any(|(_, b)| contains(b, n)))
             .map(|(what, _)| what)
             .collect();
-        // Messages are not stored by the core yet, so only these are expected.
+        // The local message store is encrypted, so the same plaintext must not
+        // become visible in the raw database files.
         for expected in ["sqlite header", "client name", "private key (as stored)"] {
             assert!(
                 found.contains(&expected),
@@ -138,6 +139,71 @@ fn files_on_disk_reveal_nothing() {
     let c = Client::open(&path, "pass phrase 1").unwrap();
     assert_eq!(c.name(), name);
     assert_eq!(c.group_ids().unwrap().len(), 1);
+}
+
+
+#[test]
+fn outbox_is_durable_and_restart_recoverable() {
+    let dir = TempDir::new("outbox");
+    let path = dir.0.join("alice.db");
+    let c = Client::create(&path, "pw", "alice").unwrap();
+
+    let local_id = [0x11u8; 16];
+    let group = b"group";
+    let envelope = b"ciphertext";
+    c.provider
+        .enqueue_outbox(local_id, group, None, 1, envelope, 100)
+        .unwrap();
+
+    // Duplicate enqueue is harmless: the stable local id is the idempotency
+    // boundary for the local queue as well as the network retry key.
+    c.provider
+        .enqueue_outbox(local_id, group, None, 1, b"different", 101)
+        .unwrap();
+    let due = c.due_outbox(101, 10).unwrap();
+    assert_eq!(due.len(), 1);
+    assert_eq!(due[0].envelope, envelope);
+    assert_eq!(due[0].state, crate::messenger_store::OutboxState::Queued);
+    assert_eq!(due[0].attempts, 0);
+
+    assert!(c.mark_outbox_sending(local_id, 101).unwrap());
+    let item = c.due_outbox(101, 10).unwrap();
+    assert!(item.is_empty(), "sending entries are not picked twice");
+
+    // Simulate a process crash after the request may have reached the server.
+    // Recovery must make the exact same local item retryable, preserving its
+    // local id for server-side idempotency.
+    assert_eq!(c.recover_sending_outbox(200).unwrap(), 1);
+    let due = c.due_outbox(200, 10).unwrap();
+    assert_eq!(due.len(), 1);
+    assert_eq!(due[0].local_id, local_id);
+    assert_eq!(due[0].state, crate::messenger_store::OutboxState::Retry);
+    assert_eq!(due[0].last_error_code.as_deref(), Some("CLIENT_RESTART"));
+    assert_eq!(due[0].attempts, 1);
+
+    // A retry is not immediately eligible until its backoff deadline.
+    c.mark_outbox_retry(local_id, "NETWORK", 205).unwrap();
+    assert!(c.due_outbox(204, 10).unwrap().is_empty());
+    assert_eq!(c.due_outbox(205, 10).unwrap().len(), 1);
+
+    // Successful completion removes it from the due queue permanently.
+    assert!(c.mark_outbox_sending(local_id, 205).unwrap());
+    c.mark_outbox_sent(local_id, "server-123").unwrap();
+    assert!(c.due_outbox(10_000, 10).unwrap().is_empty());
+
+    // Reopen the encrypted profile: terminal state and server id survive.
+    drop(c);
+    let c = Client::open(&path, "pw").unwrap();
+    assert!(c.due_outbox(10_000, 10).unwrap().is_empty());
+
+    // A failed item is also terminal and cannot be accidentally retried.
+    let failed = [0x22u8; 16];
+    c.provider
+        .enqueue_outbox(failed, group, None, 1, envelope, 300)
+        .unwrap();
+    assert!(c.mark_outbox_sending(failed, 300).unwrap());
+    c.mark_outbox_failed(failed, "PERMANENT",).unwrap();
+    assert!(c.due_outbox(301, 10).unwrap().is_empty());
 }
 
 #[cfg(unix)]

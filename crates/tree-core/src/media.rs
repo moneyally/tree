@@ -17,7 +17,8 @@ use zeroize::Zeroizing;
 use crate::error::TreeError;
 use crate::message::MessageId;
 
-pub const MEDIA_VERSION: u8 = 1;
+pub const MEDIA_VERSION: u8 = 2;
+const LEGACY_MEDIA_VERSION: u8 = 1;
 /// Bounded, non-destructive edit recipe. The recipe never contains the
 /// plaintext media; it is safe to keep locally and can be discarded after the
 /// final rendered bytes are encrypted.
@@ -379,6 +380,8 @@ pub struct MediaManifest {
     pub preview_mode: PreviewMode,
     pub view_policy: ViewPolicy,
     pub base_nonce: [u8; BASE_NONCE_LEN],
+    pub edit_script_hash: Option<[u8; 32]>,
+    pub output_commitment: Option<[u8; 32]>,
 }
 
 impl MediaManifest {
@@ -435,6 +438,8 @@ impl MediaManifest {
             preview_mode,
             view_policy,
             base_nonce,
+            edit_script_hash: None,
+            output_commitment: None,
         };
         manifest.validate()?;
         Ok((manifest, MediaKey::generate()?))
@@ -457,6 +462,11 @@ impl MediaManifest {
             || self.chunk_count > MAX_CHUNKS
         {
             return Err(TreeError::FileCrypto("invalid media manifest".into()));
+        }
+        if self.edit_script_hash.is_some() != self.output_commitment.is_some() {
+            return Err(TreeError::FileCrypto(
+                "media edit binding must contain both hashes".into(),
+            ));
         }
         let expected = self.plaintext_size.div_ceil(self.chunk_size as u64);
         if expected != self.chunk_count as u64 {
@@ -485,6 +495,15 @@ impl MediaManifest {
         out.push(preview_byte(self.preview_mode));
         put_view_policy(&mut out, self.view_policy);
         out.extend_from_slice(&self.base_nonce);
+        match (self.edit_script_hash, self.output_commitment) {
+            (None, None) => out.push(0),
+            (Some(edit), Some(output)) => {
+                out.push(1);
+                out.extend_from_slice(&edit);
+                out.extend_from_slice(&output);
+            }
+            _ => unreachable!("validated edit binding is either present or absent"),
+        }
         if out.len() > MAX_MANIFEST {
             return Err(TreeError::FileCrypto("media manifest is too large".into()));
         }
@@ -497,7 +516,11 @@ impl MediaManifest {
 
     pub fn decode(bytes: &[u8]) -> Result<Self, TreeError> {
         let mut r = Reader(bytes);
-        if r.take(DOMAIN.len())? != DOMAIN || r.u8()? != MEDIA_VERSION {
+        if r.take(DOMAIN.len())? != DOMAIN {
+            return Err(TreeError::Malformed("invalid media manifest header".into()));
+        }
+        let version = r.u8()?;
+        if version != LEGACY_MEDIA_VERSION && version != MEDIA_VERSION {
             return Err(TreeError::Malformed("invalid media manifest header".into()));
         }
         let attachment_id = r.array::<16>()?;
@@ -529,6 +552,15 @@ impl MediaManifest {
             _ => return Err(TreeError::Malformed("invalid media view policy".into())),
         };
         let base_nonce = r.array::<8>()?;
+        let (edit_script_hash, output_commitment) = if version == LEGACY_MEDIA_VERSION {
+            (None, None)
+        } else {
+            match r.u8()? {
+                0 => (None, None),
+                1 => (Some(r.array::<32>()?), Some(r.array::<32>()?)),
+                _ => return Err(TreeError::Malformed("invalid media edit binding flag".into())),
+            }
+        };
         if !r.0.is_empty() {
             return Err(TreeError::Malformed("trailing media manifest bytes".into()));
         }
@@ -546,9 +578,22 @@ impl MediaManifest {
             preview_mode,
             view_policy,
             base_nonce,
+            edit_script_hash,
+            output_commitment,
         };
         manifest.validate()?;
         Ok(manifest)
+    }
+
+    pub fn with_edit_binding(
+        mut self,
+        edit_script_hash: [u8; 32],
+        output_commitment: [u8; 32],
+    ) -> Result<Self, TreeError> {
+        self.edit_script_hash = Some(edit_script_hash);
+        self.output_commitment = Some(output_commitment);
+        self.validate()?;
+        Ok(self)
     }
 
     pub fn key_commitment(&self, key: &MediaKey) -> Result<[u8; 32], TreeError> {

@@ -541,5 +541,15 @@ fn print_event(ev: &Event) {
             &hex(group)[..8],
             id.as_deref().unwrap_or("-")
         ),
+        Event::Pinned { group, id, from, pinned } => {
+            println!("[{}] {} {} #{id}", &hex(group)[..8], &from.to_hex()[..8], if *pinned { "pinned" } else { "unpinned" })
+        }
+        Event::Poll { group, id, from, name, question, .. } => println!(
+            "[{}] {} ({}) started a poll: {question}   #{id}",
+            &hex(group)[..8],
+            name.as_deref().unwrap_or("?"),
+            &from.to_hex()[..8]
+        ),
+        Event::PollUpdated { group, id } => println!("[{}] poll #{id} changed", &hex(group)[..8]),
     }
 }

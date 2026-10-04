@@ -31,6 +31,10 @@ pub enum Payload {
         /// Silent send: receivers' apps do not notify for this message.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         silent: bool,
+        /// Forwarded from another chat (`chat.forwarding`); the original
+        /// sender is not named.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        fwd: bool,
     },
     /// The sender replaces the text of its own message `id` (chat.edit).
     Edit { id: String, text: String },
@@ -88,6 +92,48 @@ pub enum Payload {
     /// (PROTOCOL.md 8.5): `p` is the inner payload exactly as encoded, `k`
     /// the franking key, `tag` the server's tag made at minute `m`.
     Franked { p: String, k: String, tag: String, m: i64 },
+    /// Pins message `id` for the whole chat (`chat.pins`, `pins.rs`):
+    /// `ttl` seconds from when each device receives it (none: until
+    /// unpinned); `remove` unpins.
+    Pin {
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ttl: Option<i64>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        remove: bool,
+    },
+    /// A poll (`chat.polls`, `polls.rs`).
+    Poll(PollDef),
+    /// The sender's whole vote in poll `id` (option indexes); empty takes
+    /// the vote back. The latest one of each member counts.
+    Vote {
+        id: String,
+        #[serde(default)]
+        choices: Vec<u32>,
+    },
+    /// The poll's creator closes poll `id`.
+    PollClose { id: String },
+}
+
+/// A poll as its creator sent it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PollDef {
+    /// Message id of the poll in the group (as for `text`).
+    pub id: String,
+    /// The question (at most 300 characters).
+    pub q: String,
+    /// 2 to 10 options, each 1 to 100 characters.
+    pub opts: Vec<String>,
+    /// Several options may be chosen.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub multi: bool,
+    /// Apps do not show who voted for what (votes are still
+    /// MLS-authenticated to every member's device; see `polls.rs`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub anon: bool,
+    /// Closes this many seconds after each device received it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub close_in: Option<i64>,
 }
 
 /// A link preview, made by the sender's device (which fetched the page), so
@@ -137,6 +183,9 @@ pub struct FileInfo {
     pub pt_sha256: String,
     pub name: String,
     pub mime: String,
+    /// Forwarded from another chat (`chat.forwarding`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fwd: bool,
 }
 
 impl Payload {
@@ -146,7 +195,7 @@ impl Payload {
 
     /// Payloads that are franked when sent (content a member could report).
     pub fn is_franked_kind(&self) -> bool {
-        matches!(self, Payload::Text { .. } | Payload::Edit { .. } | Payload::File(_))
+        matches!(self, Payload::Text { .. } | Payload::Edit { .. } | Payload::File(_) | Payload::Poll(_))
     }
 
     pub fn decode(bytes: &[u8]) -> Option<Self> {
@@ -160,7 +209,7 @@ mod tests {
 
     #[test]
     fn round_trip_and_format() {
-        let t = Payload::Text { id: "01".into(), text: "안녕".into(), fmt: false, mentions: vec![], all: false, preview: None, silent: false };
+        let t = Payload::Text { id: "01".into(), text: "안녕".into(), fmt: false, mentions: vec![], all: false, preview: None, silent: false, fwd: false };
         assert_eq!(String::from_utf8(t.encode()).unwrap(), r#"{"t":"text","id":"01","text":"안녕"}"#);
         for p in [
             Payload::Edit { id: "01".into(), text: "x".into() },
@@ -189,13 +238,48 @@ mod tests {
         let q = Payload::Leave { quiet: true };
         assert_eq!(q.encode(), br#"{"t":"leave","quiet":true}"#.to_vec());
         assert_eq!(Payload::decode(&q.encode()), Some(q));
-        let s = Payload::Text { id: "02".into(), text: "shh".into(), fmt: false, mentions: vec![], all: false, preview: None, silent: true };
+        let s = Payload::Text { id: "02".into(), text: "shh".into(), fmt: false, mentions: vec![], all: false, preview: None, silent: true, fwd: false };
         assert_eq!(String::from_utf8(s.encode()).unwrap(), r#"{"t":"text","id":"02","text":"shh","silent":true}"#);
         assert_eq!(Payload::decode(&s.encode()), Some(s));
         let r = Payload::RemoveDevice { members: vec!["ab".into()] };
         assert_eq!(String::from_utf8(r.encode()).unwrap(), r#"{"t":"remove_device","members":["ab"]}"#);
         assert_eq!(Payload::decode(&r.encode()), Some(r));
         assert_eq!(Payload::decode(br#"{"t":"sticker"}"#), None);
+        // Unknown fields are ignored (a newer app's additions).
+        assert!(Payload::decode(br#"{"t":"text","id":"01","text":"x","future":1}"#).is_some());
         assert_eq!(Payload::decode(b"plain"), None);
+    }
+}
+
+#[cfg(test)]
+mod rich_tests {
+    use super::*;
+
+    /// Wave 2 part A payloads: exact encodings, and older readers keep
+    /// working (a forwarded text is a text with one more field).
+    #[test]
+    fn pins_polls_votes_forwarding() {
+        let pin = Payload::Pin { id: "01".into(), ttl: Some(86400), remove: false };
+        assert_eq!(String::from_utf8(pin.encode()).unwrap(), r#"{"t":"pin","id":"01","ttl":86400}"#);
+        let unpin = Payload::Pin { id: "01".into(), ttl: None, remove: true };
+        assert_eq!(String::from_utf8(unpin.encode()).unwrap(), r#"{"t":"pin","id":"01","remove":true}"#);
+        let poll = Payload::Poll(PollDef { id: "02".into(), q: "Lunch?".into(), opts: vec!["a".into(), "b".into()], multi: true, anon: false, close_in: None });
+        assert_eq!(String::from_utf8(poll.encode()).unwrap(), r#"{"t":"poll","id":"02","q":"Lunch?","opts":["a","b"],"multi":true}"#);
+        assert!(poll.is_franked_kind(), "a poll is content a member can report");
+        let vote = Payload::Vote { id: "02".into(), choices: vec![1] };
+        assert_eq!(String::from_utf8(vote.encode()).unwrap(), r#"{"t":"vote","id":"02","choices":[1]}"#);
+        assert_eq!(Payload::decode(br#"{"t":"vote","id":"02"}"#), Some(Payload::Vote { id: "02".into(), choices: vec![] }));
+        let close = Payload::PollClose { id: "02".into() };
+        assert_eq!(String::from_utf8(close.encode()).unwrap(), r#"{"t":"poll_close","id":"02"}"#);
+        for p in [pin, unpin, poll, vote, close] {
+            assert_eq!(Payload::decode(&p.encode()), Some(p.clone()));
+            assert!(!matches!(p, Payload::Vote { .. } | Payload::Pin { .. } | Payload::PollClose { .. }) || !p.is_franked_kind());
+        }
+        let f = Payload::Text { id: "03".into(), text: "hi".into(), fmt: false, mentions: vec![], all: false, preview: None, silent: false, fwd: true };
+        assert_eq!(String::from_utf8(f.encode()).unwrap(), r#"{"t":"text","id":"03","text":"hi","fwd":true}"#);
+        assert_eq!(Payload::decode(&f.encode()), Some(f));
+        // A file reference without `fwd` (older apps) reads as not forwarded.
+        let old = br#"{"t":"file","id":"x","key":"k","nonce":"n","size":1,"ct_sha256":"","pt_sha256":"","name":"a","mime":"b"}"#;
+        assert!(matches!(Payload::decode(old), Some(Payload::File(FileInfo { fwd: false, .. }))));
     }
 }

@@ -56,7 +56,7 @@ pub(crate) fn now() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
-fn new_id() -> String {
+pub(crate) fn new_id() -> String {
     let mut b = [0u8; 16];
     getrandom::getrandom(&mut b).expect("operating system random number generator failed");
     hex::encode(b)
@@ -68,7 +68,7 @@ fn screenshot_key(gid: &[u8]) -> String {
 
 /// What a stored text keeps besides its text: formatting, a preview and
 /// the silent flag.
-fn text_data(formatted: bool, preview: Option<&crate::payload::LinkPreview>, silent: bool) -> Option<Vec<u8>> {
+pub(crate) fn text_data(formatted: bool, preview: Option<&crate::payload::LinkPreview>, silent: bool) -> Option<Vec<u8>> {
     if !formatted && preview.is_none() && !silent {
         return None;
     }
@@ -199,7 +199,7 @@ impl Session {
         let id = new_id();
         let mentions = o.mentions.iter().map(|m| m.to_hex()).collect();
         let data = text_data(fmt, preview.as_ref(), o.silent);
-        let p = Payload::Text { id: id.clone(), text: text.to_string(), fmt, mentions, all: o.all, preview, silent: o.silent };
+        let p = Payload::Text { id: id.clone(), text: text.to_string(), fmt, mentions, all: o.all, preview, silent: o.silent, fwd: false };
         // Stored in the history with the outbox item, before it goes out.
         self.queue_payload(gid, &p, Some(&id), |s| s.store(gid, &id, &me, "text", Some(text.to_string()), data, None).map(|_| ()))?;
         self.set_draft(gid, "")?;
@@ -320,6 +320,7 @@ impl Session {
             pt_sha256: hex::encode(fk.plaintext_sha256),
             name: name.to_string(),
             mime: mime.to_string(),
+            fwd: false,
         };
         // The sender keeps no reference to a view-once file.
         let data = (!view_once).then(|| serde_json::to_vec(&info).expect("JSON"));
@@ -402,7 +403,7 @@ impl Session {
         let request = matches!(self.group_status(gid)?, GroupStatus::Request { .. });
         let name = self.names(gid)?.get(&from.to_hex()).cloned();
         match p {
-            Payload::Text { id, text, fmt, mentions, all, preview, silent } => {
+            Payload::Text { id, text, fmt, mentions, all, preview, silent, fwd } => {
                 // A preview is shown only while this user wants previews.
                 let preview = match preview {
                     Some(p) if p.is_valid() && self.is_applied("user.link_preview")? => Some(p),
@@ -414,7 +415,8 @@ impl Session {
                 let me = self.member_id().to_hex();
                 let all = all && self.may_mention_all(gid, &from)?;
                 let mentions_me = all || mentions.iter().take(MAX_MENTIONS).any(|m| *m == me);
-                if !self.store(gid, &id, &from, "text", Some(text.clone()), text_data(formatted, preview.as_ref(), silent), franking)? {
+                let data = crate::forward::with_fwd(text_data(formatted, preview.as_ref(), silent), fwd);
+                if !self.store(gid, &id, &from, "text", Some(text.clone()), data, franking)? {
                     refuse(events, "duplicate message id");
                     return Ok(());
                 }

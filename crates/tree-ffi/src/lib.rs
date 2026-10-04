@@ -11,6 +11,8 @@ use tree_client::{CommitOutcome, Event, FileInfo, GroupStatus, LinkStatus, Membe
 
 uniffi::setup_scaffolding!();
 
+mod rich;
+
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum TreeError {
     /// The server refused (`code` as in SERVER_API.md, e.g. `SUSPENDED`).
@@ -109,6 +111,7 @@ impl From<Attachment> for FileInfo {
             pt_sha256: f.pt_sha256,
             name: f.name,
             mime: f.mime,
+            fwd: false,
         }
     }
 }
@@ -156,6 +159,12 @@ pub enum TreeEvent {
     Sent { group: String, id: Option<String> },
     /// An outbox item was given up; offer `retry_send` / `cancel_send`.
     SendFailed { group: String, id: Option<String>, local_id: String, reason: String },
+    /// A message was pinned or unpinned for the chat; read `pins` again.
+    Pinned { group: String, id: String, from: String, pinned: bool },
+    /// A poll arrived (`poll` shows it with its tally).
+    Poll { group: String, id: String, from: String, name: Option<String>, question: String, request: bool },
+    /// Votes or the state of a poll changed.
+    PollUpdated { group: String, id: String },
 }
 
 fn ids(v: Vec<MemberId>) -> Vec<String> {
@@ -209,6 +218,11 @@ impl From<Event> for TreeEvent {
             Event::GroupSafetyNotice { group, adder } => TreeEvent::GroupSafetyNotice { group: h(group), adder },
             Event::Sent { group, id } => TreeEvent::Sent { group: h(group), id },
             Event::SendFailed { group, id, local_id, reason } => TreeEvent::SendFailed { group: h(group), id, local_id, reason },
+            Event::Pinned { group, id, from, pinned } => TreeEvent::Pinned { group: h(group), id, from: from.to_hex(), pinned },
+            Event::Poll { group, id, from, name, question, request } => {
+                TreeEvent::Poll { group: h(group), id, from: from.to_hex(), name, question, request }
+            }
+            Event::PollUpdated { group, id } => TreeEvent::PollUpdated { group: h(group), id },
         }
     }
 }
@@ -236,6 +250,8 @@ pub struct Message {
     pub silent: bool,
     /// For `left` / `removed`: the member's name when it went.
     pub who: Option<String>,
+    /// Forwarded from another chat (shown as "forwarded", no original sender).
+    pub forwarded: bool,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -248,6 +264,7 @@ impl From<tree_client::StoredMessage> for Message {
     fn from(m: tree_client::StoredMessage) -> Self {
         let meta = tree_client::organize::message_meta(&m);
         Message {
+            forwarded: tree_client::forward::is_forwarded(&m),
             silent: meta.silent,
             who: meta.name,
             id: m.id,

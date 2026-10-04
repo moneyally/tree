@@ -35,10 +35,14 @@ jobs:
             echo "No changed Rust files."
             exit 0
           fi
+          failed=0
           while IFS= read -r file; do
             [[ -z "$file" ]] && continue
-            rustfmt --check --edition 2021 "$file"
+            if ! rustfmt --check --edition 2021 "$file"; then
+              failed=1
+            fi
           done <<< "$files"
+          exit "$failed"
 
   test:
     name: cargo test

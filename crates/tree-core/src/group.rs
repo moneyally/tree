@@ -1092,7 +1092,11 @@ impl Group {
                 self.state.pending = None;
                 self.entered_new_epoch(past);
                 let current_epoch = self.epoch();
-                self.state.future.retain(|p| p.epoch > current_epoch);
+                // Keep envelopes from the epoch we just entered. They were
+                // held before this commit arrived and must be replayed now;
+                // only envelopes still ahead of the new epoch can remain
+                // deferred.
+                self.state.future.retain(|p| p.epoch >= current_epoch);
                 self.reconcile_admins();
                 self.mark_processed(epoch, hash);
                 self.save(me)?;

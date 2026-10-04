@@ -463,7 +463,7 @@ fn structured_message_replay_is_a_noop() {
         b.receive(&bob, &ciphertext).unwrap(),
         Incoming::StructuredMessages { .. }
     ));
-    assert_eq!(b.receive(&bob, &ciphertext).unwrap(), Incoming::OwnEcho);
+    assert_eq!(b.receive(&bob, &ciphertext).unwrap(), Incoming::NoOp);
 }
 
 /// Only the deterministic group administrator can add/remove members.

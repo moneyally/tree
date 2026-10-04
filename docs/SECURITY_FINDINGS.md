@@ -555,3 +555,18 @@ Issues found by testing Tree's own design. Each one has a regression test.
   becomes the pack's reference and is never replaced by a message.
 - **Test:** `a_wrong_pack_reference_does_not_break_the_pack`,
   `the_media_cache_is_bound_to_the_content` (both fail before).
+
+## F-030: poll votes were counted per device (fixed)
+
+- **Found:** 2026-10-04, security review of wave 2.
+- **What:** votes were keyed by MLS member id, so a person with k linked
+  devices cast k votes, and linking a device is cheap.
+- **Severity:** low.
+- **Fix:** a vote counts for the account when the counting device ties the
+  member to one it trusts (`own/members`, or a device pinned for a
+  contact; never a roster label alone); the newest vote of an account
+  replaces its other devices' votes, and the tally counts each account
+  once. Devices that cannot be tied to an account still count on their
+  own, so counts can differ between devices (documented).
+- **Test:** `a_person_with_two_devices_votes_once` (alice's device counted
+  3 voters before).

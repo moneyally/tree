@@ -223,6 +223,37 @@ fn refusing_on_either_device_links_nothing() {
     assert!(matches!(alice.link_status(), Err(Error::Usage(_))));
 }
 
+/// F-030: a person with two linked devices votes once. alice's phone and
+/// desktop both vote; alice's devices count one vote (own/members), and so
+/// does bob once the server named the desktop as alice's (a key-package
+/// claim); while it is only roster-claimed bob counts it on its own.
+#[test]
+fn a_person_with_two_devices_votes_once() {
+    let env = Env::new("link-votes");
+    let (mut alice, mut bob, g) = setup(&env);
+    let (mut desk, _) = link(&mut alice, start(&env, "alice-desktop"));
+    desk.sync(0).unwrap();
+    bob.sync(0).unwrap();
+    alice.sync(0).unwrap();
+    let opts: Vec<String> = ["park", "cafe"].iter().map(|s| s.to_string()).collect();
+    let p = alice.create_poll(&g, "Where?", &opts, &tree_client::polls::PollOptions::default()).unwrap();
+    desk.sync(0).unwrap();
+    bob.sync(0).unwrap();
+    alice.vote(&g, &p, &[0]).unwrap();
+    desk.vote(&g, &p, &[1]).unwrap();
+    bob.vote(&g, &p, &[1]).unwrap();
+    for s in [&mut alice, &mut desk, &mut bob] {
+        s.sync(0).unwrap();
+    }
+    let v = alice.poll(&g, &p).unwrap().unwrap();
+    assert_eq!((v.voters, v.counts.iter().sum::<u32>()), (2, 2), "alice once, bob once: {v:?}");
+    assert_eq!(desk.poll(&g, &p).unwrap().unwrap().voters, 2);
+    // bob: the desktop is only roster-claimed for alice until the server names it.
+    assert_eq!(bob.poll(&g, &p).unwrap().unwrap().voters, 3);
+    bob.confirm_contact(alice.account_id()).unwrap();
+    assert_eq!(bob.poll(&g, &p).unwrap().unwrap().voters, 2);
+}
+
 #[test]
 fn expired_and_reused_links_are_refused() {
     let env = Env::new("link-expiry");

@@ -4,8 +4,14 @@
 //! text so it can be reported). Votes are MLS application messages; every
 //! device counts them itself from what it received:
 //!
-//! * one vote state per member: the latest `vote` of a member replaces its
-//!   earlier one, an empty one takes it back;
+//! * one vote state per person: the latest `vote` of a member replaces its
+//!   earlier one, an empty one takes it back, and the devices of one
+//!   account count once (F-030): a vote from a device this device knows
+//!   as the same account (its own linked devices, or devices pinned for a
+//!   contact) replaces that account's earlier vote from another device.
+//!   Devices this device cannot tie to an account (strangers, devices only
+//!   a roster claimed) count each on their own, so counts can differ
+//!   between devices that know different accounts;
 //! * a vote must fit the poll (option indexes in range, no repeats, at most
 //!   one unless the poll allows several) and arrive before the poll closed
 //!   on this device; anything else is dropped;
@@ -204,8 +210,27 @@ impl Session {
         Ok(())
     }
 
+    /// Who a vote counts for: the account, if this device ties the member
+    /// to one it trusts (`own/members`, or pinned for a contact; never a
+    /// roster label alone), otherwise the member (device) itself.
+    fn voter_key(&self, gid: &[u8], member: &str) -> Result<String, Error> {
+        let Some(m) = MemberId::from_hex(member) else { return Ok(format!("device:{member}")) };
+        Ok(match self.vouched_account(gid, &m)? {
+            Some(a) => format!("account:{a}"),
+            None => format!("device:{member}"),
+        })
+    }
+
     fn record_vote(&self, gid: &[u8], poll: &str, member: &str, choices: Vec<u32>) -> Result<(), Error> {
         let mut v = self.votes(gid, poll)?;
+        // The newest vote of an account replaces its other devices' votes.
+        let key = self.voter_key(gid, member)?;
+        let others: Vec<String> = v.votes.keys().filter(|m| *m != member).cloned().collect();
+        for m in others {
+            if self.voter_key(gid, &m)? == key {
+                v.votes.remove(&m);
+            }
+        }
         if choices.is_empty() {
             v.votes.remove(member);
         } else {
@@ -232,9 +257,16 @@ impl Session {
         let mut counts = vec![0u32; n];
         let mut by: Vec<Vec<MemberId>> = vec![vec![]; n];
         let mut voters = 0;
-        for (m, c) in &v.votes {
+        let mut counted = std::collections::HashSet::new();
+        // This device's own vote first, then one vote per account (F-030).
+        let mut order: Vec<(&String, &Vec<u32>)> = v.votes.iter().collect();
+        order.sort_by_key(|(m, _)| **m != me);
+        for (m, c) in order {
             // A member who left no longer counts (as on every device).
             if !current.contains(m) && *m != me {
+                continue;
+            }
+            if !counted.insert(self.voter_key(gid, m)?) {
                 continue;
             }
             voters += 1;

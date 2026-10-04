@@ -192,6 +192,90 @@ impl MediaEditPlan {
         self.redo.clear();
         self.caption.clear();
     }
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, TreeError> {
+        self.validate()?;
+        let mut out = Vec::with_capacity(1024);
+        out.extend_from_slice(b"TREEEDITPLAN\x01");
+        out.extend_from_slice(&self.source_width.to_be_bytes());
+        out.extend_from_slice(&self.source_height.to_be_bytes());
+        put_string_u16(&mut out, &self.caption)?;
+        out.extend_from_slice(&(self.operations.len() as u16).to_be_bytes());
+
+        for op in &self.operations {
+            match op {
+                EditOperation::Crop(r) => {
+                    out.push(1);
+                    out.extend_from_slice(&r.x.to_be_bytes());
+                    out.extend_from_slice(&r.y.to_be_bytes());
+                    out.extend_from_slice(&r.width.to_be_bytes());
+                    out.extend_from_slice(&r.height.to_be_bytes());
+                }
+                EditOperation::Rotate(rotation) => {
+                    out.push(2);
+                    out.push(match rotation {
+                        Rotation::Deg0 => 0,
+                        Rotation::Deg90 => 1,
+                        Rotation::Deg180 => 2,
+                        Rotation::Deg270 => 3,
+                    });
+                }
+                EditOperation::RotateBy(deg) => {
+                    out.push(3);
+                    out.extend_from_slice(&deg.to_be_bytes());
+                }
+                EditOperation::FlipHorizontal => out.push(4),
+                EditOperation::FlipVertical => out.push(5),
+                EditOperation::Adjust(a) => {
+                    out.push(6);
+                    out.extend_from_slice(&a.brightness.to_be_bytes());
+                    out.extend_from_slice(&a.contrast.to_be_bytes());
+                    out.extend_from_slice(&a.saturation.to_be_bytes());
+                    out.push(a.sharpness);
+                    out.extend_from_slice(&a.warmth.to_be_bytes());
+                    out.push(a.blur);
+                }
+                EditOperation::Draw(stroke) => {
+                    out.push(7);
+                    out.extend_from_slice(&stroke.brush.width.to_be_bytes());
+                    out.push(stroke.brush.opacity);
+                    out.push(stroke.brush.sensitivity);
+                    out.push(stroke.brush.smoothing);
+                    out.extend_from_slice(&stroke.brush.rotation_deg.to_be_bytes());
+                    out.extend_from_slice(&(stroke.points.len() as u16).to_be_bytes());
+                    for point in &stroke.points {
+                        out.extend_from_slice(&point.x_milli.to_be_bytes());
+                        out.extend_from_slice(&point.y_milli.to_be_bytes());
+                        out.push(point.pressure);
+                    }
+                }
+                EditOperation::AddText(text) => {
+                    out.push(8);
+                    put_string_u16(&mut out, &text.text)?;
+                    out.extend_from_slice(&text.x_milli.to_be_bytes());
+                    out.extend_from_slice(&text.y_milli.to_be_bytes());
+                    out.extend_from_slice(&text.style.size.to_be_bytes());
+                    out.push(text.style.opacity);
+                    out.extend_from_slice(&text.style.rotation_deg.to_be_bytes());
+                    out.push(u8::from(text.style.bold));
+                    out.push(u8::from(text.style.italic));
+                }
+                EditOperation::AddSticker(sticker) => {
+                    out.push(9);
+                    out.extend_from_slice(&sticker.sticker_id);
+                    out.extend_from_slice(&sticker.transform.x_milli.to_be_bytes());
+                    out.extend_from_slice(&sticker.transform.y_milli.to_be_bytes());
+                    out.extend_from_slice(&sticker.transform.scale_milli.to_be_bytes());
+                    out.extend_from_slice(&sticker.transform.rotation_deg.to_be_bytes());
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn edit_script_hash(&self) -> Result<[u8; 32], TreeError> {
+        Ok(Sha256::digest(self.canonical_bytes()?).into())
+    }
+
 }
 
 fn validate_edit_operation(op: &EditOperation) -> Result<(), TreeError> {
@@ -1397,6 +1481,12 @@ mod tests {
         .unwrap();
         assert!(matches!(plan.undo(), Some(EditOperation::AddText(_))));
         assert_eq!(plan.caption, "설명");
+        let hash_before = plan.edit_script_hash().unwrap();
+        plan.undo();
+        plan.redo();
+        assert_eq!(plan.edit_script_hash().unwrap(), hash_before);
+        plan.set_caption("변경").unwrap();
+        assert_ne!(plan.edit_script_hash().unwrap(), hash_before);
     }
 
     #[test]

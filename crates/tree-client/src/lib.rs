@@ -6,7 +6,11 @@
 
 mod api;
 
-use std::{collections::BTreeMap, path::Path, time::{SystemTime, UNIX_EPOCH}};
+use std::{
+    collections::BTreeMap,
+    path::Path,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};

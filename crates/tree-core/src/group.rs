@@ -857,7 +857,18 @@ impl Group {
 
         // Read only enough of the MLS message to learn its epoch. No MLS
         // state is touched until the Tree envelope seal is verified.
-        let announced = peek_epoch(bytes, self.mls.group_id().as_slice())?;
+        //
+        // At the exact version+tag boundary there is no MLS body to inspect,
+        // so verify the seal first. Otherwise a malformed empty body would
+        // leak a deserialization error instead of the envelope-auth failure.
+        let announced = if bytes.len() == 1 + Self::TAG_LEN {
+            let (epoch, _) = self.open_envelope(me, bytes)?;
+            return Err(TreeError::Malformed(format!(
+                "bad envelope MLS body at epoch {epoch}"
+            )));
+        } else {
+            peek_epoch(bytes, self.mls.group_id().as_slice())?
+        };
         self.atomic(me, |this| {
             this.state.prune_future(now);
             if announced > this.epoch() {

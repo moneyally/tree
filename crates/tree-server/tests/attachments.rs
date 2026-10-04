@@ -287,6 +287,46 @@ async fn purge_unfinished_after_a_day() {
     ts.stop().await;
 }
 
+/// F-031: many copies of the parts of one upload at once, retries of
+/// earlier parts racing later ones: the finished file is exactly the blob
+/// (a late retry of part i never truncates part i + 1).
+#[tokio::test]
+async fn racing_part_retries_keep_the_file_whole() {
+    let ts = boot(|c| {
+        c.upload_chunk_bytes = CS;
+        c.rate_burst = 100_000.0;
+    })
+    .await;
+    let api = &ts.api;
+    let (a, b) = (api.signup().await, api.signup().await);
+    for round in 0..5u8 {
+        let blob: Vec<u8> = (0..blob_len(16384)).map(|i| (i as u8) ^ round).collect();
+        let (_, v) = create(api, &a, blob.len() as u64).await;
+        let id = v["id"].as_str().unwrap().to_string();
+        let parts: Vec<Vec<u8>> = blob.chunks(CS).map(<[u8]>::to_vec).collect();
+        // Each part sent many times at once, every part in flight together;
+        // keep going until the upload is complete.
+        for _ in 0..20 {
+            let mut tasks = Vec::new();
+            for (i, p) in parts.iter().enumerate() {
+                for _ in 0..4 {
+                    let (api, a, id, p) = (api.clone(), a.clone(), id.clone(), p.clone());
+                    tasks.push(tokio::spawn(async move { put(&api, &a, &id, i as u64, &p).await }));
+                }
+            }
+            let mut done = false;
+            for t in tasks {
+                done |= t.await.unwrap().1["complete"] == true;
+            }
+            if done {
+                break;
+            }
+        }
+        assert_eq!(download_all(api, &b, &id).await, blob, "round {round}");
+    }
+    ts.stop().await;
+}
+
 /// Each part costs one extra rate token per whole MiB, as uploads did.
 #[tokio::test]
 async fn upload_cost_per_mib() {

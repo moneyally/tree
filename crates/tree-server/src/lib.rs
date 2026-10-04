@@ -90,6 +90,8 @@ pub struct Inner {
     pub relay: relay::Relay,
     /// Keys of the idempotency request tags, in memory only (PROTOCOL.md 8.10).
     pub request_tags: messages::RequestTagKeys,
+    /// One writer per upload at a time (see [`attachments::UploadLocks`]).
+    pub upload_locks: attachments::UploadLocks,
 }
 
 impl Deref for AppState {
@@ -114,6 +116,7 @@ impl AppState {
             push,
             relay: relay::Relay::new(cfg.relay_allow_http),
             request_tags: messages::RequestTagKeys::default(),
+            upload_locks: attachments::UploadLocks::default(),
             db,
             cfg,
         }))

@@ -504,3 +504,19 @@ Issues found by testing Tree's own design. Each one has a regression test.
 - **Fix:** at most 1,000 ids per device (its own oldest go first), and
   beyond 50,000 in all the oldest go one by one.
 - **Test:** `relay::tests::one_device_cannot_flush_everyone_elses_media_ids`.
+
+## F-031: a slow part retry could cut off a later part (fixed)
+
+- **Found:** 2026-10-04, security review of wave 2.
+- **What:** writing upload part `i` first cut the file to `i` parts. A slow
+  retry of part `i` that read the upload state before part `i + 1` was
+  written cut part `i + 1` away after it was counted, and the finished
+  blob was corrupt (only the uploader's own upload; clients check
+  integrity, so the effect was a lost upload).
+- **Severity:** low.
+- **Fix:** parts of one upload are handled one at a time (a lock per
+  upload id), and writing a part no longer cuts the file; the length is set
+  once, when the upload finishes.
+- **Test:** `attachments::tests::a_late_retry_of_an_earlier_part_cuts_nothing`
+  (fails before), `racing_part_retries_keep_the_file_whole` (a stress test;
+  it did not catch the race before the fix, the unit test does).

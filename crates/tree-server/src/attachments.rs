@@ -113,6 +113,39 @@ async fn outstanding(tx: &mut sqlx::SqliteConnection, cs: usize) -> Result<u64, 
     Ok(n.max(0) as u64)
 }
 
+/// One lock per upload id while a part is written (F-031): a slow retry of
+/// part `i` must not truncate the file after part `i + 1` was written.
+#[derive(Default)]
+pub struct UploadLocks(std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>);
+
+impl UploadLocks {
+    async fn lock(&self, id: &str) -> UploadGuard<'_> {
+        let m = {
+            let mut map = self.0.lock().unwrap_or_else(|e| e.into_inner());
+            map.entry(id.to_string()).or_default().clone()
+        };
+        let guard = m.clone().lock_owned().await;
+        UploadGuard { locks: self, id: id.to_string(), _guard: guard, _m: m }
+    }
+}
+
+struct UploadGuard<'a> {
+    locks: &'a UploadLocks,
+    id: String,
+    _guard: tokio::sync::OwnedMutexGuard<()>,
+    _m: std::sync::Arc<tokio::sync::Mutex<()>>,
+}
+
+impl Drop for UploadGuard<'_> {
+    fn drop(&mut self) {
+        let mut map = self.locks.0.lock().unwrap_or_else(|e| e.into_inner());
+        // Ours, the guard's and the map's: nobody else waits for it.
+        if map.get(&self.id).is_some_and(|m| std::sync::Arc::strong_count(m) <= 3) {
+            map.remove(&self.id);
+        }
+    }
+}
+
 /// One part (raw ciphertext bytes).
 pub struct RawPart(pub Vec<u8>);
 
@@ -291,6 +324,9 @@ pub async fn put_part(
     // One extra token per whole MiB, as for every upload.
     state.rate_device(&req.device.device_id, (bytes.len() / MIB) as f64)?;
     let cs = state.cfg.upload_chunk_bytes;
+    // Parts of one upload are handled one at a time, from reading where the
+    // upload stands to counting the part (F-031).
+    let _lock = state.upload_locks.lock(&id).await;
     let u = match load(&state, &id).await? {
         Some(u) if u.device_id == req.device.device_id => u,
         Some(_) => return Err(ApiError::not_found("no such upload")),
@@ -341,12 +377,13 @@ pub async fn put_part(
     Ok(Json(status_json(&state, &id, u.size, received, complete)))
 }
 
-/// Writes one part at its offset, dropping anything after it (a part cut
-/// off by a crash).
+/// Writes one part at its offset. Nothing after it is cut off (F-031): a
+/// late retry of an earlier part rewrites only its own bytes, never the
+/// parts already written after it. A part cut off by a crash is rewritten
+/// whole by its retry; [`finish`] fixes the length.
 async fn write_part(cfg: &Config, id: &str, offset: u64, bytes: &[u8]) -> ApiResult<()> {
     tokio::fs::create_dir_all(&cfg.attachment_dir).await.map_err(io)?;
     let mut f = tokio::fs::OpenOptions::new().create(true).write(true).truncate(false).open(part_path(cfg, id)).await.map_err(io)?;
-    f.set_len(offset).await.map_err(io)?;
     f.seek(SeekFrom::Start(offset)).await.map_err(io)?;
     f.write_all(bytes).await.map_err(io)?;
     f.sync_data().await.map_err(io)?;
@@ -358,6 +395,10 @@ async fn write_part(cfg: &Config, id: &str, offset: u64, bytes: &[u8]) -> ApiRes
 async fn finish(state: &AppState, id: &str, size: u64) -> ApiResult<()> {
     let part = part_path(&state.cfg, id);
     if tokio::fs::try_exists(&part).await.map_err(io)? {
+        let f = tokio::fs::OpenOptions::new().write(true).open(&part).await.map_err(io)?;
+        f.set_len(size).await.map_err(io)?;
+        f.sync_data().await.map_err(io)?;
+        drop(f);
         tokio::fs::rename(&part, path_of(&state.cfg, id)).await.map_err(io)?;
     }
     let mut tx = state.db.begin().await?;
@@ -478,6 +519,21 @@ fn io(e: std::io::Error) -> ApiError {
 mod tests {
     use super::*;
     use tree_core::attachment as fmt;
+
+    /// F-031: a late retry of part 0, written after part 1, leaves part 1
+    /// in place (before, it cut the file back to part 0's end).
+    #[tokio::test]
+    async fn a_late_retry_of_an_earlier_part_cuts_nothing() {
+        let dir = std::env::temp_dir().join(format!("tree-putpart-{}", std::process::id()));
+        let cfg = Config { attachment_dir: dir.clone(), ..Config::default() };
+        let (p0, p1) = (vec![1u8; 4096], vec![2u8; 100]);
+        write_part(&cfg, "u", 0, &p0).await.unwrap();
+        write_part(&cfg, "u", 4096, &p1).await.unwrap();
+        write_part(&cfg, "u", 0, &p0).await.unwrap(); // the stale retry
+        let got = std::fs::read(part_path(&cfg, "u")).unwrap();
+        assert_eq!(got, [p0, p1].concat());
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     /// The server's copy of the format's sizes matches the client's.
     #[test]

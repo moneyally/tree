@@ -450,10 +450,9 @@ pub async fn ack_ids(
 
     let ids_json = serde_json::to_string(ids).map_err(|_| ApiError::internal())?;
     let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
-    let current_cursor: i64 = sqlx::query(
-        "SELECT cursor FROM message_cursors WHERE device_id = ?",
-    )
-    .bind(device_id)
+    let current_cursor: i64 =
+        sqlx::query("SELECT cursor FROM message_cursors WHERE device_id = ?")
+            .bind(device_id)
     .fetch_optional(&mut *tx)
     .await?
     .map(|r| r.try_get("cursor"))

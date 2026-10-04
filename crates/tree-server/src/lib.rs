@@ -347,6 +347,11 @@ pub async fn purge_expired(state: &AppState, now: i64) -> Result<u64, sqlx::Erro
     .execute(&state.db)
     .await?
     .rows_affected();
+    let expired_media = sqlx::query("DELETE FROM media_objects WHERE expires_at <= ?")
+        .bind(now)
+        .execute(&state.db)
+        .await?
+        .rows_affected();
     let expired_files = sqlx::query("DELETE FROM files WHERE expires_at <= ?")
         .bind(now)
         .execute(&state.db)
@@ -374,6 +379,7 @@ pub async fn purge_expired(state: &AppState, now: i64) -> Result<u64, sqlx::Erro
         + orphaned_deliveries
         + orphans
         + expired_files
+        + expired_media
         + expired_device_links)
 }
 

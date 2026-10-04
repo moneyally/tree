@@ -455,6 +455,8 @@ impl Session {
         let seed: [u8; 32] = seed.as_slice().try_into().map_err(|_| Error::Protocol("bad auth key".into()))?;
         let creds = Creds { account_id: text(K_ACCOUNT)?, device_id: text(K_DEVICE)?, key: SigningKey::from_bytes(&seed) };
         let mut s = Self::from_parts(client, api, creds, path);
+        // Plaintext temporary files a crash left behind (F-034).
+        media::clean_partials(&s.media.dir);
         s.load_transfers()?;
         let mut outcomes = Vec::new();
         for gid in s.client.group_ids()? {

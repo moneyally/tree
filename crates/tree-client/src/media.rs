@@ -167,6 +167,38 @@ fn new_hex_id() -> String {
     hex::encode(b)
 }
 
+/// Plaintext temporary files (`<dest>.tree-part`) being written are noted
+/// in `<media dir>/partial/` so that one left by a crash or a kill is
+/// deleted when the profile is opened next ([`clean_partials`], F-034).
+fn partial_marker(dir: &Path, tmp: &Path) -> PathBuf {
+    use sha2::{Digest, Sha256};
+    dir.join("partial").join(hex::encode(&Sha256::digest(tmp.as_os_str().as_encoded_bytes())[..16]))
+}
+
+fn track_partial(dir: &Path, tmp: &Path) -> Result<PathBuf, Error> {
+    let marker = partial_marker(dir, tmp);
+    fs::create_dir_all(marker.parent().expect("has a parent")).map_err(io)?;
+    fs::write(&marker, tmp.to_string_lossy().as_bytes()).map_err(io)?;
+    Ok(marker)
+}
+
+/// Deletes plaintext temporary files a crash left behind (only files whose
+/// name ends in `.tree-part`, as noted by [`Downloader::fetch_to`]) and
+/// their notes. Returns how many files were deleted.
+pub(crate) fn clean_partials(dir: &Path) -> usize {
+    let mut n = 0;
+    let Ok(entries) = fs::read_dir(dir.join("partial")) else { return 0 };
+    for e in entries.flatten() {
+        if let Ok(p) = fs::read_to_string(e.path()) {
+            if p.ends_with(".tree-part") && fs::remove_file(&p).is_ok() {
+                n += 1;
+            }
+        }
+        let _ = fs::remove_file(e.path());
+    }
+    n
+}
+
 /// The decryption key of a reference.
 fn file_key(f: &FileInfo) -> Result<FileKey, Error> {
     let bad = || Error::Protocol("malformed file reference".into());
@@ -256,12 +288,19 @@ impl Downloader {
         let mut tmp = dest.as_os_str().to_owned();
         tmp.push(".tree-part");
         let tmp = PathBuf::from(tmp);
+        let marker = track_partial(&self.dir, &tmp)?;
         let r = File::create(&tmp).map_err(io).and_then(|w| self.open_blob(f, &part, BufWriter::new(w)));
         if let Err(e) = r {
             let _ = fs::remove_file(&tmp);
+            let _ = fs::remove_file(&marker);
             return Err(e);
         }
-        fs::rename(&tmp, dest).map_err(io)?;
+        let moved = fs::rename(&tmp, dest).map_err(io);
+        if moved.is_err() {
+            let _ = fs::remove_file(&tmp);
+        }
+        let _ = fs::remove_file(&marker);
+        moved?;
         let _ = fs::remove_file(&part);
         Ok(())
     }
@@ -731,6 +770,26 @@ impl MediaState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// F-034: a plaintext temporary file left by a crash is deleted at the
+    /// next start; nothing else is, even if a note names it.
+    #[test]
+    fn partial_files_left_by_a_crash_are_deleted() {
+        let dir = std::env::temp_dir().join(format!("tree-partial-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let tmp = dir.join("photo.jpg.tree-part");
+        fs::write(&tmp, b"plaintext").unwrap();
+        track_partial(&dir, &tmp).unwrap();
+        let other = dir.join("keep.jpg");
+        fs::write(&other, b"user file").unwrap();
+        fs::write(partial_marker(&dir, &other), other.to_string_lossy().as_bytes()).unwrap();
+        assert_eq!(clean_partials(&dir), 1);
+        assert!(!tmp.exists());
+        assert!(other.exists(), "only .tree-part files");
+        assert_eq!(fs::read_dir(dir.join("partial")).unwrap().count(), 0, "notes gone");
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn ids_that_reach_file_names() {

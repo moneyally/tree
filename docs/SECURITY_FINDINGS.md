@@ -582,3 +582,18 @@ Issues found by testing Tree's own design. Each one has a regression test.
   applies it, releasing it releases the name on the server and the device
   (and its link), applying it without a name is refused.
 - **Test:** `username_switch_releases_the_name`.
+
+## F-034: plaintext files outside the database were not documented or cleaned (fixed)
+
+- **Found:** 2026-10-04, security review of wave 2.
+- **What:** decrypted files in the media cache, `<dest>.tree-part`
+  temporary files and chat exports are plaintext outside SQLCipher, and
+  THREAT_MODEL.md did not say so. A `.tree-part` file stayed behind if the
+  process died while writing it.
+- **Severity:** low (documentation, local privacy).
+- **Fix:** THREAT_MODEL.md lists every plaintext location and how it goes
+  away (storage clean-up for the cache; exports are the user's files).
+  Temporary files are noted in `<profile>.media/partial/` while written,
+  deleted on error or cancel, and any left by a crash are deleted when the
+  profile is opened; only `.tree-part` files are ever deleted that way.
+- **Test:** `media::tests::partial_files_left_by_a_crash_are_deleted`.

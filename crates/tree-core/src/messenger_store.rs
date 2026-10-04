@@ -97,7 +97,7 @@ impl StoredProvider {
         let now = crate::message::DEFAULT_EDIT_WINDOW_SECS as i64;
         let expires_at = (ttl_secs != 0).then_some(created_at.saturating_add(ttl_secs as i64));
         let _ = now;
-        self.storage.conn.execute(
+        self.connection().execute(
             "INSERT OR IGNORE INTO tree_messages
              (group_id,message_id,sender_member_id,sequence,created_at,edited_at,expires_at,view_once,deleted,body)
              VALUES (?1,?2,?3,?4,?5,NULL,?6,?7,?8,?9)",
@@ -113,7 +113,7 @@ impl StoredProvider {
         edited_at: i64,
         body: &[u8],
     ) -> Result<(), TreeError> {
-        self.storage.conn.execute(
+        self.connection().execute(
             "UPDATE tree_messages SET body=?3, edited_at=?4, deleted=0
              WHERE group_id=?1 AND message_id=?2",
             params![group_id, id.as_bytes().as_slice(), body, edited_at],
@@ -126,7 +126,7 @@ impl StoredProvider {
         group_id: &[u8],
         id: &MessageId,
     ) -> Result<(), TreeError> {
-        self.storage.conn.execute(
+        self.connection().execute(
             "UPDATE tree_messages SET deleted=1 WHERE group_id=?1 AND message_id=?2",
             params![group_id, id.as_bytes().as_slice()],
         ).map_err(local_err)?;
@@ -138,7 +138,7 @@ impl StoredProvider {
         group_id: &[u8],
         id: &MessageId,
     ) -> Result<Option<StoredMessage>, TreeError> {
-        let row = self.storage.conn.query_row(
+        let row = self.connection().query_row(
             "SELECT group_id,message_id,sender_member_id,sequence,created_at,edited_at,expires_at,view_once,deleted,body
              FROM tree_messages WHERE group_id=?1 AND message_id=?2",
             params![group_id, id.as_bytes().as_slice()],
@@ -172,7 +172,7 @@ impl StoredProvider {
         limit: u32,
     ) -> Result<Vec<StoredMessage>, TreeError> {
         let rows = {
-            let mut stmt = self.storage.conn.prepare(
+            let mut stmt = self.connection().prepare(
                 "SELECT group_id,message_id,sender_member_id,sequence,created_at,edited_at,expires_at,view_once,deleted,body
                  FROM tree_messages WHERE group_id=?1 ORDER BY sequence,created_at LIMIT ?2",
             ).map_err(local_err)?;
@@ -218,7 +218,7 @@ impl StoredProvider {
         envelope: &[u8],
         now: i64,
     ) -> Result<(), TreeError> {
-        self.storage.conn.execute(
+        self.connection().execute(
             "INSERT INTO tree_outbox
              (local_id,group_id,message_id,kind,envelope,state,attempts,next_retry_at,created_at,last_error_code,server_id)
              VALUES (?1,?2,?3,?4,?5,'queued',0,?6,?6,NULL,NULL)",
@@ -228,7 +228,7 @@ impl StoredProvider {
     }
 
     pub(crate) fn due_outbox(&self, now: i64, limit: u32) -> Result<Vec<OutboxItem>, TreeError> {
-        let mut stmt = self.storage.conn.prepare(
+        let mut stmt = self.connection().prepare(
             "SELECT local_id,group_id,message_id,kind,envelope,state,attempts,next_retry_at,created_at,last_error_code,server_id
              FROM tree_outbox WHERE state IN ('queued','retry') AND next_retry_at<=?1
              ORDER BY created_at LIMIT ?2",
@@ -261,31 +261,31 @@ impl StoredProvider {
     }
 
     pub(crate) fn mark_outbox_sending(&self, local_id: &[u8;16], now:i64)->Result<(),TreeError>{
-        self.storage.conn.execute("UPDATE tree_outbox SET state='sending', attempts=attempts+1, last_error_code=NULL WHERE local_id=?1 AND state IN ('queued','retry')",params![local_id.as_slice()]).map_err(local_err)?; Ok(())
+        self.connection().execute("UPDATE tree_outbox SET state='sending', attempts=attempts+1, last_error_code=NULL WHERE local_id=?1 AND state IN ('queued','retry')",params![local_id.as_slice()]).map_err(local_err)?; Ok(())
     }
 
     pub(crate) fn mark_outbox_sent(&self, local_id:&[u8;16], server_id:&str)->Result<(),TreeError>{
-        self.storage.conn.execute("UPDATE tree_outbox SET state='sent',server_id=?2 WHERE local_id=?1",params![local_id.as_slice(),server_id]).map_err(local_err)?; Ok(())
+        self.connection().execute("UPDATE tree_outbox SET state='sent',server_id=?2 WHERE local_id=?1",params![local_id.as_slice(),server_id]).map_err(local_err)?; Ok(())
     }
 
     pub(crate) fn mark_outbox_retry(&self, local_id:&[u8;16], code:&str, next_retry_at:i64)->Result<(),TreeError>{
-        self.storage.conn.execute("UPDATE tree_outbox SET state='retry',last_error_code=?2,next_retry_at=?3 WHERE local_id=?1",params![local_id.as_slice(),code,next_retry_at]).map_err(local_err)?; Ok(())
+        self.connection().execute("UPDATE tree_outbox SET state='retry',last_error_code=?2,next_retry_at=?3 WHERE local_id=?1",params![local_id.as_slice(),code,next_retry_at]).map_err(local_err)?; Ok(())
     }
 
     pub(crate) fn mark_outbox_failed(&self, local_id:&[u8;16], code:&str)->Result<(),TreeError>{
-        self.storage.conn.execute("UPDATE tree_outbox SET state='failed',last_error_code=?2 WHERE local_id=?1",params![local_id.as_slice(),code]).map_err(local_err)?; Ok(())
+        self.connection().execute("UPDATE tree_outbox SET state='failed',last_error_code=?2 WHERE local_id=?1",params![local_id.as_slice(),code]).map_err(local_err)?; Ok(())
     }
 
     pub(crate) fn outbox_count(&self)->Result<u64,TreeError>{
-        self.storage.conn.query_row("SELECT COUNT(*) FROM tree_outbox WHERE state NOT IN ('sent','cancelled','superseded')",[],|r|r.get::<_,i64>(0)).map(|n|n.max(0) as u64).map_err(local_err)
+        self.connection().query_row("SELECT COUNT(*) FROM tree_outbox WHERE state NOT IN ('sent','cancelled','superseded')",[],|r|r.get::<_,i64>(0)).map(|n|n.max(0) as u64).map_err(local_err)
     }
 
     pub(crate) fn message_count(&self,group_id:&[u8])->Result<u64,TreeError>{
-        self.storage.conn.query_row("SELECT COUNT(*) FROM tree_messages WHERE group_id=?1",params![group_id],|r|r.get::<_,i64>(0)).map(|n|n.max(0) as u64).map_err(local_err)
+        self.connection().query_row("SELECT COUNT(*) FROM tree_messages WHERE group_id=?1",params![group_id],|r|r.get::<_,i64>(0)).map(|n|n.max(0) as u64).map_err(local_err)
     }
 
     pub(crate) fn purge_local_expired(&self,now:i64)->Result<u64,TreeError>{
-        let n=self.storage.conn.execute("DELETE FROM tree_messages WHERE expires_at IS NOT NULL AND expires_at<=?1",params![now]).map_err(local_err)?;
+        let n=self.connection().execute("DELETE FROM tree_messages WHERE expires_at IS NOT NULL AND expires_at<=?1",params![now]).map_err(local_err)?;
         Ok(n as u64)
     }
 }

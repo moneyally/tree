@@ -610,6 +610,26 @@ impl Group {
         self.send_new_message(me, body, self.state.disappearing_seconds, false, None)
     }
 
+    /// Sends a structured message with a caller-supplied id. Media attachments
+    /// use this so the encrypted attachment manifest can commit to the exact
+    /// MLS message id before the blob upload begins.
+    pub fn send_message_with_id<P: TreeProvider>(
+        &mut self,
+        me: &Client<P>,
+        id: MessageId,
+        body: &[u8],
+        ttl_secs: u32,
+        view_once: bool,
+        preview: Option<Vec<u8>>,
+    ) -> Result<Vec<u8>, TreeError> {
+        if ttl_secs > 30 * 86_400 {
+            return Err(TreeError::Group(
+                "disappearing timer is limited to 30 days".into(),
+            ));
+        }
+        self.send_new_message_with_id(me, id, body, ttl_secs, view_once, preview)
+    }
+
     pub fn send_message_with_options<P: TreeProvider>(
         &mut self,
         me: &Client<P>,
@@ -635,6 +655,19 @@ impl Group {
         preview: Option<Vec<u8>>,
     ) -> Result<(MessageId, Vec<u8>), TreeError> {
         let id = MessageId::generate()?;
+        let envelope = self.send_new_message_with_id(me, id, body, ttl_secs, view_once, preview)?;
+        Ok((id, envelope))
+    }
+
+    fn send_new_message_with_id<P: TreeProvider>(
+        &mut self,
+        me: &Client<P>,
+        id: MessageId,
+        body: &[u8],
+        ttl_secs: u32,
+        view_once: bool,
+        preview: Option<Vec<u8>>,
+    ) -> Result<Vec<u8>, TreeError> {
         let seq = self.state.messages.next_outgoing_seq()?;
         let event = MessageEvent::New {
             id,
@@ -658,8 +691,7 @@ impl Group {
                 last_edit_seq: seq,
             });
             Ok(())
-        })?;
-        Ok((id, envelope))
+        })
     }
 
     pub fn edit_message<P: TreeProvider>(

@@ -182,7 +182,8 @@ async fn report_stores_only_opaque_evidence_hash_and_bytes() {
     assert_eq!(st, StatusCode::OK, "{setup_body}");
     let setup_messages = api.fetch(&bob, 0).await;
     assert_eq!(setup_messages.len(), 1);
-    api.ack(&bob, &[setup_messages[0]["id"].as_str().unwrap()]).await;
+    api.ack(&bob, &[setup_messages[0]["id"].as_str().unwrap()])
+        .await;
 
     let evidence = fake_application();
     let hash: [u8; 32] = Sha256::digest(&evidence).into();
@@ -203,9 +204,9 @@ async fn report_stores_only_opaque_evidence_hash_and_bytes() {
 
     let stored: Vec<u8> =
         sqlx::query_scalar("SELECT ciphertext FROM reports ORDER BY created_at DESC LIMIT 1")
-    .fetch_one(&ts.server.state.db)
-    .await
-    .unwrap();
+            .fetch_one(&ts.server.state.db)
+            .await
+            .unwrap();
     assert_eq!(stored, evidence);
     assert!(!stored
         .windows(b"opaque evidence plaintext".len())

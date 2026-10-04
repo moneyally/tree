@@ -6,9 +6,9 @@
 
 mod common;
 
-use common::*;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use common::*;
 use reqwest::{Method, StatusCode};
 use serde_json::json;
 use tree_core::{Client, Incoming};
@@ -51,12 +51,9 @@ async fn real_clients_chat_through_server_and_removed_device_is_locked_out() {
         "welcome": STANDARD.encode(pending.welcome.as_ref().unwrap()),
         "removed": []
     });
-    let (st, v) = api.call(
-        &alice_net,
-        Method::POST,
-        "/v1/commits",
-        Some(commit_body),
-    ).await;
+    let (st, v) = api
+        .call(&alice_net, Method::POST, "/v1/commits", Some(commit_body))
+        .await;
     assert_eq!(st, StatusCode::OK, "{v}");
     a.confirm_commit(&alice).unwrap();
     let mut b = bob.join(pending.welcome.as_ref().unwrap()).unwrap();
@@ -65,7 +62,9 @@ async fn real_clients_chat_through_server_and_removed_device_is_locked_out() {
     let plaintext = b"hello through the real Tree server";
     let ciphertext = a.send(&alice, plaintext).unwrap();
     assert_ne!(ciphertext, plaintext);
-    let (st, v) = api.send_raw(&alice_net, &[bob_net.device_id.as_str()], &ciphertext).await;
+    let (st, v) = api
+        .send_raw(&alice_net, &[bob_net.device_id.as_str()], &ciphertext)
+        .await;
     assert_eq!(st, StatusCode::OK, "{v}");
 
     let queued = api.fetch(&bob_net, 0).await;
@@ -81,12 +80,10 @@ async fn real_clients_chat_through_server_and_removed_device_is_locked_out() {
 
     // The server blob never contains the plaintext as a contiguous byte
     // sequence. This is a regression guard for accidental server decryption.
-    let stored: Vec<u8> = sqlx::query_scalar(
-        "SELECT body FROM blobs ORDER BY id DESC LIMIT 1"
-    )
-    .fetch_one(&ts.server.state.db)
-    .await
-    .unwrap();
+    let stored: Vec<u8> = sqlx::query_scalar("SELECT body FROM blobs ORDER BY id DESC LIMIT 1")
+        .fetch_one(&ts.server.state.db)
+        .await
+        .unwrap();
     assert!(!stored.windows(plaintext.len()).any(|w| w == plaintext));
 
     // Charlie is added. Bob receives the commit, then Charlie joins from the
@@ -108,35 +105,46 @@ async fn real_clients_chat_through_server_and_removed_device_is_locked_out() {
         "welcome": b64(p2.welcome.as_ref().unwrap()),
         "removed": []
     });
-    let (st, v) = api.call(&alice_net, Method::POST, "/v1/commits", Some(body)).await;
+    let (st, v) = api
+        .call(&alice_net, Method::POST, "/v1/commits", Some(body))
+        .await;
     assert_eq!(st, StatusCode::OK, "{v}");
     a.confirm_commit(&alice).unwrap();
 
     let bob_msgs = api.fetch(&bob_net, 0).await;
     assert_eq!(bob_msgs.len(), 1);
     assert!(matches!(
-        b.receive(&bob, &unb64(bob_msgs[0]["body"].as_str().unwrap())).unwrap(),
+        b.receive(&bob, &unb64(bob_msgs[0]["body"].as_str().unwrap()))
+            .unwrap(),
         Incoming::GroupChanged {
             epoch: 2,
             own_commit_discarded: false,
             ..
         }
     ));
-    api.ack(&bob_net, &[bob_msgs[0]["id"].as_str().unwrap()]).await;
+    api.ack(&bob_net, &[bob_msgs[0]["id"].as_str().unwrap()])
+        .await;
 
     let mut c = charlie.join(p2.welcome.as_ref().unwrap()).unwrap();
     let cmsg = c.send(&charlie, b"charlie is here").unwrap();
-    let (st, v) = api.send_raw(
-        &charlie_net,
-        &[alice_net.device_id.as_str(), bob_net.device_id.as_str()],
-        &cmsg,
-    ).await;
+    let (st, v) = api
+        .send_raw(
+            &charlie_net,
+            &[alice_net.device_id.as_str(), bob_net.device_id.as_str()],
+            &cmsg,
+        )
+        .await;
     assert_eq!(st, StatusCode::OK, "{v}");
     for dev in [&alice_net, &bob_net] {
         let msgs = api.fetch(dev, 0).await;
         assert_eq!(msgs.len(), 1);
-        let recv = if dev.device_id == alice_net.device_id { a.receive(&alice, &unb64(msgs[0]["body"].as_str().unwrap())).unwrap() }
-                   else { b.receive(&bob, &unb64(msgs[0]["body"].as_str().unwrap())).unwrap() };
+        let recv = if dev.device_id == alice_net.device_id {
+            a.receive(&alice, &unb64(msgs[0]["body"].as_str().unwrap()))
+                .unwrap()
+        } else {
+            b.receive(&bob, &unb64(msgs[0]["body"].as_str().unwrap()))
+                .unwrap()
+        };
         match recv {
             Incoming::Message { body, .. } => assert_eq!(body, b"charlie is here"),
             other => panic!("expected chat message, got {other:?}"),
@@ -156,27 +164,36 @@ async fn real_clients_chat_through_server_and_removed_device_is_locked_out() {
         "added": [],
         "removed": [bob_net.device_id]
     });
-    let (st, v) = api.call(&alice_net, Method::POST, "/v1/commits", Some(body)).await;
+    let (st, v) = api
+        .call(&alice_net, Method::POST, "/v1/commits", Some(body))
+        .await;
     assert_eq!(st, StatusCode::OK, "{v}");
     a.confirm_commit(&alice).unwrap();
 
     let bob_msgs = api.fetch(&bob_net, 0).await;
     assert_eq!(bob_msgs.len(), 1);
     assert_eq!(
-        b.receive(&bob, &unb64(bob_msgs[0]["body"].as_str().unwrap())).unwrap(),
+        b.receive(&bob, &unb64(bob_msgs[0]["body"].as_str().unwrap()))
+            .unwrap(),
         Incoming::RemovedFromGroup
     );
-    api.ack(&bob_net, &[bob_msgs[0]["id"].as_str().unwrap()]).await;
+    api.ack(&bob_net, &[bob_msgs[0]["id"].as_str().unwrap()])
+        .await;
 
     // After the removal Bob cannot decrypt future application messages.
     let secret = a.send(&alice, b"only Alice and Charlie").unwrap();
-    let (st, v) = api.send_raw(&alice_net, &[charlie_net.device_id.as_str()], &secret).await;
+    let (st, v) = api
+        .send_raw(&alice_net, &[charlie_net.device_id.as_str()], &secret)
+        .await;
     assert_eq!(st, StatusCode::OK, "{v}");
     assert!(b.receive(&bob, &secret).is_err());
 
     let c_msgs = api.fetch(&charlie_net, 0).await;
     assert_eq!(c_msgs.len(), 1);
-    match c.receive(&charlie, &unb64(c_msgs[0]["body"].as_str().unwrap())).unwrap() {
+    match c
+        .receive(&charlie, &unb64(c_msgs[0]["body"].as_str().unwrap()))
+        .unwrap()
+    {
         Incoming::Message { body, .. } => assert_eq!(body, b"only Alice and Charlie"),
         other => panic!("expected message, got {other:?}"),
     }

@@ -2,8 +2,8 @@
 
 mod common;
 
-use common::*;
 use base64::Engine;
+use common::*;
 use futures_util::{SinkExt, StreamExt};
 use reqwest::StatusCode;
 use serde_json::json;
@@ -18,31 +18,19 @@ async fn websocket_requires_signed_upgrade_and_delivers_ciphertext_until_ack() {
     let bob = api.signup().await;
 
     let unsigned = format!("ws://{}/v1/ws", ts.server.addr);
-    let unsigned_resp = reqwest::Client::new()
-        .get(unsigned)
-        .send()
-        .await
-        .unwrap();
+    let unsigned_resp = reqwest::Client::new().get(unsigned).send().await.unwrap();
     assert_eq!(unsigned_resp.status(), StatusCode::UNAUTHORIZED);
 
-    let signed = Signed::new(
-        reqwest::Method::GET,
-        "/v1/ws",
-        Some(&bob.device_id),
-        None,
-    );
+    let signed = Signed::new(reqwest::Method::GET, "/v1/ws", Some(&bob.device_id), None);
     let mut req = format!("ws://{}/v1/ws", ts.server.addr)
         .into_client_request()
         .unwrap();
-    req.headers_mut().insert(
-        "X-Tree-Device",
-        bob.device_id.parse().unwrap(),
-    );
-    req.headers_mut().insert(
-        "X-Tree-Timestamp",
-        signed.ts.to_string().parse().unwrap(),
-    );
-    req.headers_mut().insert("X-Tree-Nonce", signed.nonce.parse().unwrap());
+    req.headers_mut()
+        .insert("X-Tree-Device", bob.device_id.parse().unwrap());
+    req.headers_mut()
+        .insert("X-Tree-Timestamp", signed.ts.to_string().parse().unwrap());
+    req.headers_mut()
+        .insert("X-Tree-Nonce", signed.nonce.parse().unwrap());
     req.headers_mut().insert(
         "X-Tree-Signature",
         signed.signature(&bob.key).parse().unwrap(),
@@ -52,22 +40,15 @@ async fn websocket_requires_signed_upgrade_and_delivers_ciphertext_until_ack() {
     assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
 
     let ciphertext = app(b"encrypted payload only");
-    let (st, body) = api.send_raw(
-        &alice,
-        &[&bob.device_id],
-        &ciphertext,
-    ).await;
+    let (st, body) = api.send_raw(&alice, &[&bob.device_id], &ciphertext).await;
     assert_eq!(st, StatusCode::OK, "{body}");
     let message_id = body["message_ids"][0].as_str().unwrap().to_string();
 
-    let frame = tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        ws.next(),
-    )
-    .await
-    .expect("websocket did not receive a message")
-    .expect("websocket closed")
-    .expect("websocket read failed");
+    let frame = tokio::time::timeout(std::time::Duration::from_secs(2), ws.next())
+        .await
+        .expect("websocket did not receive a message")
+        .expect("websocket closed")
+        .expect("websocket read failed");
 
     let WsMessage::Text(text) = frame else {
         panic!("expected text JSON message");

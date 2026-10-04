@@ -48,12 +48,7 @@ async fn blocked_account_cannot_claim_one_time_key_packages() {
     assert_eq!(body["code"].as_str(), Some("BLOCKED"));
 
     let (st, body) = api
-        .call(
-            &alice,
-            Method::GET,
-            "/v1/keypackages/count",
-            None,
-        )
+        .call(&alice, Method::GET, "/v1/keypackages/count", None)
         .await;
     assert_eq!(st, StatusCode::OK, "{body}");
     assert_eq!(body["count"].as_i64(), Some(1));

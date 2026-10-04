@@ -64,7 +64,6 @@ pub struct DownloadedMediaChunk {
     pub plaintext: SecureMediaBytes,
 }
 
-
 pub struct Session {
     client: Client<StoredProvider>,
     api: Api,
@@ -285,14 +284,20 @@ impl Session {
             (PreviewMode::None, _) | (_, None) => None,
             (_, Some(bytes)) => Some(tree_core::media::encrypt_preview(&key, &manifest, bytes)?),
         };
-        self.api.media_finalize(&self.creds, &upload.media_id, &upload.capability)?;
+        self.api
+            .media_finalize(&self.creds, &upload.media_id, &upload.capability)?;
         let capability: [u8; 32] = unb64(&upload.capability)?
             .try_into()
             .map_err(|_| Error::Usage("server returned an invalid media capability".into()))?;
 
-        let envelope =
-            MediaEnvelope::new(upload.media_id.clone(), capability, manifest.clone(), key, preview)?
-                .encode()?;
+        let envelope = MediaEnvelope::new(
+            upload.media_id.clone(),
+            capability,
+            manifest.clone(),
+            key,
+            preview,
+        )?
+        .encode()?;
         let view_once = matches!(policy, ViewPolicy::ViewOnce);
         let ttl_secs = match policy {
             ViewPolicy::Timed { seconds } => seconds,
@@ -331,10 +336,7 @@ impl Session {
         })
     }
 
-    pub fn decode_media_message(
-        &self,
-        body: &[u8],
-    ) -> Result<MediaEnvelope, Error> {
+    pub fn decode_media_message(&self, body: &[u8]) -> Result<MediaEnvelope, Error> {
         Ok(MediaEnvelope::decode(body)?)
     }
 
@@ -346,16 +348,19 @@ impl Session {
         key: &MediaKey,
         index: u32,
     ) -> Result<DownloadedMediaChunk, Error> {
-        let chunk: MediaChunk = self
-            .api
-            .media_get_chunk(&self.creds, media_id, capability, index)?;
+        let chunk: MediaChunk =
+            self.api
+                .media_get_chunk(&self.creds, media_id, capability, index)?;
         let encrypted = EncryptedChunk {
             index: chunk.index,
             ciphertext: chunk.ciphertext,
             sha256: chunk.sha256,
         };
         let plaintext = EncryptedChunk::decrypt(key, manifest, &encrypted)?;
-        Ok(DownloadedMediaChunk { index, plaintext: SecureMediaBytes::new(plaintext) })
+        Ok(DownloadedMediaChunk {
+            index,
+            plaintext: SecureMediaBytes::new(plaintext),
+        })
     }
 
     pub fn download_media_chunk_from_envelope(
@@ -418,14 +423,19 @@ impl Session {
             group.send(&self.client, &body)?
         })?;
         self.client.set_app_data(
-            &format!("media/consumed/{}", hex::encode(envelope.manifest.attachment_id)),
+            &format!(
+                "media/consumed/{}",
+                hex::encode(envelope.manifest.attachment_id)
+            ),
             Some(&body),
         )?;
         reply.body["id"]
             .as_str()
             .or_else(|| reply.body["message_id"].as_str())
             .map(str::to_string)
-            .ok_or_else(|| Error::Usage("server did not return a media consumption message id".into()))
+            .ok_or_else(|| {
+                Error::Usage("server did not return a media consumption message id".into())
+            })
     }
 
     pub fn media_was_consumed(&self, attachment_id: &[u8; 16]) -> Result<bool, Error> {
@@ -434,7 +444,6 @@ impl Session {
             .app_data(&format!("media/consumed/{}", hex::encode(attachment_id)))?
             .is_some())
     }
-
 
     pub fn send_text(&self, gid: &[u8], text: &str) -> Result<String, Error> {
         let roster = self.roster(gid)?;

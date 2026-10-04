@@ -653,6 +653,71 @@ async fn mailbox_fan_out_fetch_and_ack() {
 }
 
 #[tokio::test]
+async fn inbox_cursor_requires_contiguous_ack_and_rejects_rollback() {
+    let ts = boot(|c| c.fetch_limit = 2).await;
+    let api = &ts.api;
+    let a = api.signup().await;
+    let b = api.signup().await;
+    api.seed_fake_group(&a, &[&b]).await;
+
+    api.send_msg(&a, &[&b.device_id], b"one").await;
+    api.send_msg(&a, &[&b.device_id], b"two").await;
+    api.send_msg(&a, &[&b.device_id], b"three").await;
+
+    let (st, page) = api.call(&b, Method::GET, "/v1/messages", None).await;
+    assert_eq!(st, StatusCode::OK, "{page}");
+    let cursor = page["cursor"].as_i64().unwrap();
+    assert!(cursor > 0);
+    let ids: Vec<&str> = page["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["id"].as_str().unwrap())
+        .collect();
+
+    // Cannot advance beyond an unacknowledged mailbox entry.
+    let (st, v) = api
+        .call(
+            &b,
+            Method::POST,
+            "/v1/messages/ack",
+            Some(json!({ "ids": [ids[0]], "cursor": cursor })),
+        )
+        .await;
+    assert_eq!(st, StatusCode::CONFLICT);
+    assert_eq!(code(&v), "CURSOR_GAP");
+
+    // Once the fetched page is durably acknowledged, the cursor can advance.
+    let (st, v) = api
+        .call(
+            &b,
+            Method::POST,
+            "/v1/messages/ack",
+            Some(json!({ "ids": ids, "cursor": cursor })),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+
+    let (st, v) = api.call(&b, Method::GET, "/v1/messages", None).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(v["cursor"], cursor);
+    assert_eq!(v["messages"].as_array().unwrap().len(), 1);
+
+    // A stale cursor can never move the server backwards.
+    let (st, v) = api
+        .call(
+            &b,
+            Method::POST,
+            "/v1/messages/ack",
+            Some(json!({ "ids": [], "cursor": cursor - 1 })),
+        )
+        .await;
+    assert_eq!(st, StatusCode::CONFLICT);
+    assert_eq!(code(&v), "CURSOR_ROLLBACK");
+    ts.stop().await;
+}
+
+#[tokio::test]
 async fn fetch_pages_with_more_flag() {
     let ts = boot(|c| c.fetch_limit = 2).await;
     let api = &ts.api;

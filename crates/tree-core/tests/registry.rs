@@ -377,7 +377,7 @@ fn bot_settings_need_the_owner() {
     }
     assert_eq!(r.status("bot.inline").unwrap().state, State::Released);
     let owner = ADMIN;
-    assert_eq!(r.apply("bot.inline", Some("search".into()), owner).unwrap().state, State::Applied);
+    assert_eq!(r.apply("bot.inline", None, owner).unwrap().state, State::Applied);
     assert_eq!(r.release("bot.inline", owner).unwrap().state, State::Released);
 }
 

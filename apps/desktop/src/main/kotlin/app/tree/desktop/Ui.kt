@@ -179,7 +179,7 @@ private fun Main(model: AppModel, state: UiState) {
     var tab by remember { mutableStateOf(0) }
     Column(Modifier.fillMaxSize()) {
         TabRow(selectedTabIndex = tab) {
-            listOf("chats", "requests", "public_spaces", "settings").forEachIndexed { i, k ->
+            listOf("chats", "requests", "public_spaces", "bots", "settings").forEachIndexed { i, k ->
                 Tab(selected = tab == i, onClick = { tab = i }, text = { Text(Strings.t(k)) })
             }
         }
@@ -188,6 +188,8 @@ private fun Main(model: AppModel, state: UiState) {
             1 -> Chats(model, state, requests = true)
             // Public groups and channels: not end-to-end, badged (PublicView.kt).
             2 -> PublicScreen(model, state)
+            // The bot factory and directory (BotsView.kt).
+            3 -> BotsScreen(model, state)
             else -> Settings(model, state)
         }
     }
@@ -409,6 +411,8 @@ private fun ChatView(model: AppModel, state: UiState, chat: Chat) {
             TextButton(onClick = { settingsOpen = !settingsOpen }) { Text(Strings.t("group_settings")) }
             if (settingsOpen) GroupSettingsPanel(model, state, chat.id)
             if (settingsOpen) GroupTools(model, state, chat)
+            // Bots in this chat: label, add, block (BotsView.kt).
+            BotBar(model, state, chat)
             // Pins on top; scheduled messages, reminders, export (RichViews.kt).
             PinsBar(model, state, chat.id)
             ChatExtras(model, state, chat.id)
@@ -434,8 +438,9 @@ private fun ChatView(model: AppModel, state: UiState, chat: Chat) {
                 Column {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     // channel.signatures released: a post shows the channel, not the admin.
+                    // A bot always carries its label (the server's word).
                     val who = if (state.channel.isChannel && !state.channel.signatures) chat.title
-                        else state.names[m.sender]?.ifEmpty { Strings.t("me") } ?: m.sender.take(6)
+                        else senderLine(state, m, state.names[m.sender]?.ifEmpty { Strings.t("me") } ?: m.sender.take(6))
                     val read = if (m.id in state.readMine) "  ✓ " + Strings.t("read") else ""
                     if (isRich(state, m)) Box(Modifier.weight(1f)) { RichMessage(model, state, chat, m, who) }
                     else Text("$who: $body$read", Modifier.weight(1f).padding(4.dp))
@@ -461,6 +466,7 @@ private fun ChatView(model: AppModel, state: UiState, chat: Chat) {
                     MessageMenu(model, state, chat.id, m)
                 }
                 if (m.kind == "poll") PollWidget(model, state, chat.id, m)
+                if (m.buttons.isNotEmpty() && botSender(state, m) != null) BotButtons(model, chat.id, m)
                 if (state.channel.isChannel && m.kind == "text") ChannelComments(model, state, chat, m)
                 }
             }

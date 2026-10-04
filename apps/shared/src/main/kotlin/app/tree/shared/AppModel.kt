@@ -110,6 +110,8 @@ data class UiState(
     val pub: PublicUi = PublicUi(),
     /** The open chat as a private channel (PublicSpaces.kt). */
     val channel: ChannelUi = ChannelUi(),
+    /** The bot factory and directory (Bots.kt). */
+    val bots: BotsUi = BotsUi(),
     val notice: String? = null,
     val error: String? = null,
 )
@@ -172,8 +174,13 @@ class AppModel(
         is TreeException.Other -> e.reason
     }
 
-    suspend fun createAccount(path: String, passphrase: String, name: String, server: String, powBits: UInt = 20u): Boolean =
-        signIn(path) { TreeSession.create(path, passphrase, name, server, powBits) }
+    /** The server's proof-of-work bits: a new bot costs the same as a signup (Bots.kt). */
+    internal var botPowBits: UInt = 20u
+
+    suspend fun createAccount(path: String, passphrase: String, name: String, server: String, powBits: UInt = 20u): Boolean {
+        botPowBits = powBits
+        return signIn(path) { TreeSession.create(path, passphrase, name, server, powBits) }
+    }
 
     suspend fun openProfile(path: String, passphrase: String): Boolean =
         signIn(path) { TreeSession.open(path, passphrase) }
@@ -336,6 +343,8 @@ class AppModel(
             is TreeEvent.HistoryShared -> _state.update { it.copy(notice = Strings.t("history_received")) }
             is TreeEvent.JoinRequest -> _state.update { it.copy(notice = Strings.t("join_request_notice")) }
             is TreeEvent.SlowModeHidden -> _state.update { it.copy(notice = Strings.t("slow_mode_hidden")) }
+            // Wave 5: a bot answered a button press (Bots.kt).
+            is TreeEvent.CallbackAnswer -> onBotAnswer(e.text)
             else -> {}
         }
     }

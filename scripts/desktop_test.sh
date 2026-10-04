@@ -20,6 +20,8 @@ ADMIN_TOKEN_SHA256="$TOKEN_SHA" DATABASE_URL="sqlite://$DIR/server.db" BIND_ADDR
 SERVER=$!
 sleep 1
 curl -fsS -X POST -H "X-Tree-Admin: $TOKEN" "http://127.0.0.1:$PORT/v1/features/server.new_account_limits/release" >/dev/null
+# The bot platform starts released on a new server; the bot tests need it.
+curl -fsS -X POST -H "X-Tree-Admin: $TOKEN" "http://127.0.0.1:$PORT/v1/features/server.bot_platform/apply" >/dev/null
 cd apps/desktop
 TREE_URL="http://127.0.0.1:$PORT" gradle -q --no-daemon test
 echo "desktop model tests passed"

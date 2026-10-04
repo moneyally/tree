@@ -1922,6 +1922,162 @@ text; no franking is needed, and such a report counts as verified for the
 anti-spam limits (8.9). Moderation duties and the handling of illegal
 public content: **변호사 확인 필요** (STORE_CHECKLIST.md).
 
+### 8.16 Bots: accounts, tokens, the gateway, bot lanes
+
+Tree runs no bots. It offers a **bot factory**: a person registers a bot,
+gets its token, and sets its description, commands and switches. The bot
+runs on its developer's own server through the **bot gateway**
+(`crates/tree-bot-gateway`, [BOT_GATEWAY.md](BOT_GATEWAY.md)), which holds
+the bot's device keys. A bot is an ordinary MLS member: the device of a bot
+account. Groups with bots stay end-to-end encrypted; the bot (and whoever
+runs its gateway) reads what members' devices send it. Everything here is
+behind the operator flag `server.bot_platform`, which starts **released**:
+every `/v1/bots/...` request, every request of a bot's device and every
+claim of a bot's key packages is refused with `403 LOCKED_BY_SERVER`, and
+the server delivers nothing to bots' devices meanwhile (`refused_devices`),
+so a bot cannot read later what it was sent while it was off. Code:
+`crates/tree-server/src/bots.rs`, `crates/tree-client/src/bots.rs`; API in
+[SERVER_API.md](SERVER_API.md); payloads in
+[APP_PROTOCOL.md](APP_PROTOCOL.md) 11.
+
+**Bot accounts.** Only an existing person's account creates a bot
+(`POST /v1/bots`), never a bot. Creating one costs what a signup costs: the
+signup's proof of work (8.2) at the server's `POW_BITS`, under its own
+label (`SHA-256("tree-bot-signup-v1" || key || nonce)` over 32 random bytes
+`key`, each `key` usable once), the same per-address signup budget,
+`server.signups` applied, and an account under anti-spam limits (8.9) is
+refused (`LIMITED`). An owner has at most `MAX_BOTS_PER_OWNER` (20) bots.
+A bot's @username is plaintext (bots are public): 5 to 32 of `a-z`, `0-9`,
+`_`, starting with a letter and **ending in `bot`**, and shares one
+namespace with people's @usernames (the server compares their hashes,
+8.4). A bot account has no recovery key, no device links, no @username of
+the person kind and cannot delete itself (`NOT_FOR_BOTS`); its owner
+deletes it, and an owner's bots go with the owner's account. Tree has no
+phone numbers, so a bot never sees one; it never sees recovery data.
+
+**Tokens.** `token = <bot account id> ":" base64url(32 random bytes)`,
+in the creation answer only. The server stores
+`HMAC-SHA-256(K, "tree/bot-token/v1" || len(bot id) || bot id || secret)`
+under the bot token key `K` (`BOT_TOKEN_KEY` from the environment, or a
+random key kept in the database), compares in constant time, and never
+logs a token. Rotating (`/token/rotate`, a new token, shown once) or
+revoking (`/token/revoke`, none) advances the token generation; **at once**:
+
+1. every gateway device registered under the old generation stops
+   authenticating (`401 BOT_DEVICE_DISABLED`), including a long-poll that is
+   open at that moment (it is woken and answered `401`);
+2. their key packages are deleted, so nobody can add them any more;
+3. the old token no longer opens anything.
+
+The gateway registers again with the new token and **the same device key**:
+same device id, its mailbox kept, it catches up. Any other device of the bot
+is deleted then.
+
+**Gateway registration.** `POST /v1/bots/gateway/challenge` (bot token)
+gives a 32-byte challenge, good once for 2 minutes and only for that bot.
+`POST /v1/bots/gateway/register` carries the device's Ed25519 key and its
+signature over `lp("tree/bot-gateway/v1", bot id, challenge, key)` (each
+part with its 4-byte big-endian length): proof that the gateway holds the
+key it registers. **One gateway device per bot**: a registration removes
+every other device of the bot. Somebody with a stolen token can take the
+bot over until the owner rotates it, but not silently: the owner's gateway
+is cut off the moment the thief registers, and the rotation cuts the thief
+off (tested: `rotate_and_revoke_cut_off_the_old_token_and_its_devices_at_once`).
+From then on the device is an ordinary device: signed requests (8.1), key
+packages, a mailbox, commits. Its requests also go through one token bucket
+per bot (`BOT_RATE_PER_SEC`, `BOT_RATE_BURST`).
+
+**Whom a bot reaches.** A person *contacts* a bot by claiming its key
+packages (starting a chat with it, adding it to a group); the server records
+the pair (`bot_contacts`). A bot may claim only key packages of people who
+contacted it (`403 BOT_NO_CONTACT`), so it cannot start a chat with anyone
+else. Its sends reach only its own devices, contacts' devices and devices of
+groups its device is in (as the commit eligibility sets of 7.4 know them);
+other recipients are refused (`refused_devices`), and a commit that would
+reach anyone else is refused whole. `POST /v1/bots/{id}/stop` ends a
+contact; the apps call it when a person blocks a bot. On the person's side,
+a chat a bot starts is a message request unless the person accepted the bot
+as a contact, also with `user.message_requests` released.
+
+**The bot label.** The server marks every message (and commit and welcome) a
+bot's device sends with the bot's account id in the mailbox (`"bot"`);
+people's messages never carry a sender. Receivers label a member as a bot
+from that mark, from the server's lookup of the group's devices and account
+labels (`POST /v1/bots/lookup`, which names bots only), and from a
+key-package claim that says the account is a bot. A label is only ever
+added; no roster removes it, so a bot cannot pass as a person by what it
+claims inside the group (its roster account label, its chosen name): apps
+show the "bot" label and the bot's server-known username (tested:
+`a_bot_claiming_to_be_a_person_is_still_a_bot`).
+
+**Bot lanes (privacy mode).** What reaches a bot is decided by the senders'
+devices, per payload, when they choose recipients:
+
+| Payload | `bot.privacy_mode` applied (default) | released | 1:1 chat with the bot |
+| --- | --- | --- | --- |
+| Text that is a command for it (`/cmd`, `/cmd@itsname`), mentions it, or replies to one of its messages | yes | yes | yes |
+| Any other text, file, reaction, edit, poll, sticker, location, receipt, typing | **no** | yes | yes |
+| Roster, display names, topics, leave requests (it needs them to answer) | yes | yes | yes |
+| A press of its button (`callback`) | to that bot only | to that bot only | — |
+| Shared history (`chat.history_share`) | **never** | **never** | **never** |
+| Another member's button press, a bot's answer to someone else | **never** | **never** | **never** |
+| Commits (adds, removals, group settings) | yes (MLS needs them) | yes | yes |
+| Anything, while the group releases `chat.bots` | **no** | **no** | **no** |
+
+Senders learn which recipients are bots' devices and each bot's settings
+from the server (lookups are cached; settings for 5 minutes, and an app
+refreshes on demand). A device not yet looked up counts as a person's; an
+item sealed while such devices could not be checked waits in the outbox
+for the check before it goes out. While the server says the bot platform
+is released, devices are not looked up for 60 seconds (the server delivers
+nothing to bots meanwhile).
+
+**What privacy mode does not do.** The bot's device holds the group's MLS
+keys: it could decrypt any message of the group if it got the ciphertext.
+Privacy mode keeps honest members' devices from sending it; it does not
+stop a member's modified client from forwarding messages to the bot, nor
+the server from copying other members' ciphertext into the bot's mailbox
+(the server sees every recipient list and does not do this; no member could
+tell if it did). A separate MLS group per group and bot would close the
+second gap at the price of a second tree to keep in step with the group;
+not done in v1.
+
+**Who sees what.**
+
+| Party | Sees |
+| --- | --- |
+| The bot (its code) and whoever runs its gateway | in plaintext: everything members' devices send it (table above), the group's member list, display names, roster account labels and device ids, group name and settings (from commits); never people's recovery data or phone numbers |
+| The server | that an account is a bot, its owner, username, description, commands and switches (plaintext); which people contacted which bot; which groups (ids) the bot's device is in, as for any device; every message a bot's device sends is marked as the bot's; the token only as an HMAC |
+| Other members | that a member is a bot (label), its username and commands, its messages and buttons |
+| The bot's owner (in the app) | the bot's settings, whether a gateway device is registered, how many people contacted it and how many reports about it are open; not its messages (unless the owner runs the gateway) |
+
+**Buttons.** A bot's text may carry rows of inline buttons (at most 8 rows
+of 8; text and data 1 to 64 characters). Receivers show buttons only on a
+bot's messages. A press is a `callback` payload sent to that bot's devices
+only; the bot accepts it only for its own message and a button that message
+has (anything else is dropped: `forged_presses_and_answers_are_dropped`)
+and may answer the presser only (`callback_answer`, at most 200
+characters); the presser's device takes an answer only from the bot it
+pressed and only once.
+
+**Bot switches** (owner, `POST /v1/bots/{id}/features/{key}/apply|release`):
+`bot.privacy_mode` (applied), `bot.join_groups` (applied; released, the
+bot's gateway declines groups and members' apps refuse to add it to one;
+1:1 chats only), `bot.inline` (released; the switch only, inline queries
+are not built), `bot.directory` (released; applied, the bot is listed in
+`GET /v1/bots/directory`; an exact @username finds any bot).
+`bot.payments`, `bot.tips` and `bot.pay_out_points` are `AlwaysOff`: bots
+never pay out points, and payments and tips wait for stage 4 (identity
+verification, **변호사 확인 필요**). The group key `chat.bots` (applied)
+lets admins keep bots out: released, members' devices refuse to add a bot,
+send nothing to bots, and drop what bots send.
+
+**Reports.** People report a bot's messages through the normal reporting
+(8.5; a bot's messages are franked like anyone's). The operator's queue
+names the bot's owner (`reported_bot_owner`); the owner's app shows the
+number of open reports. Bot moderation duties: **변호사 확인 필요**
+(STORE_CHECKLIST.md).
+
 ## 9. Security claims
 
 These are **claims with stated assumptions and reductions**, written so that
@@ -2299,6 +2455,7 @@ the server cannot learn it from what it sees or stores.
 | Stickers, profile photos, locations, events | protected | opaque blobs (6.12) or ciphertext only; blob sizes and fetch times | — |
 | Private channels (6.11.2) | protected | as any group: the channel flag, `channel.*` keys and comments are inside MLS | — |
 | Public groups and channels (8.15) | **not protected, by design** | everything in plaintext: names, @handles, descriptions, posts, comments, authors and their published names, subscribers, roles, bans, read requests per device | — (labelled "Public" in every app) |
+| Bots (8.16) | **not protected, by design**, for the bot's own data | a bot's account, owner, username, description, commands and switches; who contacted which bot; every message a bot's device sends is marked as the bot's (people's never); the bot (and its gateway's operator) reads what members send it (8.16 table) | — (labelled "bot" in every app) |
 
 ---
 

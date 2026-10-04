@@ -11,11 +11,13 @@ use tree_client::{CommitOutcome, Event, FileInfo, GroupStatus, LinkStatus, Media
 
 uniffi::setup_scaffolding!();
 
+mod bots;
 mod device;
 mod groups;
 mod public;
 mod rich;
 mod rich_media;
+pub use bots::*;
 pub use groups::*;
 pub use public::*;
 pub use rich_media::*;
@@ -233,6 +235,10 @@ pub enum TreeEvent {
         preview: Option<Preview>,
         /// Sent silently: do not notify (see `should_notify`).
         silent: bool,
+        /// From a bot, as the server says: show the "bot" label.
+        bot: bool,
+        /// A bot's inline buttons (rows); `press_button` sends a press.
+        buttons: Vec<Vec<BotButton>>,
     },
     Edited { group: String, id: String, from: String, text: String },
     Deleted { group: String, id: String, from: String },
@@ -295,6 +301,10 @@ pub enum TreeEvent {
     /// This admin device added `member` to `group` at its request through
     /// the community `community`.
     CommunityMemberAdded { community: String, group: String, member: String },
+    /// A bot's device only: a member pressed one of its buttons.
+    CallbackQuery { group: String, id: String, from: String, msg: String, data: String },
+    /// The bot answered this device's button press `id`.
+    CallbackAnswer { group: String, id: String, text: Option<String>, alert: bool },
 }
 
 fn ids(v: Vec<MemberId>) -> Vec<String> {
@@ -305,7 +315,7 @@ impl From<Event> for TreeEvent {
     fn from(e: Event) -> Self {
         let h = hex::encode;
         match e {
-            Event::Text { group, id, from, name, text, request, formatted, mentions_me, preview, silent } => TreeEvent::Text {
+            Event::Text { group, id, from, name, text, request, formatted, mentions_me, preview, silent, bot, buttons } => TreeEvent::Text {
                 group: h(group),
                 id,
                 from: from.to_hex(),
@@ -316,7 +326,11 @@ impl From<Event> for TreeEvent {
                 mentions_me,
                 preview: preview.map(|p| Preview { url: p.url, title: p.title, description: p.description }),
                 silent,
+                bot,
+                buttons: bots::rows(buttons),
             },
+            Event::CallbackQuery { group, id, from, msg, data } => TreeEvent::CallbackQuery { group: h(group), id, from: from.to_hex(), msg, data },
+            Event::CallbackAnswer { group, id, text, alert } => TreeEvent::CallbackAnswer { group: h(group), id, text, alert },
             Event::Edited { group, id, from, text } => TreeEvent::Edited { group: h(group), id, from: from.to_hex(), text },
             Event::Deleted { group, id, from } => TreeEvent::Deleted { group: h(group), id, from: from.to_hex() },
             Event::Reaction { group, id, from, emoji, remove } => TreeEvent::Reaction { group: h(group), id, from: from.to_hex(), emoji, remove },
@@ -425,6 +439,8 @@ pub struct Message {
     /// The message this answers; in a private channel the post this
     /// comment is on (`channel.comments`).
     pub reply_to: Option<String>,
+    /// A bot's inline buttons (rows); empty otherwise.
+    pub buttons: Vec<Vec<BotButton>>,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -441,6 +457,7 @@ impl From<tree_client::StoredMessage> for Message {
             .flatten()
             .map(Attachment::from);
         Message {
+            buttons: bots::rows(tree_client::bots::message_buttons(&m)),
             topic: tree_client::topics::message_topic(&m),
             reply_to: tree_client::channel::message_re(&m),
             shared_by: None,
@@ -500,6 +517,9 @@ pub struct Member {
     pub roles: Vec<RoleInfo>,
     /// Restricted until then (`chat.restrict`).
     pub restricted_until: Option<i64>,
+    /// A bot (its account), as the server says, whatever its roster
+    /// claims: the apps show the "bot" label.
+    pub bot: Option<String>,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -841,6 +861,7 @@ impl TreeSession {
                 name: m.name,
                 duplicate_name: m.duplicate_name,
                 account: m.account,
+                bot: m.bot,
             })
             .collect())
     }

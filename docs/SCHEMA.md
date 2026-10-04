@@ -478,3 +478,62 @@ text.
 
 On the device, subscribed spaces are cached in the encrypted profile as app
 data `public/<space id>` and `public/list` (APP_PROTOCOL.md 10.1).
+
+### 2.13 Bots (migration `0016_bots.sql`, PROTOCOL.md 8.16)
+
+```sql
+CREATE TABLE bots (
+    account_id    TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+    owner_account TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    username      TEXT NOT NULL UNIQUE,       -- plaintext: bots are public; ends in "bot"
+    username_hash BLOB NOT NULL UNIQUE,       -- SHA-256("tree/username/v1" || username): one namespace with people
+    description   TEXT NOT NULL DEFAULT '',
+    commands      TEXT NOT NULL DEFAULT '[]', -- JSON [{command, description}]
+    token_mac     BLOB,                       -- HMAC-SHA-256 of the token under the bot token key; NULL: revoked
+    token_gen     INTEGER NOT NULL DEFAULT 1, -- moves on with every rotate / revoke
+    privacy_mode  INTEGER NOT NULL DEFAULT 1, -- bot.privacy_mode
+    join_groups   INTEGER NOT NULL DEFAULT 1, -- bot.join_groups
+    inline        INTEGER NOT NULL DEFAULT 0, -- bot.inline
+    directory     INTEGER NOT NULL DEFAULT 0, -- bot.directory
+    created_day   INTEGER NOT NULL
+);
+CREATE TABLE bot_devices (                    -- the gateway device and its token generation
+    device_id   TEXT PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
+    bot_account TEXT NOT NULL REFERENCES bots(account_id) ON DELETE CASCADE,
+    token_gen   INTEGER NOT NULL
+);
+CREATE TABLE bot_contacts (                   -- people who contacted a bot (claimed its key packages)
+    bot_account TEXT NOT NULL REFERENCES bots(account_id) ON DELETE CASCADE,
+    account_id  TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    since_day   INTEGER NOT NULL,
+    PRIMARY KEY (bot_account, account_id)
+);
+CREATE TABLE bot_pow (key BLOB PRIMARY KEY, day INTEGER NOT NULL);  -- used bot proof-of-work keys
+ALTER TABLE blobs ADD COLUMN from_bot TEXT;  -- the sending bot's account; NULL for people
+CREATE TRIGGER bots_follow_owner BEFORE DELETE ON accounts
+BEGIN DELETE FROM accounts WHERE id IN (SELECT account_id FROM bots WHERE owner_account = OLD.id); END;
+```
+
+Indexes: `bots(owner_account)`, `bot_devices(bot_account)`,
+`bot_contacts(account_id)`.
+
+A device of a bot account authenticates only while it has a `bot_devices`
+row with the bot's current `token_gen` and the bot has a token. The token
+itself is stored nowhere; the bot token key is `BOT_TOKEN_KEY` from the
+environment or `server_secrets` row `bot_token`. A bot's account has no
+`account_recovery`, `usernames`, `username_links` or `link_sessions` rows
+(refused). Retention: until the owner deletes the bot or their account;
+`bot_contacts` rows until the person stops (or blocks) the bot; `bot_pow`
+keys are kept (a key works once).
+
+On the device (`tree_app`, PROTOCOL.md 8.16): `botinfo/<account>` (a bot's
+public settings, or "not a bot", with the time asked; used 5 minutes),
+`botlane/<group>` (devices and accounts asked about, bot device -> bot),
+`botmem/<group>` (member -> bot account: the label, only ever added),
+`botpress/<group>/<id>` (a press waiting for its answer: the bot member),
+`botquery/<group>/<id>` (on a bot's device: a press to answer: the
+presser), `botlane-item/<local id>` (an outbox item's payload until its
+recipients are checked for bots), `bot/platform_off_until`. On a bot's
+gateway device also `bot/self` (its bot account), `bot/token_sha256`
+(SHA-256 of the token, never the token) and `gw/...` (the gateway's update
+queue, webhook setting and open presses).

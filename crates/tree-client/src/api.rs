@@ -84,6 +84,9 @@ pub struct Api {
     receiving: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
+/// Claimed key packages: (device id, key package).
+pub type Claimed = Vec<(String, Vec<u8>)>;
+
 /// One mailbox entry as fetched.
 pub struct Fetched {
     pub id: String,
@@ -416,7 +419,7 @@ impl Api {
     }
 
     /// [`Api::claim`], and whether the server says the account is a bot.
-    pub fn claim_flagged(&self, c: &Creds, account_id: &str) -> Result<(Vec<(String, Vec<u8>)>, bool), Error> {
+    pub fn claim_flagged(&self, c: &Creds, account_id: &str) -> Result<(Claimed, bool), Error> {
         let v = self
             .call(c, Method::POST, "/v1/keypackages/claim", Some(&json!({ "account_id": account_id })))?
             .ok()?;

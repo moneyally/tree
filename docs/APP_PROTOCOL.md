@@ -765,3 +765,35 @@ admins post in a channel". `chat.public_listing` can never be applied to a
 private group or channel (`PUBLIC_SPACES_ONLY`), and `channel.*` keys only
 to a channel (`CHANNELS_ONLY`); the apps' settings screens leave them out
 accordingly.
+
+## 11. Bots (Wave 5)
+
+Bots are members like any other device (PROTOCOL.md 8.16): what they send
+and receive are the payloads above. Three additions, all ignored by older
+apps:
+
+```json
+{"t":"text","id":"…","text":"Coffee?","kb":[[{"text":"Yes","data":"vote:yes"},{"text":"No","data":"vote:no"}]]}
+{"t":"callback","id":"<32 hex>","msg":"<message id>","data":"vote:yes","bot":"<bot member id>"}
+{"t":"callback_answer","id":"<32 hex>","to":"<presser member id>","text":"Noted","alert":false}
+```
+
+| Payload | Rules |
+| --- | --- |
+| `text` with `kb` | rows of inline buttons: at most 8 rows of at most 8; `text` and `data` 1 to 64 characters, no control characters. Shown only on a bot's message (the server's label); a person's buttons are dropped. Stored with the message (`buttons`) |
+| `callback` | a press of button `data` under bot message `msg`; sent to the devices of member `bot` only. The bot's device takes it only for its own message and a button that message has (otherwise "button press: not this bot's message / no such button"). Not franked |
+| `callback_answer` | the bot's answer to press `id`; sent to the devices of member `to` only. The presser's device takes it only from the bot it pressed, once, at most 200 characters. Not franked |
+
+The label: a member is a bot when the server says so (PROTOCOL.md 8.16);
+apps show "bot" next to it and the bot's server-known @username, never a
+name the bot chose. A bot's chat with someone who never accepted it is a
+request.
+
+| Key | Default | Effect |
+| --- | --- | --- |
+| `chat.bots` | applied | bots may be in the group. Released: members' devices refuse to add a bot (`LOCKED_BY_CHAT`), send nothing to bots, and drop what bots send ("bots are released in this group (chat.bots)"); a bot may still ask to leave |
+
+Bot lanes (what members' devices send a bot) and the bot switches
+(`bot.privacy_mode`, `bot.join_groups`, `bot.inline`, `bot.directory`;
+`bot.payments`, `bot.tips` locked off) are in PROTOCOL.md 8.16; the
+gateway's local API in [BOT_GATEWAY.md](BOT_GATEWAY.md).

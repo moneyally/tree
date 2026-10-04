@@ -464,11 +464,12 @@ fn run(args: Vec<String>) -> Result<(), String> {
 
 fn print_event(ev: &Event) {
     match ev {
-        Event::Text { group, id, from, name, text, request, mentions_me, .. } => println!(
-            "[{}]{}{} {} ({}): {}   #{id}",
+        Event::Text { group, id, from, name, text, request, mentions_me, bot, .. } => println!(
+            "[{}]{}{}{} {} ({}): {}   #{id}",
             &hex(group)[..8],
             if *request { " [request]" } else { "" },
             if *mentions_me { " [@you]" } else { "" },
+            if *bot { " [bot]" } else { "" },
             name.as_deref().unwrap_or("?"),
             &from.to_hex()[..8],
             text
@@ -584,5 +585,7 @@ fn print_event(ev: &Event) {
         Event::SlowModeHidden { group, member } => println!("[{}] a message from {} broke slow mode and was hidden", &hex(group)[..8], &member.to_hex()[..8]),
         Event::TopicChanged { group, id, .. } => println!("[{}] topic {id} changed", &hex(group)[..8]),
         Event::CommunityMemberAdded { group, member, .. } => println!("[{}] added {} at its request (community)", &hex(group)[..8], &member.to_hex()[..8]),
+        Event::CallbackQuery { group, from, data, .. } => println!("[{}] {} pressed button {data}", &hex(group)[..8], &from.to_hex()[..8]),
+        Event::CallbackAnswer { group, text, .. } => println!("[{}] the bot answered: {}", &hex(group)[..8], text.as_deref().unwrap_or("(nothing)")),
     }
 }

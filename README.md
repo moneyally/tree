@@ -37,6 +37,10 @@ the client library (`crates/tree-client`) and the `tree` command line
 - a recovery phrase (12 to 24 words, English or Korean)
 - push wake-ups that carry no content
 - app bindings (`crates/tree-ffi`), a desktop app and an Android app
+- bots: Tree runs none; people create them in the app and run them on their
+  own server with the bot gateway (`crates/tree-bot-gateway`), which is the
+  bot's end-to-end encrypted device (docs/BOT_GATEWAY.md); in groups a bot
+  gets only what is addressed to it unless its maker says otherwise
 
 Try it:
 
@@ -61,6 +65,7 @@ crates/tree-server server: mailboxes, one-time key packages, commit ordering (ci
 crates/tree-client client logic for all apps: server API, sync, commits, rosters
 crates/tree-cli    `tree` command-line client
 crates/tree-ffi    bindings for the apps (Kotlin, Swift)
+crates/tree-bot-gateway  the bot gateway: a bot's device with a local HTTP API for the bot's code
 apps/              desktop and Android apps (shared model in apps/shared)
 bindings/          binding demos (Python, Kotlin on the JVM)
 scripts/           demos

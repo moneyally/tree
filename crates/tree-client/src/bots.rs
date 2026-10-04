@@ -413,7 +413,7 @@ impl Session {
     // --- labels ---
 
     fn bot_members(&self, gid: &[u8]) -> Result<BTreeMap<String, String>, Error> {
-        Ok(self.map(&members_key(gid))?)
+        self.map(&members_key(gid))
     }
 
     /// The bot account of member `m`, if the server said it is a bot.
@@ -657,24 +657,28 @@ impl Session {
     }
 
     /// A press of one of this device's buttons (the bot's side).
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn on_callback(&mut self, gid: &[u8], from: MemberId, id: String, msg: String, data: String, bot: String, events: &mut Vec<Event>) -> Result<(), Error> {
-        let drop = |events: &mut Vec<Event>, why: &str| events.push(Event::Dropped { reason: format!("button press: {why}") });
+        let drop = |events: &mut Vec<Event>, why: &str| -> Result<(), Error> {
+            events.push(Event::Dropped { reason: format!("button press: {why}") });
+            Ok(())
+        };
         if bot != self.member_id().to_hex() {
-            return Ok(drop(events, "for another member"));
+            return drop(events, "for another member");
         }
         if !valid_query_id(&id) {
-            return Ok(drop(events, "malformed"));
+            return drop(events, "malformed");
         }
         if self.blocked_sender(gid, &from)? {
-            return Ok(drop(events, "from a blocked account"));
+            return drop(events, "from a blocked account");
         }
         // Only for this device's own message, and only a button it has.
-        let Some(m) = self.client.message(gid, &msg)? else { return Ok(drop(events, "unknown message")) };
+        let Some(m) = self.client.message(gid, &msg)? else { return drop(events, "unknown message") };
         if m.sender != self.member_id().to_hex() || m.deleted {
-            return Ok(drop(events, "not this bot's message"));
+            return drop(events, "not this bot's message");
         }
         if !message_buttons(&m).iter().flatten().any(|b| b.data == data) {
-            return Ok(drop(events, "no such button"));
+            return drop(events, "no such button");
         }
         self.client.set_app_data(&query_key(gid, &id), Some(from.to_hex().as_bytes()))?;
         events.push(Event::CallbackQuery { group: gid.to_vec(), id, from, msg, data });
@@ -682,6 +686,7 @@ impl Session {
     }
 
     /// A bot's answer to a press of this device.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn on_callback_answer(&mut self, gid: &[u8], from: MemberId, id: String, to: String, text: Option<String>, alert: bool, events: &mut Vec<Event>) -> Result<(), Error> {
         let key = press_key(gid, &id);
         let pressed_bot = self.client.app_data(&key)?.and_then(|v| String::from_utf8(v).ok());

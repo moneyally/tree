@@ -384,12 +384,13 @@ fn reminders_are_local_and_fire_once() {
     let m = alice.send_text(&g, "call the bank").unwrap();
     assert!(alice.remind_me(&g, &m, now() - 1).is_err());
     assert!(alice.remind_me(&g, "nope", now() + 60).is_err());
-    let r = alice.remind_me(&g, &m, now() + 1).unwrap();
+    // A few seconds ahead, so a slow machine still checks before it is due.
+    let r = alice.remind_me(&g, &m, now() + 4).unwrap();
     let later = alice.remind_me(&g, &m, now() + 3600).unwrap();
     assert!(alice.due_reminders().unwrap().is_empty());
     assert_eq!(alice.reminders().unwrap().len(), 2);
     alice.cancel_reminder(&later).unwrap();
-    sleep(2);
+    sleep(5);
     let due = alice.due_reminders().unwrap();
     assert_eq!(due.len(), 1);
     assert_eq!((due[0].id.as_str(), due[0].text.as_deref()), (r.as_str(), Some("call the bank")));

@@ -653,6 +653,116 @@ null unless `channel.signatures` is applied or the caller is an admin;
 | `DELETE /v1/public/posts/{post}` | the author or an admin of the space | → `{ id, deleted: true, rev }`; text, attachment and name are erased at once |
 | `POST /v1/public/reports` | anyone but the author | `{ post, reason (≤ 500) }` → `201 { id, verified: true }`; into the report queue with the stored text, `public_post` and `public_space`; 20 per account per day, 10 rate tokens |
 
+## Bots (PROTOCOL.md 8.16)
+
+All of these answer `403 LOCKED_BY_SERVER` while `server.bot_platform` is
+released (the default), and so do every request of a bot's device and
+every claim of a bot's key packages. Bots' objects (`bot`):
+
+```json
+{ "account": "…", "username": "quiz_bot", "is_bot": true, "description": "…",
+  "commands": [{ "command": "start", "description": "…" }],
+  "privacy_mode": true, "join_groups": true, "inline": false, "directory": false }
+```
+
+The owner's view adds `owner`, `token_active`, `gateway_devices` (0 or 1),
+`contacts`, `reports_open`, `features` (`[{key, state, locked}]`, the money
+features with their lock reason) and `created_day`. The owner is never
+shown to anyone else.
+
+### `POST /v1/bots` — create a bot (signed, a person's device)
+
+`{ "username": "quiz_bot", "pow_key": "<32 random bytes, base64>", "pow_nonce": 123 }`,
+where `SHA-256("tree-bot-signup-v1" || pow_key || nonce as 8 bytes
+big-endian)` has `POW_BITS` leading zero bits; each `pow_key` works once.
+Charges the per-address signup budget. `201 { "bot": {owner's view},
+"token": "<bot id>:<secret>" }` — **the only time the token is shown.**
+Errors: `NOT_FOR_BOTS`, `LOCKED_BY_SERVER` (bot platform or signups
+released), `LIMITED` (anti-spam limits), `RATE_LIMITED`, `POW_INVALID`
+(wrong or reused), `BAD_REQUEST` (username: 5 to 32 of `a-z 0-9 _`, starts
+with a letter, ends with `bot`), `USERNAME_TAKEN` (a bot's or a person's),
+`LIMIT_EXCEEDED` (`MAX_BOTS_PER_OWNER`).
+
+### `GET /v1/bots` — my bots (signed) · `GET /v1/bots/{id}` — one bot
+
+`{ "bots": [owner's view] }`. `GET /v1/bots/{id}`: the owner's view for
+the owner, the public view for anyone else.
+
+### `PUT /v1/bots/{id}/profile` — description and commands (owner)
+
+`{ "description": "…" (≤ 512), "commands": [{ "command": "/start", "description": "…" }] }`
+(either may be left out; ≤ 100 commands of 1 to 32 `a-z 0-9 _`, the
+leading `/` dropped). `200` owner's view.
+
+### `POST /v1/bots/{id}/features/{key}/apply|release` (owner)
+
+Keys `bot.privacy_mode`, `bot.join_groups`, `bot.inline`, `bot.directory`.
+`bot.payments`, `bot.tips`, `bot.pay_out_points`: apply → `403
+RELEASED_ALWAYS` (release is a no-op). Unknown → `404 UNKNOWN_FEATURE`.
+`200` owner's view. Someone else's bot → `404`.
+
+### `POST /v1/bots/{id}/token/rotate` · `POST /v1/bots/{id}/token/revoke` (owner)
+
+Rotate: `200 { "bot": …, "token": "<new>" }` (shown once). Revoke: `200
+{ "bot": … }`, no token works until a rotation. Either way, at once: the
+old token stops, every gateway device registered with it answers `401
+BOT_DEVICE_DISABLED` (an open long-poll too), its key packages are deleted.
+
+### `DELETE /v1/bots/{id}` (owner)
+
+Deletes the bot account with its device, mailbox and contacts.
+`200 { "deleted": "<id>" }`. An owner's bots also go when the owner's
+account is deleted.
+
+### `POST /v1/bots/{id}/stop` — stop a bot (signed, anyone)
+
+The caller's contact with the bot ends: it can no longer claim the
+caller's key packages (start chats) or reach the caller outside shared
+groups. `200 { "stopped": true|false }`.
+
+### `POST /v1/bots/lookup` — which are bots (signed)
+
+`{ "accounts": [≤ 256 ids], "devices": [≤ MAX_RECIPIENTS ids] }` →
+`{ "bots": [public view], "devices": { "<device id>": "<bot account>" } }`.
+Only bots are named; nothing is said about people's accounts or devices.
+
+### `GET /v1/bots/directory?q=` (signed) · `GET /v1/bots/by-username/{name}` (signed)
+
+The directory lists bots with `bot.directory` applied and a working token,
+by username prefix or a word of the description (≤ 50). An exact username
+finds any bot (`404` otherwise).
+
+### Gateway (header `Authorization: Bearer <bot token>`)
+
+- `POST /v1/bots/gateway/challenge` → `{ "challenge": "<32 bytes, base64>", "expires_at": …, "account_id": "<bot id>" }`;
+  good once, for 2 minutes, for this bot only.
+- `POST /v1/bots/gateway/register` `{ "auth_pub": "<Ed25519 key, base64>",
+  "challenge": "…", "signature": "<signature over lp('tree/bot-gateway/v1', bot id, challenge, auth_pub)>" }`
+  → `201 { "account_id", "device_id", "username" }`. The same key as before
+  keeps its device id; every other device of the bot is deleted. Errors:
+  `BAD_TOKEN`, `CHALLENGE_INVALID`, `PROOF_INVALID`, `ALREADY_EXISTS` (the
+  key belongs to another account), `RATE_LIMITED`.
+- `GET /v1/bots/gateway/me` → the public view.
+
+### Bots and the other endpoints
+
+- `POST /v1/keypackages/claim`: the answer has `"bot": true|false`. A
+  person claiming a bot's key packages contacts it. A bot's device may
+  claim only people who contacted it: `403 BOT_NO_CONTACT`.
+- `POST /v1/messages` from a bot's device: recipients it may not reach (not
+  its own, no contact, no shared group) are left out and listed in
+  `refused_devices`. While the bot platform is released, bots' devices are
+  left out of every send the same way.
+- `POST /v1/commits` from a bot's device: `403 BOT_NO_CONTACT` (with
+  `refused_devices`) if any recipient or added device is out of its reach.
+- `GET /v1/messages`: a message a bot's device sent carries `"bot": "<bot
+  account>"`. People's messages carry no sender.
+- `NOT_FOR_BOTS` (403) for bots' devices: `POST /v1/links`, `/v1/recovery*`,
+  `/v1/usernames/apply`, `/v1/usernames/link/apply`, `DELETE /v1/accounts`,
+  `DELETE /v1/devices/{id}`, `POST /v1/public/spaces`, `/v1/bots` (owning).
+- `GET /v1/reports` (operator): `reported_bot_owner` for a report about a bot.
+- `POST /v1/usernames/apply`: a bot's username is taken (`USERNAME_TAKEN`).
+
 ## Operator feature flags
 
 Every flag has apply and release. Both are idempotent and return the current state.
@@ -663,8 +773,8 @@ Every flag has apply and release. Both are idempotent and return the current sta
 
 Flags: `server.signups`, `server.bot_platform`, `server.calls`, `server.public_spaces`,
 `server.new_account_limits`, `server.report_limits` (anti-spam, PROTOCOL.md 8.9),
-`server.gif_relay`, `server.map_relay` (relays, PROTOCOL.md 8.12; these two
-start released).
+`server.gif_relay`, `server.map_relay` (relays, PROTOCOL.md 8.12) and
+`server.bot_platform` (PROTOCOL.md 8.16); these three start released.
 
 ### `POST /v1/features/{key}/apply`, `POST /v1/features/{key}/release`
 
@@ -693,7 +803,8 @@ Errors: `UNAUTHORIZED`, `UNKNOWN_FEATURE`.
 | username link: hash of the link token per account, day set | until reset, released, the name is released, or the account is deleted |
 | per group: last accepted epoch, the device ids that may commit next, SHA-256 and id of the last 64 accepted commits | while one of its devices exists |
 | message ciphertext + recipient device + arrival minute | until acknowledged, at most 30 days |
-| message sender | **no** (not with the message) |
+| message sender | **no** (not with the message); except a bot's device: its bot's account id with each message it sent (PROTOCOL.md 8.16) |
+| bots: account, owner, username (plaintext) and its hash, description, commands, switches, HMAC of the token, token generation, the gateway device and its generation, who contacted the bot (account pairs, day), used bot proof-of-work keys | until the bot is deleted (pairs: until the person stops the bot); proof-of-work keys kept |
 | idempotency records (`POST /v1/messages` with a key) | sending device, key, a tag of the request (HMAC under a key held only in memory, forgotten after a day, PROTOCOL.md 8.10), delivered count, day; one to two days, at most `MAX_IDEMPOTENCY_KEYS` per device, deleted with the device. Not stored: the body, the recipients, the message id. A database copy cannot match a record to a stored message; the running server can, for the record's lifetime, by recomputing tags of stored bodies with the key in its memory |
 | IP addresses | **no** (signup rate limit keeps them in memory only) |
 | relays | **no**: search words and tile coordinates are passed on and forgotten; media ids (opaque id -> provider URL) in memory for one hour |
@@ -742,4 +853,7 @@ Logs contain method, route template, status and latency only.
 | `MAP_TILE_URL` | unset = no map relay; a template with `{z}`, `{x}`, `{y}` |
 | `RELAY_MAX_BYTES` | `8388608` (largest answer passed on) |
 | `RELAY_ALLOW_HTTP` | `false` (tests only: http and local upstreams) |
+| `MAX_BOTS_PER_OWNER` | `20` (bots one account may own) |
+| `BOT_TOKEN_KEY` | unset = a random key kept in the database; 64 hex characters: the key of the bot token HMACs, environment only, never in git (then a copy of the database alone cannot check tokens) |
+| `BOT_RATE_PER_SEC` / `BOT_RATE_BURST` | `10` / `200` (one bucket per bot over all its requests, on top of the per-device bucket) |
 | `RUST_LOG` | `info` |

@@ -684,3 +684,34 @@ Issues found by testing Tree's own design. Each one has a regression test.
   account); a member may always give its own.
 - **Test:** `groups::a_roster_cannot_redirect_another_members_device`
   (fails without the fix).
+
+## F-039: a bot could read later what it was sent while the platform was off (fixed before release)
+
+- **Found:** 2026-10-04, while building the bot platform (Wave 5).
+- **What:** with `server.bot_platform` released, bots' devices are refused,
+  and members' devices cannot ask the server which devices are bots. A
+  device that never learned a bot's device id would count it as a person's
+  and send it everything; the server kept those messages in the bot's
+  mailbox, and the bot would read them once the operator applied the
+  platform again (privacy mode bypassed).
+- **Severity:** medium (privacy mode bypass, needs the operator to switch
+  the platform off and on).
+- **Fix:** while the platform is released the server delivers nothing to
+  bots' devices (`refused_devices`); members' devices treat a device as a
+  person's only while the server says the platform is off, and otherwise
+  hold an item sealed before its recipients could be checked until the
+  check (PROTOCOL.md 8.16).
+- **Test:** `tree-server` `bots::the_platform_flag_refuses_every_bot_endpoint_while_released`.
+
+## F-040: a bot could pass as a person by name (fixed before release)
+
+- **Found:** 2026-10-04, while building the bot platform (Wave 5).
+- **What:** a bot's display name is its own word (a `profile` or the roster's
+  name hint), so a bot could call itself "Alice" in a group; its roster
+  could also name a person's account for its own device.
+- **Severity:** medium (impersonation of people by a bot).
+- **Fix:** the bot label comes only from the server's word (the server
+  marks every message a bot's device sends; lookups name bots' devices and
+  accounts) and is never removed by a roster; apps show a bot by its
+  server-known username with the "bot" label, never a name it chose.
+- **Test:** `tree-client` `bots::attack_tests::a_bot_claiming_to_be_a_person_is_still_a_bot`.

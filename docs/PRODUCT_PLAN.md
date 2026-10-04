@@ -164,13 +164,28 @@ members), FFI, desktop screens with the "Public" badge
 (the shared model compiles), avatars uploaded from the apps (the API takes
 a reference), attachments in public posts from the apps.
 
-## Wave 5 — bot platform (design stage 2)
+## Wave 5 — bot platform (design stage 2) — built
 
 Bot factory, tokens (HMAC-stored, rotate and revoke remove the gateway
-device too), the gateway with the Bot API, bot lanes (privacy mode: a bot
+device too), the gateway with the bot API, bot lanes (privacy mode: a bot
 sees only messages addressed to it), buttons, bot reports and rate limits.
 Bot accounts are created only by an existing account, count against a
 per-owner limit and pay the sign-up cost.
+
+Built: server `bots.rs` (factory, tokens as HMACs, gateway registration
+with proof of the device key, one gateway device per bot, rotate / revoke
+cut off at once, directory, switches, per-bot rate limit, a bot reaches only
+people who contacted it and its groups, messages of bots marked by the
+server, all behind `server.bot_platform`, released by default), client
+`bots.rs` (label from the server's word, lanes on the senders' devices,
+buttons and callbacks, `chat.bots`, block / stop, a bot's first chat is a
+request), the gateway crate `tree-bot-gateway` (encrypted profile, local
+API: getUpdates, sendMessage with buttons, answerCallbackQuery, getMe,
+leaveChat, webhooks), FFI, desktop factory screen and bot label / buttons
+(PROTOCOL.md 8.16, APP_PROTOCOL.md 11, BOT_GATEWAY.md). Not yet: inline
+queries, a separate MLS lane group per bot, Android screens. Bot payments
+and tips: locked off until stage 4 (identity verification, **변호사 확인
+필요**).
 
 ## Wave 6 — calls
 

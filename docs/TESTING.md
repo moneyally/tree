@@ -271,3 +271,29 @@ F-003 (client side), F-004, F-007 and F-008. Other notes from PR #3:
 - `LockReason::Chat` and `FeatureError::LockedByChat` were never produced.
   Fixed in 3.1 (`Registry::release_for_chat`). `LockReason::Plan` is still
   never produced: a plan-gated feature is shown as released, not locked.
+
+### Bots (Wave 5, PROTOCOL.md 8.16)
+
+| Test | What it proves |
+| --- | --- |
+| `tree-server` `tests/bots.rs` `the_platform_flag_refuses_every_bot_endpoint_while_released` | `server.bot_platform` released: every bot endpoint, every request of a bot's device and claims of bots' key packages refused; nothing delivered to bots meanwhile (F-039) |
+| `the_token_is_shown_once_and_stored_as_an_hmac` | the token only in the creation answer; stored as HMAC-SHA-256 under the bot token key (checked independently), not in the database files; a configured `BOT_TOKEN_KEY` is used instead of a stored one |
+| `gateway_registration_needs_the_token_and_proof_of_the_device_key` | no token, a wrong token, a signature by another key, a challenge of another bot, a person's key: refused; done properly the device works |
+| `rotate_and_revoke_cut_off_the_old_token_and_its_devices_at_once` | a thief's registration cuts the owner's gateway off (one device per bot); a rotation ends the thief's open long-poll with 401 within seconds, every later request, its key packages and the old token; the owner's gateway registers again and the thief's device is deleted; same key keeps device id and mailbox; revoke; only the owner rotates |
+| `creating_a_bot_costs_a_signup_and_is_capped_per_owner` | proof of work required (a signup's proof does not count, no reuse), username rules and one namespace with people, the per-owner cap, signups released, the per-address signup budget |
+| `directory_only_when_applied_and_money_features_locked` | listed only while `bot.directory` is applied; exact username always; `bot.payments`, `bot.tips`, `bot.pay_out_points` refused; every switch both ways; only the owner |
+| `bot_features_match_the_registry` | the server's bot feature table equals the core registry's |
+| `a_bot_reaches_only_contacts_and_its_groups` | no claim or send to strangers (`BOT_NO_CONTACT`, `refused_devices`); after a contact, and in shared groups, it may; its messages are marked, people's are not; a bot's commit to outsiders refused; stop ends the contact; lookups name bots only |
+| `person_only_requests_and_owner_deletion` | recovery, usernames, links, account deletion, owning bots refused for bots; the owner's deletion takes its bots |
+| `per_bot_rate_limit_and_reports` | one bucket per bot; a report about a bot names its owner for the operator and counts for the owner |
+| `tree-bot-gateway` `tests/gateway.rs` `privacy_mode_decides_what_the_bot_sees` | through the gateway's local API: with privacy mode only commands for it (also `/cmd` without a name), mentions and replies reach the bot; released, everything; applied again, back; its messages labelled "bot" for everyone |
+| `buttons_and_callbacks` | 1:1 chats send everything; buttons shown, only real buttons pressed, the press reaches the bot with the real presser, the answer reaches the presser once; in a group the other member gets neither |
+| `chat_bots_released_drops_bot_payloads_and_refuses_adds` | `chat.bots` released: adds refused, nothing sent to the bot, its messages dropped by everyone; applied again: both ways |
+| `a_bot_cannot_cold_message` | a bot cannot start a chat with someone who never contacted it; after a contact it can; blocking stops it again |
+| `local_api_token_and_rotation` | the local API needs the token (header or path); a rotation cuts the running gateway off; re-registering keeps the device and mailbox; the old token no longer opens the local API; non-loopback refused unless allowed |
+| `webhook_mode` | updates posted to the webhook with its secret; only https or this machine; getUpdates refused meanwhile |
+| `tree-client` `bots::attack_tests::forged_presses_and_answers_are_dropped` | presses for a person's message or a button the message lacks dropped by the bot; answers forged by another member dropped; buttons from people neither shown nor pressable |
+| `bots::attack_tests::a_bot_claiming_to_be_a_person_is_still_a_bot` | a bot's roster naming a person's account and name for itself: still a bot, shown by its username; a chat it starts with such a roster is a bot's and a request (F-040) |
+| `bots::attack_tests::a_bots_first_message_is_a_request` | a bot's first chat is a request even with `user.message_requests` released |
+| `bots::attack_tests::shared_history_never_reaches_a_bot` | `chat.history_share` never sends history to a bot |
+| desktop `BotsModelTest` | the factory through the model: token once, locked money features, switches both ways, profile, directory, label and buttons in a chat, the bot's answer, rotate, revoke, delete |

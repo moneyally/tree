@@ -302,12 +302,30 @@ impl Session {
             self.client.outbox_mark_failed(&item.local_id, "damaged outbox item")?;
             return Ok(Attempt::Failed(Error::Protocol("damaged outbox item".into())));
         };
+        // Recipients are those of the seal that are still in the group now
+        // (F-028): a device removed since the item was sealed gets nothing,
+        // and the server never stores it for that device.
+        let current = self.other_devices(&gid)?;
+        let to: Vec<String> = item.recipients.iter().filter(|r| current.contains(r)).cloned().collect();
+        if to.is_empty() {
+            self.client.outbox_mark_sent(&item.local_id, now())?;
+            self.upload_finished(&item.local_id)?;
+            return Ok(Attempt::Sent(0));
+        }
         self.client.outbox_mark_sending(&item.local_id)?;
-        match self.api.send_keyed(&self.creds, &item.recipients, body, key) {
+        match self.api.send_keyed(&self.creds, &to, body, key) {
             Ok(v) => {
                 self.client.outbox_mark_sent(&item.local_id, now())?;
                 self.upload_finished(&item.local_id)?;
                 Ok(Attempt::Sent(v["delivered"].as_u64().unwrap_or(0) as usize))
+            }
+            // The server already took this item, for the recipients of an
+            // earlier attempt (its answer was lost); the smaller set now is
+            // another request under the same key. It went out: done.
+            Err(Error::Server { status: 409, code }) if code == "IDEMPOTENCY_KEY_REUSE" && to.len() < item.recipients.len() => {
+                self.client.outbox_mark_sent(&item.local_id, now())?;
+                self.upload_finished(&item.local_id)?;
+                Ok(Attempt::Sent(0))
             }
             Err(e) => self.after_failure(&item, due, e),
         }

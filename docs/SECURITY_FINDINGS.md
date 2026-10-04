@@ -520,3 +520,19 @@ Issues found by testing Tree's own design. Each one has a regression test.
 - **Test:** `attachments::tests::a_late_retry_of_an_earlier_part_cuts_nothing`
   (fails before), `racing_part_retries_keep_the_file_whole` (a stress test;
   it did not catch the race before the fix, the unit test does).
+
+## F-028: waiting outbox items went to members removed after the seal (fixed)
+
+- **Found:** 2026-10-04, security review of wave 2.
+- **What:** an outbox item kept the recipients of the moment it was sealed.
+  A message queued while offline (or waiting for a retry) still went to a
+  member the user removed meanwhile, who could read it with the old epoch's
+  secrets.
+- **Severity:** low to medium.
+- **Fix:** each attempt sends only to the sealed recipients still in the
+  roster; a `409 IDEMPOTENCY_KEY_REUSE` for the smaller set means an earlier
+  attempt went out, and the item is done. Residual (PROTOCOL.md 6.13): the
+  ciphertext is of the old epoch; a malicious server that kept it could
+  still forward it to the removed device.
+- **Test:** `a_waiting_item_never_goes_to_a_removed_member` (fails before:
+  the server stored a delivery for the removed device).

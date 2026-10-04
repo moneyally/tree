@@ -864,6 +864,15 @@ States: `queued -> sending -> sent | retry -> sending ... | failed`.
    after the server took a request but before the batch committed would
    roll back the keys that sealed it, and the next attempt would seal other
    bytes with the same keys. Debug builds assert this in every request.
+   **Recipients at send time (F-028).** Every attempt sends to the
+   recipients stored at the seal that are still in the group's roster now:
+   a device removed after the seal gets nothing (and the server stores
+   nothing for it). If the server answers `IDEMPOTENCY_KEY_REUSE` to such a
+   smaller set, an earlier attempt already went out (its answer was lost),
+   and the item is done. Residual: the bytes stay sealed in the epoch of the
+   seal, which the removed member knew; a server that kept and forwarded
+   them could let it read them. Re-sealing would break "seal once" when an
+   earlier attempt did reach the server, so it is not done.
 3. **Idempotency key.** Fixed when the item is sealed:
 
    ```text

@@ -162,6 +162,30 @@ fn message_from_next_epoch_before_commit() {
     assert!(b.retry_held(&bob).unwrap().is_empty());
 }
 
+/// Expired future-epoch envelopes are pruned durably, not only in memory.
+#[test]
+fn expired_future_envelopes_are_persisted_as_pruned() {
+    let (alice, bob, mut a, mut b) = two_person_chat();
+    let commit = a.refresh_now(&alice).unwrap();
+    let early = a.send(&alice, b"future message").unwrap();
+
+    assert_eq!(
+        b.receive(&bob, &early).unwrap(),
+        Incoming::HeldForRetry { epoch: 2 }
+    );
+
+    // Move the persisted receive timestamp beyond the seven-day retention
+    // window, then call retry_held. The queue must be removed from durable
+    // group state even though no envelope is ready for the current epoch.
+    b.state.future[0].received_at -= 8 * 86_400;
+    b.save(&bob).unwrap();
+    b.receive(&bob, &commit).unwrap();
+    assert!(b.retry_held(&bob).unwrap().is_empty());
+
+    let reopened = bob.load_group(b.id()).unwrap();
+    assert!(reopened.retry_held(&bob).unwrap().is_empty());
+}
+
 /// A removed member's messages of the epoch before its removal stay readable
 /// inside the past-epoch window: they are valid epoch-N messages. This
 /// includes messages its client creates AFTER the removal if it ignores the

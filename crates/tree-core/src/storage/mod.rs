@@ -222,6 +222,10 @@ impl TreeProvider for StoredProvider {
 }
 
 impl StoredProvider {
+    pub(crate) fn connection(&self) -> &Connection {
+        &self.storage.conn
+    }
+
     /// Reads back what [`TreeProvider::save_group_state`] stored.
     pub(crate) fn load_group_state(&self, group_id: &[u8]) -> Result<Option<Vec<u8>>, TreeError> {
         self.storage

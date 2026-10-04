@@ -123,6 +123,7 @@ pub struct StickerOverlay {
 pub enum EditOperation {
     Crop(CropRect),
     Rotate(Rotation),
+    RotateBy(i16),
     FlipHorizontal,
     FlipVertical,
     Adjust(ImageAdjustments),
@@ -137,6 +138,7 @@ pub struct MediaEditPlan {
     pub source_height: u32,
     pub operations: Vec<EditOperation>,
     pub caption: String,
+    redo: Vec<EditOperation>,
 }
 
 impl MediaEditPlan {
@@ -149,6 +151,7 @@ impl MediaEditPlan {
             source_height,
             operations: Vec::new(),
             caption: String::new(),
+            redo: Vec::new(),
         })
     }
 
@@ -158,6 +161,7 @@ impl MediaEditPlan {
         }
         validate_edit_operation(&op)?;
         self.operations.push(op);
+        self.redo.clear();
         Ok(())
     }
 
@@ -178,11 +182,20 @@ impl MediaEditPlan {
     }
 
     pub fn undo(&mut self) -> Option<EditOperation> {
-        self.operations.pop()
+        let op = self.operations.pop()?;
+        self.redo.push(op.clone());
+        Some(op)
+    }
+
+    pub fn redo(&mut self) -> Option<EditOperation> {
+        let op = self.redo.pop()?;
+        self.operations.push(op.clone());
+        Some(op)
     }
 
     pub fn clear(&mut self) {
         self.operations.clear();
+        self.redo.clear();
         self.caption.clear();
     }
 }
@@ -190,7 +203,8 @@ impl MediaEditPlan {
 fn validate_edit_operation(op: &EditOperation) -> Result<(), TreeError> {
     match op {
         EditOperation::Crop(r) => {
-            if r.width == 0 || r.height == 0 {
+            if r.width == 0 || r.height == 0 || r.x.checked_add(r.width).is_none() || r.y.checked_add(r.height).is_none() {
+
                 return Err(TreeError::FileCrypto("crop dimensions must be non-zero".into()));
             }
         }
@@ -227,8 +241,14 @@ fn validate_edit_operation(op: &EditOperation) -> Result<(), TreeError> {
             }
         }
         EditOperation::Rotate(_)
+        | EditOperation::RotateBy(_)
         | EditOperation::FlipHorizontal
         | EditOperation::FlipVertical => {}
+        EditOperation::RotateBy(deg) => {
+            if !(-180..=180).contains(deg) {
+                return Err(TreeError::FileCrypto("rotation angle is out of range".into()));
+            }
+        }
     }
     Ok(())
 }
@@ -1252,6 +1272,15 @@ mod tests {
         assert_eq!(bytes.as_slice(), &[1, 2, 3]);
         assert_eq!(bytes.len(), 3);
         assert!(!bytes.is_empty());
+    }
+
+    #[test]
+    fn edit_plan_supports_arbitrary_rotation_and_redo() {
+        let mut plan = MediaEditPlan::new(1920, 1080).unwrap();
+        plan.push(EditOperation::RotateBy(37)).unwrap();
+        assert!(plan.undo().is_some());
+        assert!(plan.redo().is_some());
+        assert_eq!(plan.operations.len(), 1);
     }
 
     #[test]

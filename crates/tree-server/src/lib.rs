@@ -10,7 +10,7 @@
 //! * [`invites`] — group invite links (hash of the secret, expiry, use limit)
 //! * [`push`] — content-free wake-ups to allowed push gateways
 //! * [`recovery`] — a new device joins its account with the recovery phrase
-//! * [`usernames`] — @usernames, stored as hashes only
+//! * [`usernames`] — @usernames and their links, stored as hashes only
 //! * [`attachments`] — encrypted attachments (ciphertext blobs)
 //! * [`reports`] — reports with message franking, account suspension
 //! * [`features`] — operator flags with apply/release
@@ -231,6 +231,9 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/usernames/apply", post(usernames::apply))
         .route("/v1/usernames/release", post(usernames::release))
         .route("/v1/usernames/lookup", post(usernames::lookup))
+        .route("/v1/usernames/link/apply", post(usernames::link_apply))
+        .route("/v1/usernames/link/release", post(usernames::link_release))
+        .route("/v1/usernames/link/lookup", post(usernames::link_lookup))
         .route("/v1/invites", post(invites::create))
         .route("/v1/invites/{token_hash}", delete(invites::revoke))
         .route("/v1/invites/join", post(invites::join))

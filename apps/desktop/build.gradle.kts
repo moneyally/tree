@@ -9,7 +9,8 @@ plugins {
 }
 
 val repoRoot = rootDir.parentFile.parentFile
-val cargoTarget = File(repoRoot, "target/debug")
+// cargo's output: CARGO_TARGET_DIR if set (a shared build directory), else target/.
+val cargoTarget = File(System.getenv("CARGO_TARGET_DIR")?.let { File(it).let { f -> if (f.isAbsolute) f else File(repoRoot, it) } } ?: File(repoRoot, "target"), "debug")
 val generated = layout.buildDirectory.dir("generated/uniffi")
 
 val cargoBuild by tasks.registering(Exec::class) {

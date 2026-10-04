@@ -2,7 +2,8 @@
 # Builds the desktop app and runs its model tests against a local server.
 #   sh scripts/desktop_test.sh
 set -eu
-BIN=${BIN:-target/debug}
+# Respects CARGO_TARGET_DIR (a shared build directory).
+BIN=${BIN:-${CARGO_TARGET_DIR:-target}/debug}
 export CARGO_PROFILE_DEV_DEBUG=0
 cargo build -q -p tree-server -p tree-ffi
 DIR=$(mktemp -d)

@@ -161,6 +161,7 @@ const SECURITY_KEYS: &[&str] = &[
     "user.pc_screen_security",
     "user.discoverable",
     "user.recovery_phrase",
+    "user.username_link",
 ];
 
 /// Reporting, spam and stranger protection.
@@ -527,6 +528,12 @@ pub fn standard_features() -> Vec<Feature> {
         feat("user.note_to_self", User, Applied, 1),
         feat("user.folders", User, Applied, 1),
         feat("user.default_folders", User, Applied, 1),
+        // Chat list (device only): drafts kept per chat; a new message
+        // brings an archived chat back unless it is muted; a link (and QR
+        // code) that finds the @username, resettable (PROTOCOL.md 8.4).
+        feat("user.drafts", User, Applied, 1),
+        feat("user.unarchive_on_message", User, Applied, 1),
+        feat("user.username_link", User, Released, 1),
         // server flags
         feat("server.signups", Server, Applied, 1),
         // Anti-spam (design: limits for new accounts and for accounts with

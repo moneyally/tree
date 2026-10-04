@@ -1,4 +1,4 @@
-//! @usernames (docs/PROTOCOL.md 8.4).
+//! @usernames and username links (docs/PROTOCOL.md 8.4).
 //!
 //! Clients send `SHA-256("tree/username/v1" || normalised name)`; the server
 //! never sees the name itself. Names are short and guessable, so the hash
@@ -72,13 +72,72 @@ pub async fn apply(State(state): State<AppState>, req: Signed<ApplyReq>) -> ApiR
     Ok(Json(json!({ "state": "applied", "discoverable": req.body.discoverable })))
 }
 
-/// `POST /v1/usernames/release` — drop my name, idempotent.
+/// `POST /v1/usernames/release` — drop my name (and its link), idempotent.
 pub async fn release(State(state): State<AppState>, req: Signed<crate::auth::NoBody>) -> ApiResult<Json<Value>> {
-    sqlx::query("DELETE FROM usernames WHERE account_id = ?")
-        .bind(&req.device.account_id)
-        .execute(&state.db)
-        .await?;
+    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
+    for q in ["DELETE FROM usernames WHERE account_id = ?", "DELETE FROM username_links WHERE account_id = ?"] {
+        sqlx::query(q).bind(&req.device.account_id).execute(&mut *tx).await?;
+    }
+    tx.commit().await?;
     Ok(Json(json!({ "state": "released" })))
+}
+
+/// `POST /v1/usernames/link/apply` — set (or replace: reset) my link's
+/// hash. Needs a registered name. The old link stops working.
+pub async fn link_apply(State(state): State<AppState>, req: Signed<LookupReq>) -> ApiResult<Json<Value>> {
+    let hash = hash32(&req.body.hash)?;
+    let account = &req.device.account_id;
+    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
+    let named = sqlx::query("SELECT 1 FROM usernames WHERE account_id = ?").bind(account).fetch_optional(&mut *tx).await?.is_some();
+    if !named {
+        return Err(ApiError::new(StatusCode::CONFLICT, "NO_USERNAME", "register a username first"));
+    }
+    let r = sqlx::query(
+        "INSERT INTO username_links (account_id, hash, created_day) VALUES (?, ?, ?) \
+         ON CONFLICT(account_id) DO UPDATE SET hash = excluded.hash, created_day = excluded.created_day",
+    )
+    .bind(account)
+    .bind(&hash)
+    .bind(today())
+    .execute(&mut *tx)
+    .await;
+    match r {
+        Err(e) if e.as_database_error().is_some_and(|d| d.is_unique_violation()) => {
+            return Err(ApiError::new(StatusCode::CONFLICT, "ALREADY_EXISTS", "this link is already registered"));
+        }
+        r => {
+            r?;
+        }
+    }
+    tx.commit().await?;
+    Ok(Json(json!({ "state": "applied" })))
+}
+
+/// `POST /v1/usernames/link/release` — delete my link, idempotent.
+pub async fn link_release(State(state): State<AppState>, req: Signed<crate::auth::NoBody>) -> ApiResult<Json<Value>> {
+    sqlx::query("DELETE FROM username_links WHERE account_id = ?").bind(&req.device.account_id).execute(&state.db).await?;
+    Ok(Json(json!({ "state": "released" })))
+}
+
+/// `POST /v1/usernames/link/lookup` — account id behind a link's hash,
+/// only while its name is registered and discoverable (the same `404`
+/// otherwise). Costs as much as a name lookup.
+pub async fn link_lookup(State(state): State<AppState>, req: Signed<LookupReq>) -> ApiResult<Json<Value>> {
+    let hash = hash32(&req.body.hash)?;
+    req.device.charge_outreach(&state, LOOKUP_COST - 1.0)?;
+    let account: Option<String> = sqlx::query(
+        "SELECT l.account_id FROM username_links l JOIN usernames u ON u.account_id = l.account_id \
+         WHERE l.hash = ? AND u.discoverable = 1",
+    )
+    .bind(&hash)
+    .fetch_optional(&state.db)
+    .await?
+    .map(|r| r.try_get("account_id"))
+    .transpose()?;
+    match account {
+        Some(a) => Ok(Json(json!({ "account_id": a }))),
+        None => Err(ApiError::not_found("no such link")),
+    }
 }
 
 /// `POST /v1/usernames/lookup` — account id behind a name, if discoverable.

@@ -19,7 +19,7 @@ val bindings by tasks.registering(Exec::class) {
     environment("CARGO_PROFILE_DEV_DEBUG", "0")
     commandLine(
         "sh", "-c",
-        "cargo build -q -p tree-ffi && target/debug/uniffi-bindgen generate --library target/debug/libtree_ffi.so --language kotlin --out-dir '${out.path}'",
+        "cargo build -q -p tree-ffi && T=\${CARGO_TARGET_DIR:-target}/debug && \$T/uniffi-bindgen generate --library \$T/libtree_ffi.so --language kotlin --out-dir '${out.path}'",
     )
 }
 

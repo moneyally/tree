@@ -26,6 +26,20 @@ data class Chat(
     val status: String,
     val requestFrom: String?,
     val unread: Int,
+    val pinned: Boolean = false,
+    val archived: Boolean = false,
+    val muted: Boolean = false,
+    /** End of a timed mute (unix seconds); null while muted until unmuted. */
+    val mutedUntil: Long? = null,
+    val markedUnread: Boolean = false,
+    /** Unsent text kept for this chat (user.drafts). */
+    val draft: String? = null,
+    /**
+     * Stranger labels for the other person of a 1:1 chat or the sender of a
+     * request (`not_contact`, `no_common_group`, `name_unverified`); empty
+     * while user.stranger_labels is released.
+     */
+    val labels: List<String> = emptyList(),
 )
 
 data class UiState(
@@ -56,6 +70,12 @@ data class UiState(
     val files: Map<String, Attachment> = emptyMap(),
     /** Own messages still in the outbox and not failed: sync sends them. */
     val sending: Boolean = false,
+    /** The list shows the archived chats instead of the main list. */
+    val showArchived: Boolean = false,
+    /** Notifications shown in this session (muted chats and silent messages never notify). */
+    val notified: Int = 0,
+    /** This account's username link (user.username_link), also shown as a QR code. */
+    val usernameLink: String? = null,
     val notice: String? = null,
     val error: String? = null,
 )
@@ -76,6 +96,9 @@ class AppModel(
         private set
     private var profilePath: String? = null
     private var loop: Job? = null
+
+    /** The platform shows a notification: chat title and text (null: a file). */
+    var notifier: ((String, String?) -> Unit)? = null
 
 
     private suspend fun <T> call(block: (TreeSession) -> T): T? {
@@ -170,9 +193,32 @@ class AppModel(
         refresh()
     }
 
-    private fun onEvent(e: TreeEvent) {
+    /**
+     * Notifies for a new message unless the chat is open, muted, or the
+     * message was sent silently (the client decides: `shouldNotify`).
+     */
+    private suspend fun maybeNotify(group: String, silent: Boolean, text: String?) {
+        if (group == _state.value.open) return
+        if (call { it.shouldNotify(group, silent) } != true) return
+        _state.update { it.copy(notified = it.notified + 1) }
+        val title = _state.value.chats.firstOrNull { it.id == group }?.title ?: group.take(8)
+        // The text only if the user wants it in notifications.
+        val content = call { s -> s.features().any { it.key == "user.notification_content" && it.applied } } == true
+        notifier?.invoke(title, if (content) text else null)
+    }
+
+    private suspend fun onEvent(e: TreeEvent) {
         when (e) {
-            is TreeEvent.File -> _state.update { it.copy(files = it.files + (e.file.msgId to e.file)) }
+            is TreeEvent.Text -> maybeNotify(e.group, e.silent, e.text)
+            is TreeEvent.File -> {
+                _state.update { it.copy(files = it.files + (e.file.msgId to e.file)) }
+                maybeNotify(e.group, false, null)
+            }
+            // An admin carries out a leave request (quiet or not: the
+            // others' devices decide whether a line is shown).
+            is TreeEvent.LeaveRequested -> call { s ->
+                if (s.group(e.group).admins.contains(s.memberId())) s.remove(e.group, listOf(e.member))
+            }
             is TreeEvent.Typing -> if (e.group == _state.value.open) {
                 _state.update { it.copy(typing = if (e.on) it.typing + e.from else it.typing - e.from) }
             }
@@ -185,16 +231,31 @@ class AppModel(
 
     suspend fun refresh() {
         val chats = call { s ->
-            s.groups().map { g ->
+            // In list order: pinned first, then by last activity.
+            s.chatList().map { c ->
+                val g = c.group
                 val info = s.group(g)
-                val names = s.members(g).filter { it.id != s.memberId() }.mapNotNull { it.name }
-                Chat(g, info.name ?: names.joinToString(", ").ifEmpty { g.take(8) }, info.status, info.requestFrom, s.unread(g).toInt())
+                val others = s.members(g).filter { it.id != s.memberId() }
+                val names = others.mapNotNull { it.name }
+                // Labels for the person behind a request or a 1:1 chat.
+                val person = info.requestFrom ?: others.singleOrNull()?.account
+                val labels = person?.let { s.strangerLabels(it) }?.let { l ->
+                    listOfNotNull(
+                        "not_contact".takeIf { l.notContact },
+                        "no_common_group".takeIf { l.noCommonGroup },
+                        "name_unverified".takeIf { l.nameUnverified },
+                    )
+                } ?: emptyList()
+                Chat(
+                    g, info.name ?: names.joinToString(", ").ifEmpty { g.take(8) }, info.status, info.requestFrom,
+                    c.unread.toInt(), c.pinned, c.archived, c.muted, c.mutedUntil, c.markedUnread, c.draft, labels,
+                )
             }
         } ?: return
         val open = _state.value.open
         val messages = if (open != null) call { it.history(open, 200u) } ?: emptyList() else emptyList()
         // Opening a chat reads it (a receipt if user.read_receipts is applied).
-        if (open != null && chats.any { it.id == open && it.unread > 0 }) {
+        if (open != null && chats.any { it.id == open && (it.unread > 0 || it.markedUnread) }) {
             call { it.markRead(open, messages.filter { m -> m.sender != session?.memberId() }.takeLast(100).map { m -> m.id }) }
         }
         val folders = call { it.folders() } ?: emptyList()
@@ -210,7 +271,7 @@ class AppModel(
         val sending = call { s -> s.outbox().any { it.state != "failed" } } ?: false
         _state.update {
             it.copy(
-                chats = chats.map { c -> if (c.id == open) c.copy(unread = 0) else c },
+                chats = chats.map { c -> if (c.id == open) c.copy(unread = 0, markedUnread = false) else c },
                 messages = messages, names = names, members = members, chatFeatures = chatFeatures,
                 screenshotBlocked = blocked, folders = folders, readMine = readMine, sending = sending,
             )
@@ -233,12 +294,57 @@ class AppModel(
     /** Shows only the chats of one folder (null: all). */
     fun showFolder(name: String?) = _state.update { it.copy(folder = name) }
 
-    /** Chats the list shows under the selected folder. */
+    /**
+     * Chats the list shows under the selected folder, in list order (pinned
+     * first): the main list, or only the archived chats while
+     * [UiState.showArchived].
+     */
     fun visibleChats(s: UiState): List<Chat> {
-        val f = s.folder ?: return s.chats
-        val ids = s.folders.firstOrNull { it.name == f }?.chats?.toSet() ?: return s.chats
-        return s.chats.filter { it.id in ids }
+        val list = s.chats.filter { it.archived == s.showArchived }
+        val f = s.folder ?: return list
+        val ids = s.folders.firstOrNull { it.name == f }?.chats?.toSet() ?: return list
+        return list.filter { it.id in ids }
     }
+
+    /** Switches between the main list and the archived chats. */
+    fun showArchived(on: Boolean) = _state.update { it.copy(showArchived = on) }
+
+    /** Mutes for `seconds` (one of [muteChoices]; null = until unmuted). */
+    suspend fun mute(group: String, seconds: Long?): Boolean = (call { it.muteFor(group, seconds); true } == true).also { refresh() }
+
+    suspend fun unmute(group: String): Boolean = (call { it.mute(group, false) } != null).also { refresh() }
+
+    /** The mute durations to offer: label (`1h`, `8h`, `1w`, `forever`) and seconds. */
+    fun muteChoices(): List<Pair<String, Long?>> = uniffi.tree_ffi.muteChoices().map { it.label to it.seconds }
+
+    suspend fun archive(group: String, on: Boolean): Boolean = (call { it.archiveChat(group, on) } != null).also { refresh() }
+
+    /** At most five pinned chats; a sixth is refused (the reason is in `error`). */
+    suspend fun pin(group: String, on: Boolean): Boolean = (call { it.pinChat(group, on) } != null).also { refresh() }
+
+    suspend fun movePin(group: String, to: Int): Boolean = (call { it.movePinnedChat(group, to.toUInt()) } != null).also { refresh() }
+
+    suspend fun markUnread(group: String, on: Boolean): Boolean = (call { it.markUnread(group, on) } != null).also { refresh() }
+
+    /** Keeps the unsent text of a chat (restored when it opens; cleared on send). */
+    suspend fun saveDraft(group: String, text: String) {
+        call { it.setDraft(group, text) }
+        _state.update { st -> st.copy(chats = st.chats.map { c -> if (c.id == group) c.copy(draft = text.ifBlank { null }) else c }) }
+    }
+
+    /** Leaves a chat; `quiet`: the others' apps show no "left" line. */
+    suspend fun leave(group: String, quiet: Boolean): Boolean = (call { it.leave(group, quiet) } != null).also { refresh() }
+
+    suspend fun loadUsernameLink() {
+        val l = call { it.usernameLink() }
+        _state.update { it.copy(usernameLink = l) }
+    }
+
+    /** A new username link; the old one stops working. */
+    suspend fun resetUsernameLink(): String? = call { it.resetUsernameLink() }.also { loadUsernameLink() }
+
+    /** Scanned QR code or pasted username link: adds the person as a contact. */
+    suspend fun addByLink(link: String): String? = call { it.addContactByLink(link.trim()) }
 
     suspend fun typing(group: String, on: Boolean) {
         call { it.setTyping(group, on) }
@@ -252,9 +358,10 @@ class AppModel(
 
     suspend fun invite(group: String, who: String): Boolean = (call { it.invite(group, who.trim()) }?.accepted == true).also { refresh() }
 
-    suspend fun send(group: String, text: String): Boolean {
+    /** `silent`: the others' apps do not notify for this message. */
+    suspend fun send(group: String, text: String, silent: Boolean = false): Boolean {
         if (text.isBlank()) return false
-        return (call { it.sendText(group, text) } != null).also { refresh() }
+        return (call { it.sendTextWith(group, text, false, emptyList(), false, null, silent) } != null).also { refresh() }
     }
 
     /** A failed message (status "failed"): try again now. True if it went out. */
@@ -321,6 +428,8 @@ class AppModel(
     suspend fun setFeature(key: String, on: Boolean, option: String? = null): Boolean {
         val ok = call { if (on) it.applyFeature(key, option) else it.releaseFeature(key) } != null
         loadFeatures()
+        if (key == "user.username_link") loadUsernameLink()
+        if (key == "user.stranger_labels" || key == "user.drafts") refresh()
         return ok
     }
 

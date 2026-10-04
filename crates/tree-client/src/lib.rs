@@ -9,6 +9,7 @@
 pub mod api;
 pub mod franking;
 pub mod invites;
+pub mod links;
 pub mod messages;
 pub mod organize;
 pub mod outbox;
@@ -104,6 +105,8 @@ pub enum Event {
         mentions_me: bool,
         /// The sender's link preview, if both sides want previews.
         preview: Option<payload::LinkPreview>,
+        /// Sent silently: apps do not notify ([`Session::should_notify`]).
+        silent: bool,
     },
     /// The sender edited its message `id`.
     Edited { group: Vec<u8>, id: String, from: MemberId, text: String },
@@ -127,7 +130,9 @@ pub enum Event {
     /// permanently on). `was_verified`: the old set had been verified.
     KeyChanged { account: String, new_members: Vec<MemberId>, was_verified: bool },
     RosterUpdated { group: Vec<u8> },
-    LeaveRequested { group: Vec<u8>, member: MemberId },
+    /// A member asks to be removed; `quiet`: its removal shows no "left"
+    /// line in the chat history (the member list still changes).
+    LeaveRequested { group: Vec<u8>, member: MemberId, quiet: bool },
     RemovedFromGroup { group: Vec<u8> },
     /// Kept for a later retry (unknown group yet, or a future epoch).
     Held,
@@ -646,8 +651,11 @@ impl Session {
         Ok(self.feature(settings::RECOVERY)?.state == tree_core::features::State::Applied)
     }
 
+    /// Drops the @username; the server drops its link too
+    /// (`user.username_link` is released).
     pub fn release_username(&self) -> Result<(), Error> {
         self.api.username(&self.creds, "release", None)?;
+        self.forget_username_link()?;
         Ok(self.client.set_app_data("profile/username", None)?)
     }
 
@@ -828,6 +836,7 @@ impl Session {
             return Ok(CommitOutcome::Lost);
         }
         let epoch = self.with(gid, |g, c| g.confirm_commit(c))?;
+        self.note_departures(gid, &p.removed)?;
         let mut roster = self.roster(gid)?;
         for id in &p.removed {
             roster.remove(&id.to_hex());
@@ -907,7 +916,14 @@ impl Session {
 
     /// Asks the others to remove this device (PROTOCOL.md 6.5).
     pub fn leave(&mut self, gid: &[u8]) -> Result<usize, Error> {
-        self.send_payload(gid, &Payload::Leave)
+        self.send_payload(gid, &Payload::Leave { quiet: false })
+    }
+
+    /// Quiet leave: as [`Session::leave`], but the other members' apps
+    /// store no "left" line for this removal. The member list still changes
+    /// for everyone (MLS), and a modified app could still announce it.
+    pub fn leave_quietly(&mut self, gid: &[u8]) -> Result<usize, Error> {
+        self.send_payload(gid, &Payload::Leave { quiet: true })
     }
 
     /// Encrypts an encoded payload for the group and sends it to `to` once,
@@ -997,6 +1013,7 @@ impl Session {
                 Ok(false)
             }
             Ok(Incoming::GroupChanged { added, removed, epoch, own_commit_discarded, settings_changed }) => {
+                self.note_departures(&gid, &removed)?;
                 let mut roster = self.roster(&gid)?;
                 let mut names = self.names(&gid)?;
                 for m in &removed {
@@ -1120,7 +1137,10 @@ impl Session {
                 self.save_names(gid, &known)?;
                 events.push(Event::Profile { group: gid.to_vec(), member: from, name });
             }
-            Some(Payload::Leave) => events.push(Event::LeaveRequested { group: gid.to_vec(), member: from }),
+            Some(Payload::Leave { quiet }) => {
+                self.note_leave_request(gid, &from, quiet)?;
+                events.push(Event::LeaveRequested { group: gid.to_vec(), member: from, quiet })
+            }
             Some(Payload::Read { ids }) => self.on_read(gid, from, ids, events)?,
             Some(Payload::Seen) => self.on_seen(gid, from)?,
             Some(Payload::Typing { on }) => {

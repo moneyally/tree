@@ -669,7 +669,10 @@ Feature options, one table for every scope (`option_format` in
 | `chat.mention_all` | `admins` or `all` | `admins` |
 | `user.group_add` | `contacts` or `nobody` | `contacts` |
 | `user.app_lock` | `passphrase`, `pin` or `bio` | `passphrase` |
-| every other standard feature | none | |
+| every other standard feature (also `user.drafts`, `user.unarchive_on_message`, `user.username_link`) | none | |
+
+Mute durations are not a feature option: muting is a per-chat action
+(1 hour, 8 hours, 1 week or until unmuted, APP_PROTOCOL.md 6.1).
 
 A duration is whole seconds (`90`) or a whole number with one unit `s`, `m`,
 `h`, `d`, `w` (`30m`, `1d`, `2w`). The apps offer a few values per key
@@ -1006,6 +1009,21 @@ changes only once the server agreed). A lookup of a hidden name gets the same
 `404` as a name nobody has; registering a hidden name for another account
 still gets `409 USERNAME_TAKEN` (the name is reserved, the account is not
 revealed). Non-ASCII names are not supported in v1.
+
+**Username links and QR codes** (`user.username_link`, user scope,
+released by default; `crates/tree-client/src/links.rs`). Applying it makes a
+16-byte random token and the link `tree://u/<base64url token>`; the QR code
+is the same text. The server stores only
+`SHA-256("tree/ulink/v1" || token)` with the account (one per account) and
+answers a lookup by that hash only while the account's @username is
+registered and discoverable, with the same `404` otherwise. Resetting the
+link registers a new token: the old link stops working, the @username
+stays. Releasing the setting deletes the link; releasing the @username
+deletes it too (and releases the setting on the device). The link does not
+spell the name, so a reset link cannot be traced back by guessing names. A
+device that opens or scans a link adds the account as a contact the user
+chose. What the server learns: that the account has a link, and which
+accounts look one up (as for name lookups, 10 rate tokens each).
 
 ### 8.5 Reports with message franking, account suspension
 

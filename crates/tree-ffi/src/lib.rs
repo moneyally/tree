@@ -126,6 +126,8 @@ pub enum TreeEvent {
         formatted: bool,
         mentions_me: bool,
         preview: Option<Preview>,
+        /// Sent silently: do not notify (see `should_notify`).
+        silent: bool,
     },
     Edited { group: String, id: String, from: String, text: String },
     Deleted { group: String, id: String, from: String },
@@ -138,7 +140,8 @@ pub enum TreeEvent {
     Profile { group: String, member: String, name: String },
     KeyChanged { account: String, new_members: Vec<String>, was_verified: bool },
     RosterUpdated { group: String },
-    LeaveRequested { group: String, member: String },
+    /// `quiet`: the member left quietly (no "left" line is stored).
+    LeaveRequested { group: String, member: String, quiet: bool },
     RemovedFromGroup { group: String },
     Held,
     Dropped { reason: String },
@@ -160,7 +163,7 @@ impl From<Event> for TreeEvent {
     fn from(e: Event) -> Self {
         let h = hex::encode;
         match e {
-            Event::Text { group, id, from, name, text, request, formatted, mentions_me, preview } => TreeEvent::Text {
+            Event::Text { group, id, from, name, text, request, formatted, mentions_me, preview, silent } => TreeEvent::Text {
                 group: h(group),
                 id,
                 from: from.to_hex(),
@@ -170,6 +173,7 @@ impl From<Event> for TreeEvent {
                 formatted,
                 mentions_me,
                 preview: preview.map(|p| Preview { url: p.url, title: p.title, description: p.description }),
+                silent,
             },
             Event::Edited { group, id, from, text } => TreeEvent::Edited { group: h(group), id, from: from.to_hex(), text },
             Event::Deleted { group, id, from } => TreeEvent::Deleted { group: h(group), id, from: from.to_hex() },
@@ -189,7 +193,7 @@ impl From<Event> for TreeEvent {
             Event::Profile { group, member, name } => TreeEvent::Profile { group: h(group), member: member.to_hex(), name },
             Event::KeyChanged { account, new_members, was_verified } => TreeEvent::KeyChanged { account, new_members: ids(new_members), was_verified },
             Event::RosterUpdated { group } => TreeEvent::RosterUpdated { group: h(group) },
-            Event::LeaveRequested { group, member } => TreeEvent::LeaveRequested { group: h(group), member: member.to_hex() },
+            Event::LeaveRequested { group, member, quiet } => TreeEvent::LeaveRequested { group: h(group), member: member.to_hex(), quiet },
             Event::RemovedFromGroup { group } => TreeEvent::RemovedFromGroup { group: h(group) },
             Event::Held => TreeEvent::Held,
             Event::Dropped { reason } => TreeEvent::Dropped { reason },
@@ -208,6 +212,9 @@ pub struct Message {
     pub id: String,
     pub sender: String,
     pub received_at: i64,
+    /// `text`, `file`, or a line about a member who went: `left` (asked to
+    /// leave) or `removed` (`sender` is that member, `who` its name). A
+    /// quiet leave has no line.
     pub kind: String,
     pub text: Option<String>,
     pub edited: bool,
@@ -219,6 +226,10 @@ pub struct Message {
     /// `failed` (offer retry / cancel), `sent`; empty for received messages
     /// and old ones.
     pub status: String,
+    /// Sent silently (no notification).
+    pub silent: bool,
+    /// For `left` / `removed`: the member's name when it went.
+    pub who: Option<String>,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -229,7 +240,10 @@ pub struct Reaction {
 
 impl From<tree_client::StoredMessage> for Message {
     fn from(m: tree_client::StoredMessage) -> Self {
+        let meta = tree_client::organize::message_meta(&m);
         Message {
+            silent: meta.silent,
+            who: meta.name,
             id: m.id,
             sender: m.sender,
             received_at: m.received_at,
@@ -382,6 +396,53 @@ pub struct Labels {
     pub not_contact: bool,
     pub no_common_group: bool,
     pub name_unverified: bool,
+}
+
+/// One chat as the chat list shows it (`chat_list` gives them in order:
+/// pinned first, then by last activity; archived ones go in their own
+/// section).
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ChatEntry {
+    pub group: String,
+    pub pinned: bool,
+    pub archived: bool,
+    pub muted: bool,
+    /// End of a timed mute (unix seconds); none while muted until unmuted.
+    pub muted_until: Option<i64>,
+    pub marked_unread: bool,
+    pub unread: u32,
+    pub draft: Option<String>,
+    pub last_activity: i64,
+}
+
+impl From<tree_client::organize::ChatState> for ChatEntry {
+    fn from(c: tree_client::organize::ChatState) -> Self {
+        ChatEntry {
+            group: hex::encode(c.group),
+            pinned: c.pinned,
+            archived: c.archived,
+            muted: c.muted,
+            muted_until: c.muted_until,
+            marked_unread: c.marked_unread,
+            unread: c.unread,
+            draft: c.draft,
+            last_activity: c.last_activity,
+        }
+    }
+}
+
+/// A mute duration the apps offer: `label` (`1h`, `8h`, `1w`, `forever`)
+/// and seconds (none: until unmuted).
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct MuteChoice {
+    pub label: String,
+    pub seconds: Option<i64>,
+}
+
+/// The mute durations to offer.
+#[uniffi::export]
+pub fn mute_choices() -> Vec<MuteChoice> {
+    tree_client::organize::MUTE_CHOICES.iter().map(|(l, s)| MuteChoice { label: l.to_string(), seconds: *s }).collect()
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -595,8 +656,15 @@ impl TreeSession {
         Ok(self.s().refresh_all()?.into_iter().map(hex::encode).collect())
     }
 
-    pub fn leave(&self, group: String) -> R<()> {
-        self.s().leave(&unhex(&group, "group")?)?;
+    /// Asks the admins to remove this device. `quiet`: the others' apps
+    /// show no "left" line (the member list still changes for everyone).
+    pub fn leave(&self, group: String, quiet: bool) -> R<()> {
+        let gid = unhex(&group, "group")?;
+        if quiet {
+            self.s().leave_quietly(&gid)?;
+        } else {
+            self.s().leave(&gid)?;
+        }
         Ok(())
     }
 
@@ -648,6 +716,8 @@ impl TreeSession {
         Ok(self.s().send_text(&unhex(&group, "group")?, &text)?)
     }
 
+    /// `silent`: the receivers' apps do not notify.
+    #[allow(clippy::too_many_arguments)]
     pub fn send_text_with(
         &self,
         group: String,
@@ -656,8 +726,10 @@ impl TreeSession {
         mentions: Vec<String>,
         all: bool,
         preview: Option<Preview>,
+        silent: bool,
     ) -> R<String> {
         let o = TextOptions {
+            silent,
             formatted,
             mentions: mentions.iter().map(|m| member(m)).collect::<R<_>>()?,
             all,
@@ -723,9 +795,10 @@ impl TreeSession {
         Ok(self.s().note_to_self()?.map(hex::encode))
     }
 
-    pub fn stranger_labels(&self, account: String) -> R<Labels> {
+    /// None while `user.stranger_labels` is released (show no labels).
+    pub fn stranger_labels(&self, account: String) -> R<Option<Labels>> {
         let l = self.s().stranger_labels(&account)?;
-        Ok(Labels { not_contact: l.not_contact, no_common_group: l.no_common_group, name_unverified: l.name_unverified })
+        Ok(l.map(|l| Labels { not_contact: l.not_contact, no_common_group: l.no_common_group, name_unverified: l.name_unverified }))
     }
 
     pub fn folders(&self) -> R<Vec<ChatFolder>> {
@@ -744,8 +817,53 @@ impl TreeSession {
         Ok(self.s().file_chat(&folder, &unhex(&group, "group")?, add)?)
     }
 
+    /// Mutes until unmuted (`on`) or unmutes.
     pub fn mute(&self, group: String, on: bool) -> R<()> {
         Ok(self.s().mute(&unhex(&group, "group")?, on)?)
+    }
+
+    /// Mutes for `seconds` (one of `mute_choices`), or until unmuted
+    /// (none). Returns when the mute ends.
+    pub fn mute_for(&self, group: String, seconds: Option<i64>) -> R<Option<i64>> {
+        Ok(self.s().mute_for(&unhex(&group, "group")?, seconds)?)
+    }
+
+    /// Whether to notify for a new message (not while muted, never for a
+    /// silent message).
+    pub fn should_notify(&self, group: String, silent: bool) -> R<bool> {
+        Ok(self.s().should_notify(&unhex(&group, "group")?, silent)?)
+    }
+
+    pub fn archive_chat(&self, group: String, on: bool) -> R<()> {
+        Ok(self.s().archive_chat(&unhex(&group, "group")?, on)?)
+    }
+
+    /// At most five pinned chats; pinning a sixth is a `Usage` error.
+    pub fn pin_chat(&self, group: String, on: bool) -> R<()> {
+        Ok(self.s().pin_chat(&unhex(&group, "group")?, on)?)
+    }
+
+    pub fn move_pinned_chat(&self, group: String, to: u32) -> R<()> {
+        Ok(self.s().move_pinned_chat(&unhex(&group, "group")?, to as usize)?)
+    }
+
+    pub fn mark_unread(&self, group: String, on: bool) -> R<()> {
+        Ok(self.s().mark_unread(&unhex(&group, "group")?, on)?)
+    }
+
+    /// Keeps the unsent text (empty deletes it); false if not kept
+    /// (`user.drafts` released).
+    pub fn set_draft(&self, group: String, text: String) -> R<bool> {
+        Ok(self.s().set_draft(&unhex(&group, "group")?, &text)?)
+    }
+
+    pub fn draft(&self, group: String) -> R<Option<String>> {
+        Ok(self.s().draft(&unhex(&group, "group")?)?)
+    }
+
+    /// Every chat in list order (pinned first, then by last activity).
+    pub fn chat_list(&self) -> R<Vec<ChatEntry>> {
+        Ok(self.s().chat_list()?.into_iter().map(Into::into).collect())
     }
 
     /// The newest `limit` messages, with the send status of this device's own.
@@ -831,6 +949,27 @@ impl TreeSession {
     /// Account id behind a @username, if discoverable.
     pub fn find(&self, username: String) -> R<Option<String>> {
         Ok(self.s().find(&username)?)
+    }
+
+    /// `tree://u/...` while `user.username_link` is applied (it needs a
+    /// @username); the QR code shows the same text.
+    pub fn username_link(&self) -> R<Option<String>> {
+        Ok(self.s().username_link()?)
+    }
+
+    /// A new link; the old one stops working, the @username stays.
+    pub fn reset_username_link(&self) -> R<String> {
+        Ok(self.s().reset_username_link()?)
+    }
+
+    /// The account behind a username link, if it still works.
+    pub fn find_by_link(&self, link: String) -> R<Option<String>> {
+        Ok(self.s().find_by_link(&link)?)
+    }
+
+    /// Scanned QR code or opened link: adds the account as a contact.
+    pub fn add_contact_by_link(&self, link: String) -> R<Option<String>> {
+        Ok(self.s().add_contact_by_link(&link)?)
     }
 
     pub fn contacts(&self) -> R<Vec<Contact>> {

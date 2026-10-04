@@ -55,9 +55,9 @@ fn receipts_typing_notes_labels_folders() {
 
     // Stranger labels and the group safety notice.
     let mut carol = env.device("carol");
-    let l = alice.stranger_labels(carol.account_id()).unwrap();
+    let l = alice.stranger_labels(carol.account_id()).unwrap().unwrap();
     assert!(l.not_contact && l.no_common_group && l.name_unverified);
-    let l = bob.stranger_labels(alice.account_id()).unwrap();
+    let l = bob.stranger_labels(alice.account_id()).unwrap().unwrap();
     assert!(!l.not_contact && l.no_common_group && l.name_unverified, "{l:?}");
     // A stranger (carol) adds bob to a group of three.
     carol.release_feature("user.group_add").unwrap();

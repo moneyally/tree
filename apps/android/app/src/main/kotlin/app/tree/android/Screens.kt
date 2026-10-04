@@ -141,7 +141,8 @@ private fun ChatList(model: AppModel, state: UiState, requests: Boolean) {
 private fun ChatScreen(model: AppModel, state: UiState, chat: Chat) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
-    var draft by remember(chat.id) { mutableStateOf("") }
+    // The chat's draft comes back when it opens (user.drafts).
+    var draft by remember(chat.id) { mutableStateOf(chat.draft ?: "") }
     var who by remember(chat.id) { mutableStateOf("") }
     var extra by remember(chat.id) { mutableStateOf<String?>(null) }
     var saving by remember { mutableStateOf<String?>(null) }
@@ -163,6 +164,10 @@ private fun ChatScreen(model: AppModel, state: UiState, chat: Chat) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = { scope.launch { model.openChat(null) } }) { Text("←") }
             Text(chat.title, style = MaterialTheme.typography.titleLarge)
+        }
+        // Who this person is to the user (user.stranger_labels).
+        if (chat.labels.isNotEmpty()) {
+            Text(chat.labels.joinToString(" · ") { Strings.t(it) }, style = MaterialTheme.typography.bodySmall)
         }
         if (chat.status == "request") {
             Text(Strings.t("request_from") + ": " + (chat.requestFrom ?: "?"))
@@ -193,7 +198,8 @@ private fun ChatScreen(model: AppModel, state: UiState, chat: Chat) {
         LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
             items(state.messages, key = { it.id }) { m ->
                 val who2 = state.names[m.sender]?.ifEmpty { Strings.t("me") } ?: m.sender.take(6)
-                val body = (if (m.deleted) Strings.t("deleted") else (m.text ?: "")) +
+                val body = (if (m.kind == "left" || m.kind == "removed") "${m.who ?: ""} ${Strings.t(m.kind)}"
+                    else if (m.deleted) Strings.t("deleted") else (m.text ?: "")) +
                     if (m.id in state.readMine) "  ✓ " + Strings.t("read") else ""
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("$who2: $body", Modifier.weight(1f).padding(4.dp))
@@ -218,6 +224,7 @@ private fun ChatScreen(model: AppModel, state: UiState, chat: Chat) {
             OutlinedTextField(draft, { v ->
                 if (draft.isEmpty() != v.isEmpty()) scope.launch { model.typing(chat.id, v.isNotEmpty()) }
                 draft = v
+                scope.launch { model.saveDraft(chat.id, v) }
             }, label = { Text(Strings.t("message")) }, modifier = Modifier.weight(1f))
             Button(onClick = { scope.launch { if (model.send(chat.id, draft)) { model.typing(chat.id, false); draft = "" } } }) { Text(Strings.t("send")) }
         }

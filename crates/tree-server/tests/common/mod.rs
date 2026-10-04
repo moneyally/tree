@@ -449,11 +449,7 @@ impl Api {
         self.fetch_with_cursor(dev, wait).await.1
     }
 
-    pub async fn fetch_with_cursor(
-        &self,
-        dev: &Device,
-        wait: u64,
-    ) -> (i64, Vec<Value>) {
+    pub async fn fetch_with_cursor(&self, dev: &Device, wait: u64) -> (i64, Vec<Value>) {
         let path = if wait > 0 {
             format!("/v1/messages?wait={wait}")
         } else {

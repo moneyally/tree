@@ -56,7 +56,6 @@ async fn blocked_account_cannot_claim_one_time_key_packages() {
     ts.stop().await;
 }
 
-
 #[tokio::test]
 async fn device_can_revoke_all_unused_key_packages_after_compromise() {
     let ts = boot(|_| {}).await;

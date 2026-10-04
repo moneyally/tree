@@ -14,6 +14,7 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::api::InviteRequest;
 use crate::messages::now;
 use crate::{CommitOutcome, Error, Event, Session};
 
@@ -37,7 +38,7 @@ pub struct InviteLink {
     pub max_uses: u32,
 }
 
-fn token_hash(token: &[u8]) -> [u8; 32] {
+pub(crate) fn token_hash(token: &[u8]) -> [u8; 32] {
     let mut h = Sha256::new();
     h.update(b"tree/invite/v1");
     h.update(token);
@@ -48,7 +49,7 @@ fn key(hash: &[u8]) -> String {
     format!("invite/{}", hex::encode(hash))
 }
 
-fn parse_link(link: &str) -> Result<Vec<u8>, Error> {
+pub(crate) fn parse_link(link: &str) -> Result<Vec<u8>, Error> {
     let t = link.trim().strip_prefix(PREFIX).ok_or_else(|| Error::Usage("not a Tree invite link".into()))?;
     let token = URL_SAFE_NO_PAD.decode(t).map_err(|_| Error::Usage("damaged invite link".into()))?;
     if token.len() != 16 {
@@ -113,17 +114,25 @@ impl Session {
     /// asked to join). Returns the owner's account id.
     pub fn join_invite_link(&mut self, link: &str) -> Result<String, Error> {
         let token = parse_link(link)?;
-        let owner = self.api.invite_join(&self.creds, &STANDARD.encode(&token))?;
+        // Everyone who has the link knows the token; only the owner's device
+        // gets this nonce (from the server, with the request). A roster
+        // naming it therefore comes from the device that took the request,
+        // not from someone else who saw the link and claims the owner's
+        // account (F-016).
+        let mut nonce = [0u8; 16];
+        getrandom::getrandom(&mut nonce).expect("operating system random number generator failed");
+        let owner = self.api.invite_join(&self.creds, &STANDARD.encode(&token), &nonce)?;
         let mark = LinkJoin { owner: owner.clone(), at: now() };
-        self.client.set_app_data(&format!("linkjoin/{}", hex::encode(token_hash(&token))), Some(&serde_json::to_vec(&mark).expect("JSON")))?;
+        self.client.set_app_data(&format!("linkjoin/{}", hex::encode(nonce)), Some(&serde_json::to_vec(&mark).expect("JSON")))?;
         Ok(owner)
     }
 
-    /// True (once) if the user recently opened invite link `link` (hash
-    /// hex) and it belongs to `account`. Tying it to the link means the
-    /// owner can bring the user into one group, the one this use was for.
+    /// True (once) if the user recently opened an invite link of `account`
+    /// and `link` is the nonce (hex) this device sent with that request.
+    /// Tying it to the request means the owner can bring the user into one
+    /// group, the one this use was for, and nobody else can.
     pub(crate) fn take_link_join(&mut self, account: &str, link: Option<&str>) -> Result<bool, Error> {
-        let Some(h) = link.filter(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit())) else { return Ok(false) };
+        let Some(h) = link.filter(|h| h.len() == 32 && h.bytes().all(|b| b.is_ascii_hexdigit())) else { return Ok(false) };
         let k = format!("linkjoin/{h}");
         let Some(mark) = self.client.app_data(&k)?.and_then(|v| serde_json::from_slice::<LinkJoin>(&v).ok()) else {
             return Ok(false);
@@ -135,7 +144,8 @@ impl Session {
         Ok(now() - mark.at <= JOIN_WINDOW)
     }
 
-    fn handle_invite_request(&mut self, hash: &[u8], account: &str, events: &mut Vec<Event>) -> Result<(), Error> {
+    fn handle_invite_request(&mut self, req: &InviteRequest, events: &mut Vec<Event>) -> Result<(), Error> {
+        let (hash, account) = (&req.hash[..], req.account.as_str());
         let k = key(hash);
         let Some(rec) = self.client.app_data(&k)?.and_then(|v| serde_json::from_slice::<InviteLink>(&v).ok()) else {
             return Ok(()); // revoked here, or made by another device
@@ -156,7 +166,10 @@ impl Session {
             refuse(events, "blocked account");
             return Ok(());
         }
-        match self.invite_via(&gid, account, Some(hex::encode(hash)))? {
+        // Without the joiner's nonce (an older client) the group arrives as
+        // a request on its side.
+        let nonce = req.nonce.as_ref().filter(|n| n.len() == 16).map(hex::encode);
+        match self.invite_via(&gid, account, nonce)? {
             (CommitOutcome::Accepted { .. }, ev) => {
                 events.extend(ev);
                 events.push(Event::InviteLinkUsed { group: gid, account: account.to_string() });
@@ -172,11 +185,11 @@ impl Session {
             return Ok(());
         }
         let mut done = Vec::new();
-        for (id, hash, account) in self.api.invite_requests(&self.creds)? {
-            done.push(id);
+        for req in self.api.invite_requests(&self.creds)? {
+            done.push(req.id.clone());
             // One bad request must not stop the others or block the ack.
-            if let Err(e) = self.handle_invite_request(&hash, &account, events) {
-                events.push(Event::Dropped { reason: format!("invite link request from {account}: {e}") });
+            if let Err(e) = self.handle_invite_request(&req, events) {
+                events.push(Event::Dropped { reason: format!("invite link request from {}: {e}", req.account) });
             }
         }
         if !done.is_empty() {

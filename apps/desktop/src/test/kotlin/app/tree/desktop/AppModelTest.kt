@@ -96,6 +96,19 @@ class AppModelTest {
         assertTrue(!bob.state.value.chatFeatures.single { it.key == "chat.voice" }.applied)
         assertTrue(!bob.setChatFeature(g, "chat.voice", true), "bob is not an admin")
         bob.clearMessages()
+        // Options: the admin picks a disappearing time from the choices;
+        // a value outside the format is refused with INVALID_OPTION.
+        val dis = alice.state.value.chatFeatures.single { it.key == "chat.disappearing" }
+        assertTrue("1h" in dis.choices)
+        assertTrue(alice.setChatFeature(g, "chat.disappearing", true, "1h"))
+        assertEquals("1h", alice.state.value.chatFeatures.single { it.key == "chat.disappearing" }.option)
+        assertTrue(!alice.setChatFeature(g, "chat.disappearing", true, "forever"))
+        assertTrue(alice.state.value.error!!.startsWith("INVALID_OPTION"))
+        alice.clearMessages()
+        assertTrue(alice.setChatFeature(g, "chat.disappearing", false))
+        // e2e is locked on and shown so.
+        val e2e = alice.state.value.chatFeatures.single { it.key == "chat.e2e" }
+        assertTrue(e2e.applied && e2e.lockedBy != null && e2e.choices.isEmpty())
 
         // Settings come from the registry; permanent ones say why.
         bob.loadFeatures()
@@ -103,6 +116,18 @@ class AppModelTest {
         assertTrue(warn.applied && warn.lockedBy!!.startsWith("always"))
         bob.setFeature("user.search_index", false)
         assertTrue(!bob.state.value.features.single { it.key == "user.search_index" }.applied)
+        // A user option: nobody may add bob to groups.
+        assertTrue(bob.setFeature("user.group_add", true, "nobody"))
+        assertEquals("nobody", bob.state.value.features.single { it.key == "user.group_add" }.option)
+        assertTrue(!bob.setFeature("user.group_add", true, "everyone"))
+        bob.clearMessages()
+        // The username is findable only while user.discoverable is applied.
+        assertNotNull(bob.setUsername("bob_app_test"))
+        assertNotNull(alice.session!!.find("bob_app_test"))
+        assertTrue(bob.setFeature("user.discoverable", false))
+        assertEquals(null, alice.session!!.find("bob_app_test"))
+        assertTrue(bob.setFeature("user.discoverable", true))
+        assertNotNull(alice.session!!.find("bob_app_test"))
 
         // Errors become a message on screen, not a crash.
         assertTrue(!bob.invite(g, "@nobody_here"))

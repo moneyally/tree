@@ -110,14 +110,22 @@ pub async fn revoke(State(state): State<AppState>, Path(hash): Path<String>, req
 #[derive(Deserialize)]
 pub struct JoinReq {
     pub token: String,
+    /// 16 random bytes from the joining device, handed only to the link
+    /// owner's device with the request (it names them in its roster).
+    #[serde(default)]
+    pub nonce: Option<String>,
 }
-json_body!(JoinReq, |_cfg| 256);
+json_body!(JoinReq, |_cfg| 512);
 
 /// `POST /v1/invites/join` — use a link. `202 {"owner_account"}`.
 pub async fn join(State(state): State<AppState>, req: Signed<JoinReq>) -> ApiResult<(StatusCode, Json<Value>)> {
     let token = unb64(&req.body.token, "token")?;
     if token.len() != 16 {
         return Err(ApiError::bad_request("token must be 16 bytes"));
+    }
+    let nonce = req.body.nonce.as_deref().map(|n| unb64(n, "nonce")).transpose()?;
+    if nonce.as_ref().is_some_and(|n| n.len() != 16) {
+        return Err(ApiError::bad_request("nonce must be 16 bytes"));
     }
     // Guessing links is pointless at 128 bits, but each try still costs.
     req.device.charge_outreach(&state, 5.0)?;
@@ -137,17 +145,28 @@ pub async fn join(State(state): State<AppState>, req: Signed<JoinReq>) -> ApiRes
     if owner_account == req.device.account_id {
         return Err(ApiError::bad_request("this is your own link"));
     }
-    let inserted = sqlx::query("INSERT OR IGNORE INTO invite_requests (id, token_hash, account_id, created_at) VALUES (?, ?, ?, ?)")
-        .bind(new_id())
-        .bind(&h[..])
-        .bind(&req.device.account_id)
-        .bind(crate::util::round_to_minute(now_secs()))
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
-    // A repeated request by the same account uses the link once.
+    let inserted = sqlx::query(
+        "INSERT OR IGNORE INTO invite_requests (id, token_hash, account_id, created_at, nonce) VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(new_id())
+    .bind(&h[..])
+    .bind(&req.device.account_id)
+    .bind(crate::util::round_to_minute(now_secs()))
+    .bind(nonce.as_deref())
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    // A repeated request by the same account uses the link once; the
+    // newest nonce is the one the joining device now waits for.
     if inserted == 1 {
         sqlx::query("UPDATE invites SET uses = uses + 1 WHERE token_hash = ?").bind(&h[..]).execute(&mut *tx).await?;
+    } else {
+        sqlx::query("UPDATE invite_requests SET nonce = ? WHERE token_hash = ? AND account_id = ?")
+            .bind(nonce.as_deref())
+            .bind(&h[..])
+            .bind(&req.device.account_id)
+            .execute(&mut *tx)
+            .await?;
     }
     tx.commit().await?;
     state.wake(&owner_device);
@@ -157,7 +176,7 @@ pub async fn join(State(state): State<AppState>, req: Signed<JoinReq>) -> ApiRes
 /// `GET /v1/invites/requests` — join requests for this device's links.
 pub async fn requests(State(state): State<AppState>, req: Signed<NoBody>) -> ApiResult<Json<Value>> {
     let rows = sqlx::query(
-        "SELECT r.id, r.token_hash, r.account_id FROM invite_requests r JOIN invites i ON i.token_hash = r.token_hash \
+        "SELECT r.id, r.token_hash, r.account_id, r.nonce FROM invite_requests r JOIN invites i ON i.token_hash = r.token_hash \
          WHERE i.owner_device = ? ORDER BY r.created_at, r.rowid LIMIT 100",
     )
     .bind(&req.device.device_id)
@@ -169,6 +188,7 @@ pub async fn requests(State(state): State<AppState>, req: Signed<NoBody>) -> Api
             "id": r.try_get::<String, _>("id")?,
             "token_hash": b64(&r.try_get::<Vec<u8>, _>("token_hash")?),
             "account_id": r.try_get::<String, _>("account_id")?,
+            "nonce": r.try_get::<Option<Vec<u8>>, _>("nonce")?.map(|n| b64(&n)),
         }));
     }
     Ok(Json(json!({ "requests": out })))

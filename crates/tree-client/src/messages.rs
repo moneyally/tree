@@ -9,11 +9,11 @@
 //! | Setting | Default | Effect |
 //! | --- | --- | --- |
 //! | `chat.media` | applied | files allowed |
-//! | `chat.edit` | applied, window 86400 s | own messages editable within the window |
-//! | `chat.delete_for_all` | applied, window 86400 s | own messages deletable for everyone within the window |
+//! | `chat.edit` | applied, option = window (duration, default 24 h) | own messages editable within the window |
+//! | `chat.delete_for_all` | applied, option = window (duration, default 24 h) | own messages deletable for everyone within the window |
 //! | `chat.reactions` | applied | reactions allowed |
 //! | `chat.view_once` | applied | view-once files allowed |
-//! | `chat.disappearing` | released; option = seconds | every message expires that long after it arrives |
+//! | `chat.disappearing` | released; option = duration (`90`, `30m`, `1h`, `1d`, `2w`; default `1d`) | every message expires that long after it arrives |
 //! | `chat.voice` | applied | voice messages allowed |
 //! | `chat.formatting` | applied | formatting markup is shown; released: shown as plain text |
 //! | `chat.mention_all` | applied, option `admins` (default) or `all` | who may @all; otherwise the @all is ignored |
@@ -24,7 +24,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use tree_core::features::{Registry, State};
+use tree_core::features::{self, Registry, State};
 use tree_core::storage::messages::StoredMessage;
 use tree_core::MemberId;
 use zeroize::Zeroizing;
@@ -88,24 +88,28 @@ struct StoredFile {
 
 impl Session {
     /// A chat feature as the group's admins set it (or its default).
+    /// A permanently locked key (`chat.e2e`) always has its locked value,
+    /// whatever the group settings hold.
     pub(crate) fn chat_feature(&mut self, gid: &[u8], key: &str) -> Result<(bool, Option<String>), Error> {
-        if let Some(s) = self.group_settings(gid)?.features.get(key) {
-            return Ok((s.applied, s.option.clone()));
+        let st = Registry::standard().status(key)?;
+        if st.locked_by.is_none() {
+            if let Some(s) = self.group_settings(gid)?.features.get(key) {
+                return Ok((s.applied, s.option.clone()));
+            }
         }
-        let st = Registry::standard().status(key).map_err(|e| Error::Feature(e.code().into()))?;
         Ok((st.state == State::Applied, st.option))
     }
 
     /// Every chat setting of the group as the admins left it (defaults
     /// where they changed nothing), for a group settings screen. Permanent
-    /// locks (`chat.e2e`) carry their reason.
+    /// locks (`chat.e2e`) carry their reason and always their locked value.
     pub fn chat_features(&mut self, gid: &[u8]) -> Result<Vec<tree_core::features::Status>, Error> {
         let set = self.group_settings(gid)?.features;
         Ok(Registry::standard()
             .list(tree_core::features::Scope::Chat)
             .into_iter()
             .map(|mut st| {
-                if let Some(s) = set.get(st.key) {
+                if let (None, Some(s)) = (&st.locked_by, set.get(st.key)) {
                     st.state = if s.applied { State::Applied } else { State::Released };
                     st.option = s.option.clone();
                 }
@@ -121,13 +125,15 @@ impl Session {
     /// Edit / delete window in seconds (option of the feature, or the default).
     fn window(&mut self, gid: &[u8], key: &str) -> Result<i64, Error> {
         let (_, opt) = self.chat_feature(gid, key)?;
-        Ok(opt.and_then(|o| o.parse().ok()).unwrap_or(DEFAULT_WINDOW))
+        Ok(features::option_seconds(key, opt.as_deref()).unwrap_or(DEFAULT_WINDOW))
     }
 
     /// When a message arriving now should disappear, if the group says so.
+    /// The option is a duration (`features::option_format`: `90`, `30m`,
+    /// `1d`, ...); applied without one (older settings) means its default.
     fn expiry(&mut self, gid: &[u8]) -> Result<Option<i64>, Error> {
         let (on, opt) = self.chat_feature(gid, "chat.disappearing")?;
-        Ok(if on { opt.and_then(|o| o.parse::<i64>().ok()).filter(|s| *s > 0).map(|s| now() + s) } else { None })
+        Ok(if on { features::option_seconds("chat.disappearing", opt.as_deref()).map(|s| now() + s) } else { None })
     }
 
     #[allow(clippy::too_many_arguments)]

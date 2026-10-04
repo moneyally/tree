@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{error::TreeError, group::MemberId};
+use crate::{error::TreeError, features, group::MemberId};
 
 /// Extension type, in the range RFC 9420 section 17.3 reserves for private use.
 pub const EXTENSION_TYPE: u16 = 0xF2E0;
@@ -78,7 +78,27 @@ impl GroupSettings {
         if self.features.keys().any(|k| !k.starts_with("chat.")) {
             return Err(TreeError::Group("only chat.* features belong in group settings".into()));
         }
+        for (k, s) in &self.features {
+            // A permanent lock (chat.e2e, chat.private_to_public) is not a
+            // group's choice, whatever an admin's client writes.
+            if features::contradicts_lock(k, s.applied) {
+                return Err(TreeError::Group(format!("{k} is permanently locked")));
+            }
+            if s.applied {
+                features::check_option(k, s.option.clone()).map_err(|e| match e {
+                    features::FeatureError::InvalidOption(why) => TreeError::Group(format!("invalid option: {why}")),
+                    other => TreeError::Group(other.code().into()),
+                })?;
+            }
+        }
         Ok(())
+    }
+
+    /// The settings as they take effect: entries that contradict a
+    /// permanent lock are dropped (the locked value always holds).
+    pub fn without_locked(mut self) -> Self {
+        self.features.retain(|k, s| !features::contradicts_lock(k, s.applied));
+        self
     }
 
     pub fn is_admin(&self, m: &MemberId) -> bool {
@@ -137,5 +157,26 @@ mod tests {
         assert!(GroupSettings::decode(&vec![b' '; MAX_LEN + 1]).is_err());
         let huge = GroupSettings { name: Some("x".repeat(MAX_LEN)), ..s };
         assert!(huge.encode().is_err());
+    }
+
+    #[test]
+    fn locked_keys_hold() {
+        let base = GroupSettings { admins: vec![id(1)], ..Default::default() };
+        let with = |k: &str, applied: bool, option: Option<&str>| {
+            let mut s = base.clone();
+            s.features.insert(k.into(), ChatSetting { applied, option: option.map(str::to_string) });
+            s
+        };
+        assert!(with("chat.e2e", false, None).check(&[id(1)]).is_err());
+        assert!(with("chat.private_to_public", true, None).check(&[id(1)]).is_err());
+        assert!(with("chat.e2e", true, None).check(&[id(1)]).is_ok(), "the locked value itself is harmless");
+        assert!(with("chat.disappearing", true, Some("never")).check(&[id(1)]).is_err());
+        assert!(with("chat.disappearing", true, Some("1h")).check(&[id(1)]).is_ok());
+        assert!(with("chat.future_thing", true, Some("x")).check(&[id(1)]).is_ok(), "unknown keys: newer clients");
+        // Read side: a contradiction (e.g. in a group's first settings) is dropped.
+        let s = with("chat.e2e", false, None).without_locked();
+        assert!(!s.features.contains_key("chat.e2e"));
+        let s = with("chat.media", false, None).without_locked();
+        assert!(!s.features["chat.media"].applied);
     }
 }

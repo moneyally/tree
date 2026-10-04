@@ -217,8 +217,15 @@ fn run(args: Vec<String>) -> Result<(), String> {
             }
             println!("{}", outcome(o));
         }
-        ["username", name] => println!("you are @{}", s.set_username(name, true).map_err(e)?),
-        ["username", name, "hidden"] => println!("you are @{} (not findable by search)", s.set_username(name, false).map_err(e)?),
+        ["username", name] => {
+            let n = s.set_username(name).map_err(e)?;
+            let found = format!("{:?}", s.feature("user.discoverable").map_err(e)?.state) == "Applied";
+            println!("you are @{n}{}", if found { "" } else { " (not findable: user.discoverable is released)" });
+        }
+        ["username", name, "hidden"] => {
+            s.release_feature("user.discoverable").map_err(e)?;
+            println!("you are @{} (not findable by search; `apply user.discoverable` to change)", s.set_username(name).map_err(e)?);
+        }
         ["username-release"] => {
             s.release_username().map_err(e)?;
             println!("username released");
@@ -288,25 +295,30 @@ fn run(args: Vec<String>) -> Result<(), String> {
         }
         ["settings"] => {
             for f in s.features().map_err(e)? {
+                let pending = s.release_pending(f.key).map_err(e)?;
                 println!(
-                    "{:<28} {:<8} {}{}",
+                    "{:<28} {:<8} {}{}{}",
                     f.key,
                     format!("{:?}", f.state).to_lowercase(),
                     f.option.as_deref().unwrap_or(""),
                     match &f.locked_by {
                         Some(r) => format!("  (locked: {r:?})"),
                         None => String::new(),
-                    }
+                    },
+                    pending.map(|t| format!("  (release pending until {t}, unix time)")).unwrap_or_default(),
                 );
             }
         }
         ["apply", key, more @ ..] => {
             let st = s.apply_feature(key, more.first().map(|o| o.to_string())).map_err(e)?;
-            println!("{} {:?}", st.key, st.state);
+            println!("{} {:?} {}", st.key, st.state, st.option.as_deref().unwrap_or(""));
         }
         ["release", key] => {
             let st = s.release_feature(key).map_err(e)?;
-            println!("{} {:?}", st.key, st.state);
+            match s.release_pending(key).map_err(e)? {
+                Some(t) => println!("{} {:?}: release pending until {t} (unix time)", st.key, st.state),
+                None => println!("{} {:?}", st.key, st.state),
+            }
         }
         ["contacts"] => {
             for c in s.contacts().map_err(e)? {

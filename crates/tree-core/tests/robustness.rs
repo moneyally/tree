@@ -388,7 +388,8 @@ impl Model {
             return Err(FeatureError::PlanRequired);
         }
         if f.lock == Lock::None {
-            let v = if apply { (State::Applied, option) } else { (State::Released, None) };
+            // Option formats are defined once, in the registry's module.
+            let v = if apply { (State::Applied, tree_core::features::check_option(f.key, option)?) } else { (State::Released, None) };
             self.state.insert((f.scope, f.key), v);
         }
         Ok(self.status(f))

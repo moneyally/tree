@@ -52,6 +52,15 @@ pub struct Api {
     http: Http,
 }
 
+/// Someone used one of this device's invite links.
+pub struct InviteRequest {
+    pub id: String,
+    pub hash: Vec<u8>,
+    pub account: String,
+    /// The joining device's nonce (none from older clients).
+    pub nonce: Option<Vec<u8>>,
+}
+
 pub fn b64(b: &[u8]) -> String {
     STANDARD.encode(b)
 }
@@ -213,18 +222,27 @@ impl Api {
         Ok(())
     }
 
-    /// Uses a link; returns the owner's account id.
-    pub fn invite_join(&self, c: &Creds, token_b64: &str) -> Result<String, Error> {
-        let v = self.call(c, Method::POST, "/v1/invites/join", Some(&json!({ "token": token_b64 })))?.ok()?;
+    /// Uses a link; returns the owner's account id. `nonce` goes only to
+    /// the owner's device, with the request.
+    pub fn invite_join(&self, c: &Creds, token_b64: &str, nonce: &[u8; 16]) -> Result<String, Error> {
+        let body = json!({ "token": token_b64, "nonce": b64(nonce) });
+        let v = self.call(c, Method::POST, "/v1/invites/join", Some(&body))?.ok()?;
         field(&v, "owner_account")
     }
 
-    /// Join requests for this device's links: (id, token hash, account).
-    pub fn invite_requests(&self, c: &Creds) -> Result<Vec<(String, Vec<u8>, String)>, Error> {
+    /// Join requests for this device's links: (id, token hash, account,
+    /// the joiner's nonce if it sent one).
+    pub fn invite_requests(&self, c: &Creds) -> Result<Vec<InviteRequest>, Error> {
         let v = self.call(c, Method::GET, "/v1/invites/requests", None)?.ok()?;
         let mut out = Vec::new();
         for r in v["requests"].as_array().cloned().unwrap_or_default() {
-            out.push((field(&r, "id")?, unb64(&field(&r, "token_hash")?)?, field(&r, "account_id")?));
+            let nonce = r["nonce"].as_str().map(unb64).transpose()?;
+            out.push(InviteRequest {
+                id: field(&r, "id")?,
+                hash: unb64(&field(&r, "token_hash")?)?,
+                account: field(&r, "account_id")?,
+                nonce,
+            });
         }
         Ok(out)
     }

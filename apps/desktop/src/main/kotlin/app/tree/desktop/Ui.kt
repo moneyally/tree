@@ -189,20 +189,42 @@ private fun SafetyPanel(model: AppModel, state: UiState) {
     }
 }
 
-/** Admins: every chat setting with apply / release. */
+/**
+ * One setting: its key and option, why it is locked or when a release takes
+ * effect, the option choices (applying with that option), and the switch.
+ * Switching on keeps the current option (null: the feature's default).
+ */
+@Composable
+private fun FeatureRow(model: AppModel, f: uniffi.tree_ffi.Feature, switchable: Boolean, set: (Boolean, String?) -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(f.key + (f.option?.let { " ($it)" } ?: ""))
+            f.lockedBy?.let { Text("${Strings.t("locked")}: $it", style = MaterialTheme.typography.bodySmall) }
+            model.pendingNote(f)?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+            if (f.lockedBy == null && f.choices.isNotEmpty()) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(Strings.t("option") + ":", style = MaterialTheme.typography.bodySmall)
+                    f.choices.forEach { c ->
+                        TextButton(onClick = { set(true, c) }) { Text(if (f.applied && f.option == c) "[$c]" else c) }
+                    }
+                }
+            }
+        }
+        Switch(
+            checked = f.applied,
+            enabled = switchable && f.lockedBy == null,
+            onCheckedChange = { on -> set(on, if (on) f.option else null) },
+        )
+    }
+}
+
+/** Admins: every chat setting with apply / release and its option. */
 @Composable
 private fun GroupSettingsPanel(model: AppModel, state: UiState, group: String) {
     val scope = rememberCoroutineScope()
     Text(Strings.t("group_settings"), style = MaterialTheme.typography.titleSmall)
     state.chatFeatures.forEach { f ->
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(f.key + (f.option?.let { " ($it)" } ?: ""), Modifier.weight(1f))
-            Switch(
-                checked = f.applied,
-                enabled = f.lockedBy == null,
-                onCheckedChange = { on -> scope.launch { model.setChatFeature(group, f.key, on, f.option) } },
-            )
-        }
+        FeatureRow(model, f, switchable = true) { on, option -> scope.launch { model.setChatFeature(group, f.key, on, option) } }
     }
 }
 
@@ -311,16 +333,12 @@ private fun Settings(model: AppModel, state: UiState) {
         // Every user setting with apply / release; locked ones say why.
         LazyColumn {
             items(state.features, key = { it.key }) { f ->
-                Row(Modifier.fillMaxWidth().padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text(f.key)
-                        f.lockedBy?.let { Text("${Strings.t("locked")}: $it", style = MaterialTheme.typography.bodySmall) }
-                    }
-                    Switch(
-                        checked = f.applied,
-                        enabled = f.lockedBy == null && f.key != "user.recovery_phrase",
-                        onCheckedChange = { on -> scope.launch { model.setFeature(f.key, on) } },
-                    )
+                // The recovery phrase is made with the button above (the words are
+                // shown once); the switch only releases it, which the server
+                // completes after 7 days (shown as pending until then).
+                val recovery = f.key == "user.recovery_phrase"
+                FeatureRow(model, f, switchable = !recovery || (f.applied && f.releasePendingUntil == null)) { on, option ->
+                    scope.launch { model.setFeature(f.key, on, option) }
                 }
             }
         }

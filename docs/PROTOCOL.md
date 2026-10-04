@@ -396,6 +396,10 @@ Pinning (`tree-client`): the first set of devices learned for an account
 (from a key-package claim, or from a roster inside a group) is trusted as it
 is; any later member id not seen before for that account raises a key-change
 warning (`user.key_change_warning`, permanently on) and clears "verified".
+A new member id that only a group roster claimed (not the server, in a
+key-package claim) stays *unconfirmed* until the user verifies the safety
+number or invites the account: it is warned about but does not count as the
+contact when deciding requests (APP_PROTOCOL.md 5, F-016).
 This is trust on first use; key transparency (stage 4) removes the first-use
 gap. Today a person's side contains only the devices the other side has
 seen; with several devices per person (stage 3) the safety number changes
@@ -638,12 +642,35 @@ Rules every receiver checks before merging a commit, judged by the settings
 3. The settings after the commit must name at least one admin who is a
    member after the commit, only `chat.*` feature keys, and a name of at most
    128 characters.
+4. No feature entry may contradict a permanent lock (`chat.e2e` released,
+   `chat.private_to_public` applied), and every applied entry's option must
+   fit the feature's option format (table below).
 
 The creator is the first admin. Admins appoint and drop admins, rename the
 group and apply or release chat features (checked against the feature
-registry: permanent locks such as `chat.e2e` cannot be released). An admin
-who is removed drops out of the admin list automatically. A leave request
-(section 6.5) is carried out by an admin.
+registry: permanent locks such as `chat.e2e` cannot be released; an honest
+client never writes a locked key at all). An admin who is removed drops out
+of the admin list automatically. A leave request (section 6.5) is carried
+out by an admin. Reading the settings also drops any entry that contradicts
+a permanent lock (a group joined with one in its first settings, which no
+commit check saw): a locked key always has its locked value.
+
+Feature options, one table for every scope (`option_format` in
+`crates/tree-core/src/features.rs`; applying anything else returns
+`INVALID_OPTION` with the accepted format):
+
+| Key | Option | Without an option |
+| --- | --- | --- |
+| `chat.disappearing` | duration, 1 s to 365 days | `1d` is stored |
+| `chat.edit`, `chat.delete_for_all` | duration, 1 s to 30 days | 24 hours |
+| `chat.mention_all` | `admins` or `all` | `admins` |
+| `user.group_add` | `contacts` or `nobody` | `contacts` |
+| `user.app_lock` | `passphrase`, `pin` or `bio` | `passphrase` |
+| every other standard feature | none | |
+
+A duration is whole seconds (`90`) or a whole number with one unit `s`, `m`,
+`h`, `d`, `w` (`30m`, `1d`, `2w`). The apps offer a few values per key
+(`option_choices`).
 
 Chat features are stored here; what they enforce on each device (media off,
 edit window, disappearing timer, ...) is implemented feature by feature.
@@ -894,8 +921,13 @@ The server stores the hash with the account id and answers lookups by hash.
 Usernames are short and guessable, so the hash keeps them out of plain view
 but does not hide them from a server that tries a dictionary: lookups cost 10
 rate-limit tokens each, and an account can hide its name from lookups
-(`user.discoverable` released) while keeping it reserved. Non-ASCII names
-are not supported in v1.
+(`user.discoverable` released) while keeping it reserved. The client
+registers the name with `discoverable` taken from `user.discoverable`, and
+applying or releasing that setting re-registers the name first (the setting
+changes only once the server agreed). A lookup of a hidden name gets the same
+`404` as a name nobody has; registering a hidden name for another account
+still gets `409 USERNAME_TAKEN` (the name is reserved, the account is not
+revealed). Non-ASCII names are not supported in v1.
 
 ### 8.5 Reports with message franking, account suspension
 
@@ -971,6 +1003,12 @@ device for it), never MLS state (RECOVERY_THREAT_MODEL.md 1). Code:
   7 days, shown to every device (`GET /v1/recovery`), and the old phrase
   still recovers meanwhile. A recovery cancels any pending change. This
   keeps a stolen unlocked device from locking the owner out (F-010).
+  On the device, `user.recovery_phrase` shows what the server reports:
+  applied while a key can recover the account, so a release without the
+  phrase stays applied with "release pending until <date>"
+  (`Session::release_pending`, FFI `Feature.release_pending_until`) and
+  reads released once the server dropped the key. Every answer from the
+  server (`apply`, `release`, `GET /v1/recovery`) updates it.
 - **Recovery.** A new device generates its request key, solves the signup
   proof of work and sends, signed with its new key (as signup),
   `recovery_pub`, its `auth_pub`, `ts` and
@@ -1005,20 +1043,41 @@ backups keyed from the phrase (stage 3).
    days) and a use limit (1 to 10,000), and keeps locally which group the
    link is for. Making a link applies `chat.invite_link` in the group
    settings (a commit) if it was released.
-2. A device that opens the link sends the secret (`POST /v1/invites/join`,
-   5 rate tokens). The server checks expiry and uses, counts one use per
-   account, queues a join request for the owner's device and returns the
-   owner's account id. The joining device remembers (for one day) that the
-   user opened this link (keyed by its hash, with the owner's account).
+2. A device that opens the link sends the secret and a fresh 16-byte random
+   nonce (`POST /v1/invites/join`, 5 rate tokens). The server checks expiry
+   and uses, counts one use per account, queues a join request (with the
+   nonce) for the owner's device and returns the owner's account id. The
+   joining device remembers (for one day) that the user asked to join,
+   keyed by the nonce, with the owner's account.
 3. The owner's device, on sync, fetches its requests and adds the requester
    through the normal path (key-package claim, commit, welcome, and a roster
-   naming the link hash; the joiner accepts the group without a request
-   only if the hash matches a link it opened from that account, once: F-014)
-   only if the
+   naming the nonce; the joiner accepts the group without a request only if
+   the nonce is one it sent to that account, once: F-014, F-016) only if the
    link is still in its store, the group's settings still apply
    `chat.invite_link`, the device is still an admin, and the requester is not
    blocked. Otherwise it drops the request. Requests are acknowledged
    (deleted) either way.
+
+Consent, in both directions (F-016):
+
+- **The joiner** chose this group by opening the link, so the group is
+  accepted although the joiner's `user.group_add` (even `nobody`) and
+  message requests would otherwise refuse or hold it. Only the joiner's
+  blocked list still applies. The exemption covers exactly one group: the
+  one the owner's device adds for that request.
+- **Nobody else can use the exemption.** Everyone who saw a published link
+  knows its secret and hash, so neither identifies the owner. The nonce does:
+  only the owner's device receives it, from the server, with the request. A
+  stranger who claims the owner's account in a roster without the nonce is
+  judged as any stranger (APP_PROTOCOL.md 5).
+- **The owner** publishes the link and adds only accounts that asked to
+  join through it; nobody is put into a group on the owner's side, so
+  `user.group_add` (a setting about being added) has nothing to decide
+  there. The owner's admins control the link with `chat.invite_link`, and
+  the owner's blocked accounts are refused.
+- The marker lives on the device that opened the link. The joiner's other
+  devices are added too and see the group as from a stranger (a request or
+  declined), which errs on the safe side.
 4. Revoking deletes the device's links on the server and releases
    `chat.invite_link` for the group, which makes every admin device refuse
    requests for its links too.

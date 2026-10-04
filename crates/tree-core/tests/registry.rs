@@ -20,10 +20,64 @@ fn error_codes_match_api() {
         (FeatureError::LockedByChat, "LOCKED_BY_CHAT"),
         (FeatureError::NotAdmin, "NOT_ADMIN"),
         (FeatureError::PlanRequired, "PLAN_REQUIRED"),
+        (FeatureError::InvalidOption("x".into()), "INVALID_OPTION"),
     ];
     for (e, code) in cases {
         assert_eq!(e.code(), code);
     }
+}
+
+/// Options are checked against the one format table (`option_format`):
+/// durations take seconds or a unit, word options one of their words, and
+/// every other standard feature no option at all.
+#[test]
+fn options_are_validated() {
+    use tree_core::features::{option_choices, option_seconds, parse_duration};
+    let mut r = Registry::standard();
+    let invalid = |r: &mut Registry, key: &str, opt: &str, who: Caller| {
+        matches!(r.apply(key, Some(opt.into()), who), Err(FeatureError::InvalidOption(_)))
+    };
+    for (s, n) in [("90", 90), ("30s", 30), ("5m", 300), ("1h", 3600), ("1d", 86400), ("2w", 1_209_600), (" 7d ", 604_800)] {
+        assert_eq!(parse_duration(s), Some(n), "{s}");
+    }
+    for s in ["", "d", "1y", "-5", "1.5h", "1dd", "h1", "9999999999", "١d"] {
+        assert_eq!(parse_duration(s), None, "{s:?}");
+    }
+    // chat.disappearing: a duration from 1 second to a year; default 1 day.
+    assert_eq!(r.apply("chat.disappearing", Some("1d".into()), ADMIN).unwrap().option.as_deref(), Some("1d"));
+    assert_eq!(r.apply("chat.disappearing", Some("2".into()), ADMIN).unwrap().option.as_deref(), Some("2"));
+    assert_eq!(r.apply("chat.disappearing", None, ADMIN).unwrap().option.as_deref(), Some("1d"));
+    for bad in ["0", "0s", "366d", "soon", "1y"] {
+        assert!(invalid(&mut r, "chat.disappearing", bad, ADMIN), "{bad}");
+    }
+    // The refused apply left the previous value.
+    assert_eq!(r.status("chat.disappearing").unwrap().option.as_deref(), Some("1d"));
+    assert_eq!(option_seconds("chat.disappearing", Some("1h")), Some(3600));
+    assert_eq!(option_seconds("chat.disappearing", None), Some(86400));
+    assert_eq!(option_seconds("chat.disappearing", Some("junk")), None);
+    assert_eq!(option_seconds("chat.edit", None), None, "no default: the client's 24 h window");
+    assert!(invalid(&mut r, "chat.edit", "31d", ADMIN));
+    assert_eq!(r.apply("chat.edit", Some("15m".into()), ADMIN).unwrap().option.as_deref(), Some("15m"));
+    // Word options.
+    assert!(r.apply("user.group_add", Some("nobody".into()), USER).is_ok());
+    assert!(r.apply("user.group_add", Some("contacts".into()), USER).is_ok());
+    assert!(invalid(&mut r, "user.group_add", "everyone", USER));
+    assert!(invalid(&mut r, "chat.mention_all", "some", ADMIN));
+    // No option on the others.
+    assert!(invalid(&mut r, "user.read_receipts", "mine", USER));
+    assert!(invalid(&mut r, "chat.media", "1d", ADMIN));
+    assert_eq!(r.apply("user.read_receipts", None, USER).unwrap().option, None);
+    // Permission errors come before option errors.
+    assert_eq!(r.apply("chat.disappearing", Some("junk".into()), USER), Err(FeatureError::NotAdmin));
+    // Choices for the apps fit their own format.
+    for f in standard_features().into_iter().filter(|f| f.lock == Lock::None) {
+        for c in option_choices(f.key) {
+            let who = if f.scope == Scope::User { USER } else { ADMIN };
+            assert!(r.apply(f.key, Some(c.clone()), who).is_ok(), "{} {c}", f.key);
+        }
+    }
+    assert_eq!(option_choices("user.group_add"), vec!["contacts", "nobody"]);
+    assert!(option_choices("user.typing").is_empty());
 }
 
 #[test]
@@ -326,7 +380,7 @@ fn bot_settings_need_the_owner() {
 #[test]
 fn chat_release_locks_user_preference() {
     let mut r = Registry::standard();
-    r.apply("user.read_receipts", Some("mine".into()), USER).unwrap();
+    r.apply("user.read_receipts", None, USER).unwrap();
     assert_eq!(r.release_for_chat("user.read_receipts", USER), Err(FeatureError::NotAdmin));
     let s = r.release_for_chat("user.read_receipts", ADMIN).unwrap();
     assert_eq!((s.state, s.locked_by), (State::Released, Some(LockReason::Chat)));
@@ -339,7 +393,7 @@ fn chat_release_locks_user_preference() {
     assert_eq!(r.release_for_chat("user.read_receipts", ADMIN).unwrap().locked_by, Some(LockReason::Chat));
     assert_eq!(r.apply_for_chat("user.read_receipts", USER), Err(FeatureError::NotAdmin));
     let s = r.apply_for_chat("user.read_receipts", ADMIN).unwrap();
-    assert_eq!((s.state, s.option.as_deref(), s.locked_by), (State::Applied, Some("mine"), None));
+    assert_eq!((s.state, s.option.as_deref(), s.locked_by), (State::Applied, None, None));
     assert_eq!(r.apply_for_chat("user.read_receipts", ADMIN).unwrap().locked_by, None);
     assert!(r.release("user.read_receipts", USER).is_ok());
 }

@@ -25,7 +25,7 @@ fn three_devices_chat_through_the_server() {
     let mut carol = env.device("carol");
 
     // bob takes a @username; alice finds him by it (only the hash reaches the server).
-    assert_eq!(bob.set_username("@Bob_Tree", true).unwrap(), "bob_tree");
+    assert_eq!(bob.set_username("@Bob_Tree").unwrap(), "bob_tree");
     assert_eq!(alice.find("bob_tree").unwrap().as_deref(), Some(bob.account_id()));
     assert_eq!(alice.find("nobody_here").unwrap(), None);
     assert_eq!(bob.username().unwrap().as_deref(), Some("bob_tree"));

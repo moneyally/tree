@@ -21,7 +21,7 @@ use tree_core::{
         ViewPolicy,
     },
     storage::StoredProvider,
-    Client, TreeError,
+    Client, MessageEvent, TreeError,
 };
 
 pub use api::{b64, unb64, Api, Creds, MediaChunk, MediaUploadInfo};
@@ -424,11 +424,9 @@ impl Session {
                 None,
             )
         })?;
-        let reply = self.api.send(&self.creds, &recipients, &body)?;
-        let _ = reply.body["id"]
-            .as_str()
-            .or_else(|| reply.body["message_id"].as_str())
-            .ok_or_else(|| Error::Usage("server did not return a media message id".into()))?;
+        // send_message_with_id() durably queued the encrypted MLS event.
+        // Drain it here, but never bypass the queue.
+        self.flush_outbox()?;
 
         Ok(SentMedia {
             message_id,
@@ -786,22 +784,14 @@ impl Session {
         Ok(())
     }
 
-    fn send_control(&self, gid: &[u8], body: &[u8]) -> Result<String, Error> {
-        let roster = self.roster(gid)?;
-        let recipients: Vec<String> = roster
-            .values()
-            .filter(|device| device.as_str() != self.device_id())
-            .cloned()
-            .collect();
-        if recipients.is_empty() {
-            return Err(Error::Usage("group has no other devices".into()));
-        }
-        let reply = self.api.send(&self.creds, &recipients, body)?;
-        reply.body["id"]
-            .as_str()
-            .or_else(|| reply.body["message_id"].as_str())
-            .map(str::to_string)
-            .ok_or_else(|| Error::Usage("server did not return a message id".into()))
+    fn send_control(&self, _gid: &[u8], body: &[u8]) -> Result<String, Error> {
+        let event = MessageEvent::decode(body)?;
+        let local_id = event.mutation_id().0;
+        self.flush_outbox()?
+            .into_iter()
+            .find(|(id, _)| id == &local_id)
+            .map(|(_, server_id)| server_id)
+            .ok_or_else(|| Error::Usage("control message was queued but not sent yet".into()))
     }
 
     fn submit_pending(

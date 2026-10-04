@@ -85,11 +85,7 @@ impl Api {
         })
     }
 
-    pub fn upload_key_packages(
-        &self,
-        c: &Creds,
-        packages: &[Vec<u8>],
-    ) -> Result<u64, ClientError> {
+    pub fn upload_key_packages(&self, c: &Creds, packages: &[Vec<u8>]) -> Result<u64, ClientError> {
         let body = json!({
             "key_packages": packages.iter().map(|p| b64(p)).collect::<Vec<_>>(),
         });
@@ -272,8 +268,7 @@ fn now() -> u64 {
 
 fn random<const N: usize>() -> [u8; N] {
     let mut bytes = [0u8; N];
-    getrandom::getrandom(&mut bytes)
-        .expect("operating system random number generator failed");
+    getrandom::getrandom(&mut bytes).expect("operating system random number generator failed");
     bytes
 }
 

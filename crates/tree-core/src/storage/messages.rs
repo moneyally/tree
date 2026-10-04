@@ -186,7 +186,10 @@ impl Client<StoredProvider> {
     pub fn purge_expired_messages(&self, now: i64) -> Result<usize, TreeError> {
         self.provider.atomically(|| {
             self.conn()
-                .execute("DELETE FROM tree_messages WHERE expires_at IS NOT NULL AND expires_at <= ?1", params![now])
+                .execute(
+                    "DELETE FROM tree_messages WHERE expires_at IS NOT NULL AND expires_at <= ?1",
+                    params![now],
+                )
                 .map_err(storage_err)
         })
     }

@@ -37,6 +37,8 @@ json_body!(SendReq, |cfg| cfg.max_message_bytes.div_ceil(3) * 4
 
 #[derive(Deserialize, Serialize)]
 pub struct SendResp {
+    /// Stable opaque server id for the stored ciphertext blob.
+    pub id: String,
     /// Mailboxes the message was put into.
     pub delivered: usize,
     /// Recipient ids that are not registered devices.
@@ -198,6 +200,7 @@ pub async fn send(
 
     let d = deliver(&mut tx, cfg, &bytes, unique).await?;
     let response = SendResp {
+        id: d.blob_id.to_string(),
         delivered: d.delivered.len(),
         unknown_devices: d.unknown_devices,
         full_devices: d.full_devices,
@@ -227,6 +230,7 @@ pub async fn send(
 
 /// Outcome of putting one body into several mailboxes.
 pub struct Delivery {
+    pub blob_id: i64,
     pub delivered: Vec<String>,
     pub unknown_devices: Vec<String>,
     pub full_devices: Vec<String>,
@@ -283,6 +287,7 @@ pub async fn deliver(
             .await?;
     }
     Ok(Delivery {
+        blob_id,
         delivered,
         unknown_devices,
         full_devices,

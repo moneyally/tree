@@ -58,7 +58,9 @@ impl MemberId {
     pub fn of_key_package(key_package: &[u8]) -> Result<Self, TreeError> {
         let kp = KeyPackageIn::tls_deserialize_exact(key_package)
             .map_err(|e| TreeError::Malformed(format!("{e:?}")))?;
-        Ok(Self::of(kp.unverified_credential().signature_key.as_slice()))
+        Ok(Self::of(
+            kp.unverified_credential().signature_key.as_slice(),
+        ))
     }
 
     /// Parses 64 lowercase or uppercase hex digits.

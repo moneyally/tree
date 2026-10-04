@@ -277,7 +277,7 @@ impl MessageEvent {
                     1 => true,
                     _ => return Err(TreeError::Malformed("invalid reaction flag".into())),
                 };
-                let reaction = String::from_utf8(r.bytes(MAX_REACTION)?)
+                let reaction = String::from_utf8(r.bytes_u8(MAX_REACTION)?)
                     .map_err(|_| TreeError::Malformed("reaction is not UTF-8".into()))?;
                 Self::Reaction {
                     target,
@@ -380,6 +380,14 @@ impl Reader<'_> {
 
     fn bytes(&mut self, max: usize) -> Result<Vec<u8>, TreeError> {
         let n = self.u32()? as usize;
+        if n > max {
+            return Err(TreeError::Group("message field exceeds limit".into()));
+        }
+        Ok(self.take(n)?.to_vec())
+    }
+
+    fn bytes_u8(&mut self, max: usize) -> Result<Vec<u8>, TreeError> {
+        let n = self.u8()? as usize;
         if n > max {
             return Err(TreeError::Group("message field exceeds limit".into()));
         }

@@ -250,11 +250,11 @@ impl FileShare {
             .try_into()
             .map_err(|_| TreeError::Malformed("bad file hash".into()))?;
         let plaintext_size = r.u64()?;
-        let filename = r.string()?;
+        let filename = r.string_u16()?;
         if filename.len() > MAX_FILENAME {
             return Err(TreeError::Malformed("filename is too long".into()));
         }
-        let mime = r.string()?;
+        let mime = r.string_u16()?;
         if mime.len() > MAX_MIME || !mime.is_ascii() {
             return Err(TreeError::Malformed("mime type is invalid".into()));
         }
@@ -317,6 +317,16 @@ impl ShareReader<'_> {
 
     fn string(&mut self) -> Result<String, TreeError> {
         let len = self.take(1)?[0] as usize;
+        String::from_utf8(self.take(len)?.to_vec())
+            .map_err(|_| TreeError::Malformed("file share string is not UTF-8".into()))
+    }
+
+    fn string_u16(&mut self) -> Result<String, TreeError> {
+        let len = u16::from_be_bytes(
+            self.take(2)?
+                .try_into()
+                .expect("length checked"),
+        ) as usize;
         String::from_utf8(self.take(len)?.to_vec())
             .map_err(|_| TreeError::Malformed("file share string is not UTF-8".into()))
     }
@@ -405,8 +415,8 @@ mod tests {
         let key = FileKey::generate().unwrap();
         let enc = encrypt(&key, b"", b"x").unwrap();
         let mut wire = enc.encode().unwrap();
-        let i = wire.len() - 1 - 8;
-        wire[i] ^= 1;
+        let length_start = MAGIC.len() + 1 + 1 + NONCE_LEN + COMMIT_LEN;
+        wire[length_start] ^= 1;
         assert!(EncryptedFile::decode(&wire).is_err());
     }
 }

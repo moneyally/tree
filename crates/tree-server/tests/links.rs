@@ -1,4 +1,4 @@
-//! Device-link sessions (PROTOCOL.md 8.9): the server relays, limits and
+//! Device-link sessions (PROTOCOL.md 8.10): the server relays, limits and
 //! adds a device only with both devices' signatures over one hash.
 
 mod common;

@@ -58,6 +58,8 @@ control, so that a "true" cannot come from a model in which nothing happens.
 | `forward_secrecy_chain.pv` | (e) C4 inside one sender chain: compromise after two messages were decrypted | first two messages secret; third (not yet decrypted) learned |
 | `franking.pv` | (h) Reports (PROTOCOL.md 8.5). A verified report against an honest account names exactly a group and payload that account franked: no framing, no altered text, no moved message, even when the reporter holds its own accounts and receives every franked message; the server key stays secret | 2 x true; reachability: an honest account's message is verified |
 | `franking_tag_without_account.pv` | negative control: the server tag does not bind the account | framing found (attack) |
+| `device_link.pv` | (i) Device linking (PROTOCOL.md 8.10). A new device that accepts account data got exactly what the account's existing device sent it; the existing device authorises only a new device that confirmed the same transcript; the server adds a device only with both; the account data stays secret. The relay controls the network | 4 x true; reachability: a link completes |
+| `device_link_no_code.pv` | negative control: the person confirms on both devices without comparing the codes (QR code alone) | the relay gives the new device data of its choice (attack) |
 
 ### Output summary (ProVerif 2.05, 2026-10-01)
 
@@ -92,6 +94,14 @@ RESULT not attacker(ks[]) is true.
 RESULT not event(VerifiedHonest(a)) is false.
 == franking_tag_without_account.pv
 RESULT event(Verified(a,g,p)) ==> ... is false.  (others as in franking.pv)
+== device_link.pv
+RESULT event(NLinked(kN,a,d)) ==> event(ESent(a,kN,d)) is true.
+RESULT event(EAuthorised(a,kN,t)) ==> event(NConfirmed(kN,t)) is true.
+RESULT event(DeviceAdded(a,kN)) ==> event(EAuthorised(a,kN,t)) && event(NConfirmed(kN,t)) is true.
+RESULT not attacker(accountData[]) is true.
+RESULT not event(NLinkedHonest) is false.
+== device_link_no_code.pv
+RESULT event(NLinked(kN,a,d)) ==> event(ESent(a,kN,d)) is false.  (others as in device_link.pv)
 == removal_secrecy.pv
 RESULT not attacker(pre[]) is false.
 RESULT not attacker(secretA1[]) is true.
@@ -146,6 +156,16 @@ Per model:
 - `removal_secrecy.pv`: three members, fixed roles (A removes R, B refreshes
   later), unbounded messages per epoch. Ordering is assumed (A's removal is
   the merged commit).
+- `device_link.pv`: one honest account with one existing device, unbounded
+  link sessions in parallel; the attacker is the relay and may run devices
+  of its own. The QR code is an authentic channel that the attacker reads;
+  the person comparing the codes is an authentic channel to both screens
+  that lets each continue, with the value it showed, only if both hashes
+  are equal. Codes are compared as whole hashes: the six-digit truncation
+  (a 10^-6 chance per link) and the commit-then-reveal order that keeps a
+  relay from searching for equal codes are not captured. HPKE Auth mode is
+  an ideal authenticated public-key encryption. Phishing (the person
+  confirms on purpose for an attacker's device) is outside the model.
 - `pcs.pv`: two members, one compromise; the two continuations from epoch 1
   (A refreshes / B refreshes) are independent branches of the same model.
   A's input in epoch 2 is `[precise]` (one execution), which ProVerif needs to

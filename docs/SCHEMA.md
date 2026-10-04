@@ -281,3 +281,29 @@ CREATE TABLE account_recovery (
     pending_since  INTEGER
 );
 ```
+
+### 2.8 Device links (migration `0012_device_links.sql`, PROTOCOL.md 8.10)
+
+```sql
+CREATE TABLE link_sessions (
+    link_id         TEXT PRIMARY KEY,   -- chosen by the new device (16 random bytes, base64url)
+    account_id      TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    owner_device    TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    new_auth_pub    BLOB NOT NULL,      -- the new device's request-signing key
+    created_at      INTEGER NOT NULL,
+    expires_at      INTEGER NOT NULL,   -- created_at + 600
+    state           TEXT NOT NULL,      -- offered | revealed | confirmed | linked | cancelled
+    offer           BLOB NOT NULL,      -- opaque relay data (emptied on cancel, expiry, done)
+    reveal          BLOB,               -- opaque relay data
+    transcript_hash BLOB,               -- as the new device confirmed it
+    new_signature   BLOB,               -- the new device's confirmation signature
+    sealed          BLOB,               -- HPKE-sealed account data for the new device
+    new_device_id   TEXT
+);
+```
+
+Indexes: `(account_id, created_at)` for the per-account limits, `(expires_at)`
+for the purge. Relayed data is cleared when the session expires, is
+cancelled, or the new device acknowledges it; rows are deleted one hour after
+expiry. On the devices, the linked device ids learned through links are kept
+in app data `own/members` (member ids, hex) of each device's profile.

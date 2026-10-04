@@ -25,6 +25,8 @@ Some errors add fields (named with the endpoint).
 | `LOCKED_BY_SERVER` | 403 | the feature is released by the operator (e.g. signups) |
 | `NOT_ELIGIBLE` | 403 | commit from a device the server does not know as a member of the group |
 | `SUSPENDED` | 403 | the account is suspended by the operator (every signed request) |
+| `TRANSCRIPT_MISMATCH` | 403 | device link: the hash differs from the one the new device confirmed |
+| `LINK_SIGNATURE` | 403 | device link: a confirmation or authorisation signature does not verify |
 | `LIMITED` | 403 | a message or commit to more devices than the account may reach for now (new account, or recent verified reports; PROTOCOL.md 8.9) |
 | `RECOVERY_REFUSED` | 403 | no account holds this recovery key, or the recovery signature is wrong |
 | `NOT_FOUND` | 404 | no such endpoint, account or device |
@@ -35,6 +37,9 @@ Some errors add fields (named with the endpoint).
 | `COMMIT_CONFLICT` | 409 | another commit already won this epoch; field `winner_sha256` |
 | `USERNAME_TAKEN` | 409 | another account holds this username |
 | `EPOCH_MISMATCH` | 409 | commit for an epoch beyond the next one; field `last_epoch` |
+| `LINK_STATE` | 409 | device link: not the step the session is at |
+| `LINK_GONE` | 410 | device link expired, cancelled or already used |
+| `LINK_REQUIRED` | 410 | `POST /v1/devices` is gone: link devices with a confirmed device link |
 | `TOO_LARGE` | 413 | body, message, commit, welcome, key package, or a list (recipients, key packages, ack ids) too large |
 | `RATE_LIMITED` | 429 | slow down; see `Retry-After` (seconds) |
 | `INTERNAL` | 500 | server error |
@@ -96,15 +101,11 @@ endpoints and invite links. `200 { "deleted": true, "devices": n }`. A
 suspended account cannot do this (`403 SUSPENDED`; whether it should:
 변호사 확인 필요). Reports others filed about the account are kept.
 
-### `POST /v1/devices` — add a device to my account
+### `POST /v1/devices` — gone
 
-```json
-{ "auth_pub": "<new device key>", "proof": "<signature by the new key>" }
-```
-
-`proof` signs `"tree-add-device-v1\n" + account_id + "\n"` followed by the 32
-raw key bytes, proving the new device holds its key.
-`201` → `{ "device_id": "..." }`. Errors: `LIMIT_EXCEEDED` (default 10 devices), `ALREADY_EXISTS`.
+`410 LINK_REQUIRED`. Devices join an account only through a confirmed device
+link (below) or the recovery phrase (`user.device_link_code` is
+permanently applied).
 
 ### `GET /v1/devices` — my devices
 
@@ -115,6 +116,62 @@ raw key bytes, proving the new device holds its key.
 Deletes the device, its key packages and its mailbox. Removing the last device
 removes the account. `200` → `{ "removed": "<device_id>" }`; `NOT_FOUND` if it is
 not on my account.
+
+## Device links (PROTOCOL.md 8.10)
+
+The new device (N) has no device id yet: its requests carry no
+`X-Tree-Device` and are signed with the request key named in the session
+(otherwise exactly as in Authentication). The relayed `offer`, `reveal` and
+`sealed` are opaque to the server (base64 in JSON). A session expires 10
+minutes after it was opened and is used once.
+
+### `POST /v1/links` — open a session (existing device E)
+
+```json
+{ "link_id": "<22-char base64url from the invitation>", "new_auth_pub": "<N's key>", "offer": "<base64>" }
+```
+
+`201` → `{ "expires_at": 1790000600 }`. Errors: `ALREADY_EXISTS` (the link id
+was used, or the key is already a device), `RATE_LIMITED` (2 open sessions
+per account, 10 per hour), `TOO_LARGE` (offer over 1 KiB).
+
+### `GET /v1/links/{link_id}` — E polls
+
+`200` → `{ "state": "offered|revealed|confirmed|linked|cancelled|expired",
+"expires_at", "reveal", "transcript_hash", "new_signature", "device_id" }`
+(absent fields are `null`). `NOT_FOUND` unless E opened it.
+
+### `POST /v1/links/{link_id}/complete` — E authorises N
+
+```json
+{ "transcript_hash": "<32 bytes>", "signature": "<E's key over lp(\"tree/link/authorise/v1\", link_id, account_id, new_auth_pub, hash)>", "sealed": "<base64, at most 256 KiB>" }
+```
+
+Only in state `confirmed`. `201` → `{ "device_id": "..." }`: N is now a
+device of E's account. Errors: `410 LINK_GONE` (expired, cancelled or
+used), `LINK_STATE` (409: N has not confirmed), `TRANSCRIPT_MISMATCH` (403:
+not the hash N confirmed), `LINK_SIGNATURE` (403), `LIMIT_EXCEEDED`.
+
+### `POST /v1/links/{link_id}/cancel` — E refuses
+
+`200` → `{ "state": "cancelled" }`; relayed data is deleted. `LINK_STATE` if
+already linked.
+
+### `GET /v1/links/{link_id}/new` — N polls (signed by N's key)
+
+`200` → `{ "state", "expires_at", "offer", "sealed", "device_id" }`.
+`NOT_FOUND` until E opened the session (N keeps polling), `410 LINK_GONE`
+once expired.
+
+### `POST /v1/links/{link_id}/new` — N's steps (signed by N's key)
+
+`{ "action": "reveal", "reveal": "<base64, at most 64 KiB>" }` (state
+`offered` → `revealed`); `{ "action": "confirm", "transcript_hash": "...",
+"signature": "<N's key over lp(\"tree/link/confirm/v1\", link_id, hash)>" }`
+(`revealed` → `confirmed`, `403 LINK_SIGNATURE` if it does not verify);
+`{ "action": "cancel" }`; `{ "action": "done" }` (after `linked`: deletes
+the sealed data). `200` → `{ "state": "..." }`. Errors: `LINK_GONE`,
+`LINK_STATE`.
 
 ## Key packages (MLS)
 
@@ -463,6 +520,7 @@ Errors: `UNAUTHORIZED`, `UNKNOWN_FEATURE`.
 | suspensions | account id, day, optional reason; until released |
 | recovery | the Ed25519 public key derived from the phrase, day set; never the phrase |
 | push | one endpoint URL per device, day set; wake-ups are not logged |
+| device links | link id, account, opening device, new device's request key, state, times; offer, reveal and sealed account data (opaque) until acknowledged, cancelled or expired; the confirmed transcript hash and both signatures; rows purged 1 hour after expiry |
 | invite links | hash of the secret, owner account and device, expiry, use limit and count; until 7 days after expiry. Join requests: link hash, requesting account, time; until the owner's device handles them. Never the group |
 
 Logs contain method, route template, status and latency only.

@@ -48,7 +48,7 @@ the owner holds).
    name stays), QR friend add, stranger labels in the UI.
 4. **Device linking with a two-sided code.** Both devices compute the code
    from their own keys and the link transcript; the server never chooses
-   it. QR alone never links.
+   it. QR alone never links. **built** (PROTOCOL.md 8.10)
 5. **Media.** Chunked encrypted upload and download for large files (2 GB
    free limit per design), resumable; thumbnails made by the sender inside
    the encrypted message; images, video, voice notes, files; view-once;

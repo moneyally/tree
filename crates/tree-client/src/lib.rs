@@ -1043,7 +1043,7 @@ impl Session {
                 }
                 // The roster's sender added us if we are still a request.
                 // Another device of this account (known from a confirmed
-                // device link, PROTOCOL.md 8.9) adds us to its own groups.
+                // device link, PROTOCOL.md 8.10) adds us to its own groups.
                 if self.own_members()?.contains(&from.to_hex()) {
                     if matches!(self.group_status(gid)?, GroupStatus::Request { .. }) {
                         self.set_group_status(gid, &GroupStatus::Accepted)?;
@@ -1062,7 +1062,7 @@ impl Session {
             Some(Payload::Leave) => events.push(Event::LeaveRequested { group: gid.to_vec(), member: from }),
             Some(Payload::RemoveDevice { members }) => {
                 // Only devices of the sender's own account, as this device
-                // knows the accounts (PROTOCOL.md 8.9).
+                // knows the accounts (PROTOCOL.md 8.10).
                 let accounts = self.map(&accounts_key(gid))?;
                 let current = self.group(gid)?.members();
                 if let Some(acc) = accounts.get(&from.to_hex()) {

@@ -118,7 +118,7 @@ pub fn fresh_nonce() -> String {
 }
 
 /// Length-prefixed concatenation of the device-link messages (written from
-/// PROTOCOL.md 8.9): each part preceded by its length, 4 bytes big-endian.
+/// PROTOCOL.md 8.10): each part preceded by its length, 4 bytes big-endian.
 pub fn link_lp(parts: &[&[u8]]) -> Vec<u8> {
     let mut out = Vec::new();
     for p in parts {
@@ -281,7 +281,7 @@ impl Api {
     }
 
     /// Links a new device to `dev`'s account through a device-link session
-    /// (PROTOCOL.md 8.9): `dev` opens it, the new device (`prover` signing
+    /// (PROTOCOL.md 8.10): `dev` opens it, the new device (`prover` signing
     /// for the key `new`) reveals and confirms a transcript hash, `dev`
     /// authorises the same hash. Returns the first failing answer, or the
     /// final one. The relayed messages are opaque to the server, so dummy

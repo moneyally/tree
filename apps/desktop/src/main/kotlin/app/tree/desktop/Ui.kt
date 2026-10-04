@@ -97,6 +97,51 @@ private fun SignIn(model: AppModel) {
                 if (ok) model.startSyncLoop()
             }
         }) { Text(if (exists) Strings.t("open") else Strings.t("create")) }
+        if (!exists) {
+            // A second device of an existing account: show a link, compare the code.
+            TextButton(onClick = {
+                scope.launch { if (model.startLinkNewDevice(path, pass, name, server) != null) model.watchLink { model.startSyncLoop() } }
+            }) { Text(Strings.t("link_new")) }
+            LinkPanel(model, newDevice = true)
+        }
+    }
+}
+
+/**
+ * A device link in progress: the link to show (new device), the code to
+ * compare, and the two answers. Nothing links until both devices confirm.
+ */
+@Composable
+private fun LinkPanel(model: AppModel, newDevice: Boolean) {
+    val scope = rememberCoroutineScope()
+    val state by model.state.collectAsState()
+    val link = state.link ?: return
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        link.text?.let {
+            Text(Strings.t("link_show"))
+            SelectionContainer { Text(it, style = MaterialTheme.typography.bodySmall) }
+        }
+        when (link.state) {
+            "code" -> {
+                Text(Strings.t("link_code"))
+                Text(link.code ?: "", style = MaterialTheme.typography.headlineMedium)
+                Row {
+                    Button(onClick = {
+                        scope.launch { if (newDevice) model.confirmNewDevice(true) else model.confirmLink(true) }
+                    }) { Text(Strings.t("link_match")) }
+                    Spacer(Modifier.width(8.dp))
+                    TextButton(onClick = {
+                        scope.launch { if (newDevice) model.confirmNewDevice(false) else model.confirmLink(false) }
+                    }) { Text(Strings.t("link_differ")) }
+                }
+            }
+            "confirmed", "waiting" -> {
+                link.code?.let { Text(it, style = MaterialTheme.typography.headlineMedium) }
+                Text(Strings.t("link_wait"))
+            }
+            "linked" -> Text(Strings.t("link_done"))
+            else -> Text(Strings.t("link_cancelled") + (link.reason?.let { ": $it" } ?: ""))
+        }
     }
 }
 
@@ -286,6 +331,8 @@ private fun Settings(model: AppModel, state: UiState) {
     var phrase by remember { mutableStateOf<String?>(null) }
     var username by remember { mutableStateOf("") }
     var confirmDelete by remember { mutableStateOf(false) }
+    var newLink by remember { mutableStateOf("") }
+    remember { scope.launch { model.loadDevices() } }
     if (confirmDelete) {
         AlertDialog(
             onDismissRequest = { confirmDelete = false },
@@ -307,6 +354,22 @@ private fun Settings(model: AppModel, state: UiState) {
             SelectionContainer { Text(it, style = MaterialTheme.typography.titleMedium) }
         }
         TextButton(onClick = { confirmDelete = true }) { Text(Strings.t("delete_account")) }
+        HorizontalDivider(Modifier.padding(vertical = 8.dp))
+        // Linking a new device: paste its link, compare the code on both.
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(newLink, { newLink = it }, label = { Text(Strings.t("link_scan")) }, singleLine = true)
+            TextButton(onClick = { scope.launch { if (model.scanLink(newLink) != null) { newLink = ""; model.watchLink() } } }) { Text("→") }
+        }
+        LinkPanel(model, newDevice = false)
+        Text(Strings.t("devices"), style = MaterialTheme.typography.titleSmall)
+        state.devices.forEach { d ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(d, Modifier.weight(1f))
+                if (d != model.session?.deviceId()) {
+                    TextButton(onClick = { scope.launch { model.removeDevice(d) } }) { Text(Strings.t("remove_device")) }
+                }
+            }
+        }
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
         // Every user setting with apply / release; locked ones say why.
         LazyColumn {

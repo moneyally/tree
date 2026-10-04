@@ -1,4 +1,4 @@
-//! Device linking with a two-sided confirmation code (docs/PROTOCOL.md 8.9).
+//! Device linking with a two-sided confirmation code (docs/PROTOCOL.md 8.10).
 //!
 //! The server keeps a short-lived link session and relays three opaque
 //! messages: the existing device's offer, the new device's reveal and the

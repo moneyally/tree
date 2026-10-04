@@ -1,4 +1,4 @@
-//! Device linking with a two-sided confirmation code (PROTOCOL.md 8.9).
+//! Device linking with a two-sided confirmation code (PROTOCOL.md 8.10).
 //!
 //! A new device joins an account only after the person compared the same
 //! six-digit code on both devices. The code is a short authentication

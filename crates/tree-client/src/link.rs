@@ -1,4 +1,4 @@
-//! Device linking with a two-sided confirmation code (PROTOCOL.md 8.9;
+//! Device linking with a two-sided confirmation code (PROTOCOL.md 8.10;
 //! `user.device_link_code`, permanently applied).
 //!
 //! The new device ([`NewDevice`]) shows a link; an existing device of the

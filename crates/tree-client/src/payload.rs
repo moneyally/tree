@@ -64,7 +64,7 @@ pub enum Payload {
     /// The sender asks to be removed (PROTOCOL.md 6.5).
     Leave,
     /// The sender asks the admins to remove other devices of its own
-    /// account (member ids, hex) that it unlinked (PROTOCOL.md 8.9).
+    /// account (member ids, hex) that it unlinked (PROTOCOL.md 8.10).
     RemoveDevice { members: Vec<String> },
     /// The sender read these messages (`user.read_receipts`).
     Read { ids: Vec<String> },

@@ -1,4 +1,4 @@
-//! Device linking with a two-sided confirmation code (PROTOCOL.md 8.9),
+//! Device linking with a two-sided confirmation code (PROTOCOL.md 8.10),
 //! through a real server.
 
 mod common;
@@ -167,8 +167,9 @@ fn refusing_on_either_device_links_nothing() {
     alice.link_status().unwrap();
     assert!(matches!(nd.confirm(false).unwrap(), LinkStatus::Cancelled { .. }));
     assert!(!std::path::Path::new(&env.profile("d1")).exists());
-    alice.confirm_link(true).unwrap_or_else(|_| LinkStatus::Waiting);
-    assert!(alice.link_status().is_err() || matches!(alice.link_status(), Ok(LinkStatus::Cancelled { .. })));
+    // A "match" on the existing device afterwards links nothing either.
+    assert!(matches!(alice.confirm_link(true).unwrap(), LinkStatus::Cancelled { .. }));
+    assert!(matches!(alice.link_status(), Err(Error::Usage(_))));
     assert_eq!(alice.devices().unwrap().len(), 1);
 
     // The existing device says no, after the new one confirmed.

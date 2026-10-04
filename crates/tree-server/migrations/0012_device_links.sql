@@ -1,4 +1,4 @@
--- Device linking sessions (docs/PROTOCOL.md 8.9). The server relays opaque
+-- Device linking sessions (docs/PROTOCOL.md 8.10). The server relays opaque
 -- messages between an existing device and a new one and adds the new
 -- device only with both devices' signatures over the same transcript hash.
 -- It never computes or chooses the confirmation code.

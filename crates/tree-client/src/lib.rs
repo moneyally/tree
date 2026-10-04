@@ -297,7 +297,10 @@ impl Session {
                     let group = self.client.join(&body)?;
                     let gid = group.id();
                     let mut roster = BTreeMap::new();
-                    roster.insert(self.client.member_id().to_hex(), self.device_id().to_string());
+                    roster.insert(
+                        self.client.member_id().to_hex(),
+                        self.device_id().to_string(),
+                    );
                     self.save_roster(&gid, &roster)?;
                     ack.push(server_id.clone());
                     events.push(SyncEvent {

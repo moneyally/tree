@@ -415,19 +415,34 @@ impl Api {
 
     /// Creates the fake group roster used by mailbox tests. Production
     /// requests must establish this roster through the real MLS commit path.
-    pub async fn seed_fake_group(&self, dev: &Device, recipients: &[&str]) {
+    pub async fn seed_fake_group(&self, dev: &Device, recipients: &[&Device]) {
         let body = json!({
             "group_id": b64(&GROUP),
             "epoch": 0,
-            "recipients": recipients,
+            "recipients": recipients
+                .iter()
+                .map(|recipient| recipient.device_id.as_str())
+                .collect::<Vec<_>>(),
             "body": b64(&commit(&GROUP, 0, b"test-roster")),
             "added": [],
             "welcome": null,
             "removed": []
         });
-        let _ = self
+        let (st, value) = self
             .call(dev, Method::POST, "/v1/commits", Some(body))
             .await;
+        assert_eq!(st, StatusCode::OK, "{value}");
+        for recipient in recipients {
+            let messages = self.fetch(recipient, 0).await;
+            let ids = messages
+                .iter()
+                .filter_map(|message| message["id"].as_str())
+                .collect::<Vec<_>>();
+            if !ids.is_empty() {
+                let (st, value) = self.ack(recipient, &ids).await;
+                assert_eq!(st, StatusCode::OK, "{value}");
+            }
+        }
     }
 
     pub async fn fetch(&self, dev: &Device, wait: u64) -> Vec<Value> {

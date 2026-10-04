@@ -1334,6 +1334,14 @@ over its own authenticated connection and decrypts locally. Code:
 - The vendor push services of the phone platforms need a gateway with the
   operator's credentials; that gateway receives the same `wake` only.
   Setting one up is part of deployment (HANDOFF 3.5, needs the owner).
+- Client side (APP_PROTOCOL.md 6.3): the Android app gets its endpoint from
+  a push distributor app through the open distributor broadcast protocol,
+  checks the random token on every broadcast, and on a wake-up syncs if the
+  profile is open; while the app lock has closed it, the database key is
+  not in memory and the app shows a content-free "something arrived"
+  notification. Without a distributor, a periodic system job syncs while
+  the profile is open. Local notifications show the text only as
+  `notification_plan` allows.
 
 ### 8.9 Anti-spam limits
 
@@ -1548,6 +1556,57 @@ answering `{"results": [{"title", "url", "preview"?, "width"?, "height"?}]}`.
 Tiles: `MAP_TILE_URL` with `{z}`, `{x}`, `{y}` (zoom 0 to 19).
 
 ---
+
+### 8.13 PIN and platform-key unlock
+
+`user.app_lock` with the option `pin` or `bio` adds a second way to rebuild
+the database key; the passphrase keeps working and the database is
+unchanged (code: `crates/tree-core/src/storage/pin.rs`, client
+`device.rs`).
+
+- **PIN.** Enabling needs the passphrase: the key is derived as usual and
+  checked against the database. A copy of it is stored in `<db>.pin`,
+  AES-256-GCM-encrypted under `Argon2id(PIN, fresh 32-byte salt, secret =
+  device secret)` with the same costs as the passphrase (64 MiB, 3 passes);
+  the cost parameters, salt and nonce are the associated data. PINs are 6
+  to 16 digits.
+- **Attempt limit.** Each unlock first writes the incremented failure
+  counter to the file (atomic replace), then derives and decrypts; success
+  resets it. After 10 failures the file is overwritten and deleted, and
+  only the passphrase opens the profile. The counter is not authenticated:
+  changing it needs write access to the file, which also allows copying it.
+- **Security level.** Against guessing through the app, 10 tries of 10^6
+  (6 digits) is a 1 in 100,000 chance. Against someone who copies the
+  files, the PIN file is only as strong as 10^6 Argon2id evaluations (about
+  a day on one desktop core, faster with many machines), which is weaker
+  than a good passphrase: enabling a PIN lowers the offline strength of
+  that profile to the PIN unless a device secret is used. On Android the
+  device secret is 32 random bytes encrypted by a non-exportable keystore
+  key (hardware-backed where the phone has it), so a copy of the files
+  alone does not allow offline guessing. Computers have no such store
+  here: the apps say so before enabling a PIN.
+- **Biometric (`bio`, Android 11+).** The database key, encrypted by a
+  keystore AES-256-GCM key that can be used only right after a strong
+  biometric check and is invalidated when a new biometric is enrolled
+  (`<db>.bio`). The attempt limit is the system's. Phones without it show
+  "not available".
+- Leaving the option or releasing the lock wipes the PIN file (and the
+  Android app deletes the biometric-wrapped key); deleting the account
+  wipes it too.
+
+### 8.14 Settings sync between own devices
+
+User settings and chat-list choices travel between an account's own
+devices as `settings` messages inside a private MLS **self group** whose
+members are only those devices (APP_PROTOCOL.md 6.4). The first device link
+creates it on the existing device; its id travels inside the HPKE-sealed
+account data of the link (8.11), and the new device is added by an
+ordinary commit. Receivers accept a `settings` message only in their own
+self group and only from another member of it, so no other account can
+change a user's settings, even from a group both are in. Conflicts: last
+writer wins per key by the writer's timestamp. Locked settings stay
+locked: every entry passes through the feature registry. The server sees
+one more small group with the account's devices in it.
 
 ## 9. Security claims
 

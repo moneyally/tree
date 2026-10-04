@@ -29,6 +29,17 @@ Salt and Argon2id parameters for rebuilding the database key; format in
 `storage/key.rs` (`KeyHeader`). Default parameters: 64 MiB, 3 passes,
 1 lane. Without the passphrase it reveals nothing.
 
+### 1.1a PIN file `<db>.pin` (only while PIN unlock is on)
+
+A copy of the database key, AES-256-GCM-encrypted under a key Argon2id
+derives from the PIN (and, on Android, a hardware-kept device secret as
+Argon2's secret input), plus the failed-attempt counter. Layout in
+`storage/pin.rs`; meaning and limits in PROTOCOL.md 8.13. Wiped after 10
+wrong PINs, when PIN unlock is turned off and with the account. Android
+also keeps `<db>.pinsecret` (the device secret, encrypted by a keystore
+key) and `<db>.bio` (the database key encrypted by a biometric-bound
+keystore key); both are ciphertext under keys that never leave the keystore.
+
 ### 1.2 Tree tables
 
 ```sql
@@ -115,6 +126,16 @@ bytes = u32 length (big-endian) + data
 | `envelope_key` of epochs `N-1`, `N-2` | yes (integrity key of that epoch) | the epoch leaves the 2-epoch window |
 | leaf -> member id of `N-1`, `N-2` | no (public within the group) | same |
 | own commit hashes | no | same |
+
+Search index (`storage/search.rs`, only while `user.search_index` is
+applied; created on apply, dropped with its triggers on release, so it needs
+no schema version):
+
+```sql
+CREATE TABLE tree_search_ids (rid INTEGER PRIMARY KEY AUTOINCREMENT, group_id BLOB NOT NULL, id TEXT NOT NULL, UNIQUE (group_id, id));
+CREATE VIRTUAL TABLE tree_search USING fts5(text, tokenize = 'unicode61 remove_diacritics 2');
+-- triggers tree_search_ins / _del / _upd on tree_messages keep it current
+```
 
 ### 1.3 OpenMLS tables (library `openmls_sqlite_storage` 0.3, JSON values)
 

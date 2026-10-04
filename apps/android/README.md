@@ -19,8 +19,18 @@ cmdline-tools/latest/bin/sdkmanager --sdk_root=/opt/android-sdk "platforms;andro
 rustup target add aarch64-linux-android x86_64-linux-android
 ```
 
-Security settings honoured by the app: `chat.screenshot_block` and
-`user.app_switcher_blur` set `FLAG_SECURE` (no screenshots, blank preview in
-the app switcher); the encrypted profile is excluded from cloud backup and
-device transfer (keys never leave the device; recovery uses the phrase).
+Security settings honoured by the app (APP_PROTOCOL.md 6.3):
+`chat.screenshot_block` sets `FLAG_SECURE` while such a chat is open;
+`user.app_switcher_blur` hides the recent-apps snapshot (Android 13+:
+`setRecentsScreenshotEnabled(false)`, screenshots stay allowed; older:
+`FLAG_SECURE` while in the background); `user.incognito_keyboard` sets
+`IME_FLAG_NO_PERSONALIZED_LEARNING` on every text field; `user.app_lock`
+unlocks with the passphrase, a PIN (with a keystore-held device secret) or
+biometrics (Android 11+, keystore key bound to a strong biometric). Push
+wake-ups come through a distributor app (open broadcast protocol, no
+vendor library) or, without one, a periodic job; a locked profile only
+gets a content-free notification. The encrypted profile is excluded from
+cloud backup and device transfer (keys never leave the device; recovery
+uses the phrase). None of these were run on a device here (no emulator):
+they compile and the decisions are tested on the desktop.
 Opening a `tree://join/...` link asks to join that group.

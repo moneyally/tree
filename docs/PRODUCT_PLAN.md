@@ -70,13 +70,22 @@ the owner holds).
 7. **Notifications.** Push wake-up only (no content through the gateway);
    the app fetches and shows a local notification, with or without the
    text per `user.notification_content`.
+   Status: **built** (branch `claude/device-safety`; APP_PROTOCOL.md 6.3,
+   PROTOCOL.md 8.8). Android: open distributor protocol, periodic job
+   without one; a locked profile gets a content-free notification only.
 8. **Device protections.** Incognito keyboard (Android), screen capture
    protection on desktop where the system allows it, app switcher blur,
    app lock with PIN and biometrics.
+   Status: **built** (branch `claude/device-safety`; APP_PROTOCOL.md 6.3,
+   PROTOCOL.md 8.13). Capture exclusion works on Windows only (Linux and
+   macOS say "not available"); biometrics need Android 11+.
 9. **Search.** On-device full-text index inside the encrypted database
    (`user.search_index`), release deletes the index.
+   Status: **built** (branch `claude/device-safety`; FTS5 inside SQLCipher).
 10. **Settings sync across a person's own devices** (user scope), inside
     the person's own device group.
+    Status: **built** (branch `claude/device-safety`; APP_PROTOCOL.md 6.4,
+    PROTOCOL.md 8.14).
 
 ## Wave 2 — rich chats (design stage 3, chat side)
 

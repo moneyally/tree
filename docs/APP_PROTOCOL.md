@@ -38,6 +38,7 @@ One JSON object per application message, UTF-8, field `t` names the type:
 | `event_edit` | `event` (as `chat_event`, same `id`), `cancelled` (optional) | changes or cancels the event | its creator, if `chat.events` is applied |
 | `rsvp` | `id`, `answer` (`going`, `maybe` or `not`) | the sender's answer; the newest counts | any member, if `chat.events` is applied and the event is not cancelled |
 | `profile_photo` | `photo` (blob reference, optional: none = removed), `mime`, `chat` (optional; for this chat only) | the sender's profile photo (8.6) | any member, about itself; `chat` only while `chat.allow_per_chat_profiles` is applied |
+| `settings` | `s`: list of `{k, v, t}`: app-data key, value (base64; absent = deleted), the writer's time (unix milliseconds); at most 512 entries | settings of the sender's account for its other devices (6.4) | only into the account's own self group, by one of its devices; dropped anywhere else |
 | `franked` | `p` (the inner `text`, `edit`, `file`, `poll`, `sticker`, `location` or `chat_event` payload as a JSON string), `k` (base64), `tag` (base64), `m` (minute) | how every franked kind is sent: the inner payload with its franking (PROTOCOL.md 8.5); the receiver keeps `p`, `k`, `tag`, `m` to be able to report it | any member |
 
 ```json
@@ -218,14 +219,15 @@ safety numbers, message history.
 
 ### 6.1 The chat list (`crates/tree-client/src/organize.rs`)
 
-Everything here is kept on this device only, in the encrypted profile
-(section 7); it is not synced to the user's other devices yet, and the
+Everything here is kept in the encrypted profile (section 7); the
+settings and the mute, archive, pin and folder choices go to the user's
+other devices inside MLS (6.4), drafts stay on their device, and the
 server learns none of it.
 
 | Behaviour | Rule |
 | --- | --- |
 | Mute | `mute_for(group, seconds)`: 1 hour, 8 hours, 1 week (`MUTE_CHOICES`) or until unmuted; any 1 s to a year is accepted. A timed mute ends by itself. `is_muted`, `muted_until`. A muted chat never notifies and is listed in the quiet folder (`user.quiet_folder`) |
-| Notify | apps notify for a new message only if `should_notify(group, silent)`: not muted, not a silent message, not a declined chat. The text is shown only while `user.notification_content` is applied |
+| Notify | apps notify for a new message only as `notification_plan(group, silent)` says (6.3): not muted, not a silent message, not a declined chat; the text only while `user.notification_content` is applied |
 | Silent send | `TextOptions.silent`: the `silent` flag of the `text` payload. Receivers store it with the message (`message_meta`) and report it (`Event::Text.silent`); the message is unread as usual |
 | Archive | `archive_chat`: the chat leaves the main list (apps show an archive section). A new text or file brings it back if the chat is not muted, the message is not silent and `user.unarchive_on_message` is applied (default); released, archived chats stay archived until the user takes them out. Archiving drops a pin |
 | Pin | `pin_chat`: at most 5, in the order pinned, on top of the list; `move_pinned_chat` reorders. Pinning an archived chat brings it back |
@@ -253,6 +255,51 @@ padded sizes, as for any message).
 | Reminders | `remind_me(group, id, at)`, `reminders`, `cancel_reminder`, `due_reminders` (each due reminder once; the app shows a local notification). Device only (`remind/<id>`); the message text is read when the reminder fires, never copied |
 | Chat export (`chat.export`) | `export_chat` (plain text and JSON), `export_chat_to(group, prefix)` writes `<prefix>.txt` and `<prefix>.json`; any member may export while applied, refused while released. The files are not encrypted; franking records, keys and file contents are not exported. The setting is changed by the chat's admins, as every chat key (PROTOCOL.md 6.11) |
 | Storage clean-up (`user.storage_clean`) | `download_to_cache(file, dir)` opens a file into the app's media folder and records it (`media/<attachment id>`); while the setting is applied (option: duration 1 s to 365 days, default `90d`, the apps offer 30 days, 90 days, a year), every sync (at most once an hour) and `clean_storage` delete cached files downloaded longer ago, and their records. Message texts and file references stay (a file can be downloaded again while the server keeps the blob, 30 days); files the user saved elsewhere are never touched. Released (default): nothing is deleted |
+
+### 6.3 Device protections (`device.rs`; Wave 1 items 7-9)
+
+| Setting | Default | What happens |
+| --- | --- | --- |
+| `user.incognito_keyboard` | applied | Android: every text field asks the keyboard for no personalised learning (the system's input flag, set through the text-input interceptor around the whole app). It is a request: a keyboard that ignores it still sees what is typed. Desktop: no effect, and the settings row says so (the keyboard belongs to the operating system) |
+| `user.app_switcher_blur` | applied | Android 13+: the recent-apps snapshot is switched off (`setRecentsScreenshotEnabled(false)`), screenshots stay allowed. Older Android: the secure window flag only while the app is in the background. Desktop: no effect (said in the row) |
+| `chat.screenshot_block` | released | Android: the secure window flag while a chat with the chat setting, or the user's own block of that chat (`set_screenshot_block`), is open. Desktop: the window is excluded from capture while such a chat is open, where the system allows it. Separate from `user.app_switcher_blur` (they used to be one flag) |
+| `user.pc_screen_security` | applied | desktop: the window is excluded from screen capture where the system offers a call for it (Windows 10 2004+: display affinity "exclude from capture"; older: captured black). Linux and macOS: not available, and the settings row says so (X11 has no such call, Wayland compositors decide capture themselves; on macOS the sharing setting is ignored by current capture paths). None of it stops a camera |
+| `user.app_lock` | released | apps close the profile when they go to the background (Android) or after 5 minutes without focus (desktop). Option `passphrase`, `pin` (8.13 in PROTOCOL.md: Argon2id-wrapped copy of the database key, 10 attempts, then the passphrase) or `bio` (Android 11+: the database key encrypted by a keystore key usable only right after a strong biometric check, invalidated by a new enrolment; "not available" on older phones or without an enrolled biometric). Leaving `pin` or releasing the lock wipes the PIN file; leaving `bio` deletes the wrapped key. The unlock method is per device and does not sync |
+| `user.search_index` | applied | an FTS5 index inside the encrypted database (`storage/search.rs`): words matched by their beginning, every word must match, newest first; kept current by triggers (new, edited, deleted, expired messages). Released: index and triggers dropped and search refused; applied: rebuilt from the whole history |
+| `user.notification_content` | released | `notification_plan(group, silent)`: `notify` false for a muted chat, a silent message, a declined chat or the self group; `show_text` only while applied, and never for a message request (a stranger's words stay off the lock screen) or a chat that blocks screenshots. Apps show the chat's name, and the text only when `show_text` |
+
+Push wake-ups (PROTOCOL.md 8.8), client side: the app registers whatever
+endpoint a push distributor gives it (`set_push_endpoint`, distributor
+agnostic). Android speaks the open distributor broadcast protocol itself
+(no vendor library): register, new endpoint, message, unregistered; the
+distributor's messages must carry the app's random token. On a wake-up
+the app syncs if the profile is open in memory and then notifies per
+`notification_plan`; while the profile is locked the key is not in
+memory, so it shows only "something arrived" (no name, no text). Without
+a distributor a periodic system job (15 minutes at best, as the system
+allows) syncs while the profile is open. Desktop: the sync loop runs
+while the app runs; tray notifications follow the same plan.
+
+### 6.4 Settings sync between own devices (`self_sync.rs`; Wave 1 item 10)
+
+Each account has a **self group**: an MLS group whose members are only the
+account's own devices. The existing device creates it at the first device
+link (before sealing the account data, which carries its id to the new
+device) and adds the new device to it by commit like to any other group;
+nothing else ever adds to it. Apps never list it.
+
+| Rule | |
+| --- | --- |
+| What syncs | `feature/<key>` (state and option) except `user.recovery_phrase` (the server's state) and `user.app_lock` (per device); `folders`, `muted`, `archived`, `pinned`. Not drafts |
+| When | at every sync the device compares each synced value with the hash it last synced; changed ones get the current time in milliseconds (at least one more than before) and go out in one `settings` message through the outbox. Apps also push right after a settings change |
+| Conflicts | last writer wins per key by that timestamp; equal timestamps: the larger value hash wins, so all devices converge |
+| Who | a `settings` message counts only in this device's own self group and from another member of it; anywhere else it is dropped ("settings from outside this account's own devices"). Rosters in the self group add their devices to `own/members` |
+| Locks | feature entries go through the registry like a local change: a permanently locked setting is refused (e.g. `user.key_change_warning` stays applied), keys that are not settings are ignored, local effects follow (search index built or dropped, drafts deleted) |
+| Events | `SettingsSynced { keys }`: the apps reload the settings |
+
+Honest limits: timestamps are the writers' clocks, so a device whose clock
+is far ahead wins conflicts until the others pass it. Devices linked before
+this change have no self group until the next link.
 
 ## 7. What the client stores
 
@@ -310,6 +357,9 @@ both are deleted when done and with the account.
 | `photoshared/<group hex>` | what the group was last sent: photo attachment id ("" = removed), per-chat or not, the members then |
 | `photo/<group hex>/<member hex>`, `photocache/<attachment id>` | a member's photo reference in the group; the fetched photo |
 | `chatprofile/<group hex>` | the own name and photo for this chat only (8.7) |
+| `self/group` | the account's self group id (6.4); carried to a newly linked device |
+| `sync/ts/<key>`, `sync/seen/<key>` | per synced key: the timestamp of its value (ms) and the hash last synced (6.4); carried to a newly linked device |
+| table `tree_search` (FTS5) and `tree_search_ids` | the search index while `user.search_index` is applied (6.3, SCHEMA.md 1.2) |
 | table `tree_messages` | message history with franking records (SCHEMA.md 1.2); also `left` / `removed` lines about members who went (6.1); kinds `sticker`, `location`, `event` keep their state in `data` (8) |
 | table `tree_outbox` | messages being sent: sealed bytes, recipients, idempotency key, state (SCHEMA.md 1.2) |
 

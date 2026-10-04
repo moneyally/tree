@@ -336,7 +336,11 @@ enum Op {
         applied: bool,
     },
     /// `release_for_chat` (release = true) or `apply_for_chat`.
-    ChatLock { key: usize, release: bool, who: usize },
+    ChatLock {
+        key: usize,
+        release: bool,
+        who: usize,
+    },
 }
 
 const CALLERS: [Caller; 4] = [
@@ -447,9 +451,19 @@ impl Model {
                 locked_by: Some(LockReason::Server),
             }
         } else if self.chat_locked(f) {
-            Status { key: f.key, state: State::Released, option, locked_by: Some(LockReason::Chat) }
+            Status {
+                key: f.key,
+                state: State::Released,
+                option,
+                locked_by: Some(LockReason::Chat),
+            }
         } else {
-            Status { key: f.key, state, option, locked_by: None }
+            Status {
+                key: f.key,
+                state,
+                option,
+                locked_by: None,
+            }
         }
     }
     fn chat_locked(&self, f: &Feature) -> bool {
@@ -551,7 +565,7 @@ fn feature_registry_random_sequences() {
                 state: Default::default(),
             };
             for o in &ops {
-                        let snapshot: Vec<Status> = model
+                let snapshot: Vec<Status> = model
                     .defs
                     .iter()
                     .map(|f| r.status(f.key).unwrap())

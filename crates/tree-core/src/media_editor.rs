@@ -22,7 +22,8 @@ pub struct Point {
 
 impl Point {
     pub fn validate(self) -> Result<(), TreeError> {
-        if !self.x.is_finite() || !self.y.is_finite() {
+        if !self.x.is_finite() || !self.y.is_finite()
+            || !(0.0..=1.0).contains(&self.x) || !(0.0..=1.0).contains(&self.y) {
             return Err(TreeError::Usage("editor point is not finite".into()));
         }
         Ok(())
@@ -37,7 +38,7 @@ pub enum Rotation {
     Deg270,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CropRect {
     pub x: f32,
     pub y: f32,
@@ -58,7 +59,7 @@ impl CropRect {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ImageAdjustments {
     /// Exposure in stops, roughly -4.0 .. +4.0.
     pub exposure: f32,
@@ -164,7 +165,7 @@ impl DrawStroke {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Filter {
     None,
     Mono,

@@ -52,12 +52,11 @@ pub async fn init(
     {
         return Err(ApiError::bad_request("invalid media geometry"));
     }
-    let expected = req
-        .body
-        .plaintext_size
-        .div_ceil(req.body.chunk_size as u64);
+    let expected = req.body.plaintext_size.div_ceil(req.body.chunk_size as u64);
     if expected != req.body.chunk_count as u64 {
-        return Err(ApiError::bad_request("chunk count does not match plaintext size"));
+        return Err(ApiError::bad_request(
+            "chunk count does not match plaintext size",
+        ));
     }
     if req.body.plaintext_size > state.cfg.max_file_bytes as u64 {
         return Err(ApiError::too_large("media is too large"));
@@ -113,7 +112,8 @@ pub struct ChunkReq {
     pub ciphertext: String,
     pub sha256: String,
 }
-json_body!(ChunkReq, |cfg| (cfg.max_media_chunk_bytes + 16) * 4 / 3 + 512);
+json_body!(ChunkReq, |cfg| (cfg.max_media_chunk_bytes + 16) * 4 / 3
+    + 512);
 
 pub async fn put_chunk(
     State(state): State<AppState>,
@@ -138,7 +138,10 @@ pub async fn put_chunk(
     }
     let owner: String = row.try_get("owner_device_id")?;
     if owner != req.device.device_id {
-        return Err(ApiError::forbidden("MEDIA_OWNER_MISMATCH", "media belongs to another device"));
+        return Err(ApiError::forbidden(
+            "MEDIA_OWNER_MISMATCH",
+            "media belongs to another device",
+        ));
     }
     let expires_at: i64 = row.try_get("expires_at")?;
     if expires_at <= now_secs() {
@@ -146,7 +149,10 @@ pub async fn put_chunk(
     }
     let finalized: i64 = row.try_get("finalized")?;
     if finalized != 0 {
-        return Err(ApiError::conflict("MEDIA_FINALIZED", "media is already finalized"));
+        return Err(ApiError::conflict(
+            "MEDIA_FINALIZED",
+            "media is already finalized",
+        ));
     }
 
     let chunk_size: usize = row.try_get::<i64, _>("chunk_size")? as usize;
@@ -160,11 +166,13 @@ pub async fn put_chunk(
     let remaining = plaintext_size.saturating_sub(offset);
     let expected_ciphertext = remaining.min(chunk_size as u64) as usize + 16;
     if ciphertext.len() != expected_ciphertext {
-        return Err(ApiError::bad_request("encrypted chunk size does not match manifest"));
+        return Err(ApiError::bad_request(
+            "encrypted chunk size does not match manifest",
+        ));
     }
     let expected_hash = Sha256::digest(&ciphertext);
-    let claimed = hex::decode(&req.body.sha256)
-        .map_err(|_| ApiError::bad_request("invalid chunk hash"))?;
+    let claimed =
+        hex::decode(&req.body.sha256).map_err(|_| ApiError::bad_request("invalid chunk hash"))?;
     if claimed.len() != 32 || claimed.as_slice() != expected_hash.as_slice() {
         return Err(ApiError::bad_request("chunk hash mismatch"));
     }
@@ -296,17 +304,20 @@ pub async fn finalize(
     }
     let finalized: i64 = row.try_get("finalized")?;
     if finalized != 0 {
-        return Ok(Json(serde_json::json!({"media_id": media_id, "finalized": true})));
+        return Ok(Json(
+            serde_json::json!({"media_id": media_id, "finalized": true}),
+        ));
     }
     let expected: u32 = row.try_get::<i64, _>("chunk_count")? as u32;
-    let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM media_chunks WHERE media_id = ?",
-    )
-    .bind(&media_id)
-    .fetch_one(&state.db)
-    .await?;
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM media_chunks WHERE media_id = ?")
+        .bind(&media_id)
+        .fetch_one(&state.db)
+        .await?;
     if count != expected as i64 {
-        return Err(ApiError::conflict("MEDIA_INCOMPLETE", "not all media chunks are uploaded"));
+        return Err(ApiError::conflict(
+            "MEDIA_INCOMPLETE",
+            "not all media chunks are uploaded",
+        ));
     }
     let distinct_bad: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM media_chunks WHERE media_id = ? AND length(sha256) != 32",
@@ -321,5 +332,7 @@ pub async fn finalize(
         .bind(&media_id)
         .execute(&state.db)
         .await?;
-    Ok(Json(serde_json::json!({"media_id": media_id, "finalized": true})))
+    Ok(Json(
+        serde_json::json!({"media_id": media_id, "finalized": true}),
+    ))
 }

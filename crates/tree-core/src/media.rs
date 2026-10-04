@@ -18,6 +18,257 @@ use crate::error::TreeError;
 use crate::message::MessageId;
 
 pub const MEDIA_VERSION: u8 = 1;
+/// Bounded, non-destructive edit recipe. The recipe never contains the
+/// plaintext media; it is safe to keep locally and can be discarded after the
+/// final rendered bytes are encrypted.
+pub const MAX_EDIT_OPERATIONS: usize = 128;
+pub const MAX_CAPTION_BYTES: usize = 4096;
+pub const MAX_OVERLAY_TEXT_BYTES: usize = 1024;
+pub const MAX_STROKE_POINTS: usize = 2048;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rotation {
+    Deg0,
+    Deg90,
+    Deg180,
+    Deg270,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CropRect {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ImageAdjustments {
+    pub brightness: i16,
+    pub contrast: i16,
+    pub saturation: i16,
+    pub sharpness: u8,
+    pub warmth: i16,
+    pub blur: u8,
+}
+
+impl Default for ImageAdjustments {
+    fn default() -> Self {
+        Self {
+            brightness: 0,
+            contrast: 0,
+            saturation: 0,
+            sharpness: 0,
+            warmth: 0,
+            blur: 0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BrushStyle {
+    pub width: u16,
+    pub opacity: u8,
+    /// 0..=100: pressure/sensitivity multiplier used by the platform renderer.
+    pub sensitivity: u8,
+    pub smoothing: u8,
+    pub rotation_deg: i16,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DrawPoint {
+    pub x_milli: i32,
+    pub y_milli: i32,
+    pub pressure: u8,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DrawStroke {
+    pub brush: BrushStyle,
+    pub points: Vec<DrawPoint>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TextStyle {
+    pub size: u16,
+    pub opacity: u8,
+    pub rotation_deg: i16,
+    pub bold: bool,
+    pub italic: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextOverlay {
+    pub text: String,
+    pub x_milli: i32,
+    pub y_milli: i32,
+    pub style: TextStyle,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StickerTransform {
+    pub x_milli: i32,
+    pub y_milli: i32,
+    pub scale_milli: u32,
+    pub rotation_deg: i16,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StickerOverlay {
+    pub sticker_id: [u8; 16],
+    pub transform: StickerTransform,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EditOperation {
+    Crop(CropRect),
+    Rotate(Rotation),
+    FlipHorizontal,
+    FlipVertical,
+    Adjust(ImageAdjustments),
+    Draw(DrawStroke),
+    AddText(TextOverlay),
+    AddSticker(StickerOverlay),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MediaEditPlan {
+    pub source_width: u32,
+    pub source_height: u32,
+    pub operations: Vec<EditOperation>,
+    pub caption: String,
+}
+
+impl MediaEditPlan {
+    pub fn new(source_width: u32, source_height: u32) -> Result<Self, TreeError> {
+        if source_width == 0 || source_height == 0 {
+            return Err(TreeError::FileCrypto("media dimensions must be non-zero".into()));
+        }
+        Ok(Self {
+            source_width,
+            source_height,
+            operations: Vec::new(),
+            caption: String::new(),
+        })
+    }
+
+    pub fn push(&mut self, op: EditOperation) -> Result<(), TreeError> {
+        if self.operations.len() >= MAX_EDIT_OPERATIONS {
+            return Err(TreeError::FileCrypto("too many media edit operations".into()));
+        }
+        validate_edit_operation(&op)?;
+        self.operations.push(op);
+        Ok(())
+    }
+
+    pub fn set_caption(&mut self, caption: &str) -> Result<(), TreeError> {
+        if caption.as_bytes().len() > MAX_CAPTION_BYTES {
+            return Err(TreeError::FileCrypto("media caption is too long".into()));
+        }
+        if caption.chars().any(|c| c == '\0') {
+            return Err(TreeError::FileCrypto("media caption contains NUL".into()));
+        }
+        self.caption = caption.to_string();
+        Ok(())
+    }
+
+    pub fn undo(&mut self) -> Option<EditOperation> {
+        self.operations.pop()
+    }
+
+    pub fn clear(&mut self) {
+        self.operations.clear();
+        self.caption.clear();
+    }
+}
+
+fn validate_edit_operation(op: &EditOperation) -> Result<(), TreeError> {
+    match op {
+        EditOperation::Crop(r) => {
+            if r.width == 0 || r.height == 0 {
+                return Err(TreeError::FileCrypto("crop dimensions must be non-zero".into()));
+            }
+        }
+        EditOperation::Adjust(a) => {
+            if !(-100..=100).contains(&a.brightness)
+                || !(-100..=100).contains(&a.contrast)
+                || !(-100..=100).contains(&a.saturation)
+                || !(-100..=100).contains(&a.warmth)
+                || a.sharpness > 100
+                || a.blur > 100
+            {
+                return Err(TreeError::FileCrypto("media adjustment is out of range".into()));
+            }
+        }
+        EditOperation::Draw(s) => {
+            if s.points.is_empty() || s.points.len() > MAX_STROKE_POINTS {
+                return Err(TreeError::FileCrypto("draw stroke point count is invalid".into()));
+            }
+            if s.brush.width == 0 || s.brush.opacity == 0 || s.brush.sensitivity > 100 {
+                return Err(TreeError::FileCrypto("brush settings are invalid".into()));
+            }
+        }
+        EditOperation::AddText(t) => {
+            if t.text.is_empty() || t.text.as_bytes().len() > MAX_OVERLAY_TEXT_BYTES {
+                return Err(TreeError::FileCrypto("text overlay is invalid".into()));
+            }
+            if t.style.size == 0 || t.style.opacity == 0 {
+                return Err(TreeError::FileCrypto("text style is invalid".into()));
+            }
+        }
+        EditOperation::AddSticker(s) => {
+            if s.transform.scale_milli == 0 {
+                return Err(TreeError::FileCrypto("sticker scale is invalid".into()));
+            }
+        }
+        EditOperation::Rotate(_)
+        | EditOperation::FlipHorizontal
+        | EditOperation::FlipVertical => {}
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MediaSendMode {
+    Original,
+    Edited,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MediaComposerState {
+    pub edit: MediaEditPlan,
+    pub send_mode: MediaSendMode,
+    pub view_policy: ViewPolicy,
+    pub preview_mode: PreviewMode,
+}
+
+impl MediaComposerState {
+    pub fn new(width: u32, height: u32) -> Result<Self, TreeError> {
+        Ok(Self {
+            edit: MediaEditPlan::new(width, height)?,
+            send_mode: MediaSendMode::Edited,
+            view_policy: ViewPolicy::Persistent,
+            preview_mode: PreviewMode::LowResolution,
+        })
+    }
+
+    pub fn reset_edits(&mut self) {
+        self.edit.operations.clear();
+    }
+
+    pub fn set_view_once(&mut self) {
+        self.view_policy = ViewPolicy::ViewOnce;
+    }
+
+    pub fn set_timer(&mut self, seconds: u32) -> Result<(), TreeError> {
+        if seconds == 0 || seconds > 30 * 86_400 {
+            return Err(TreeError::FileCrypto("media timer is out of range".into()));
+        }
+        self.view_policy = ViewPolicy::Timed { seconds };
+        Ok(())
+    }
+}
+
 pub const DEFAULT_CHUNK_SIZE: u32 = 256 * 1024;
 pub const MAX_CHUNK_SIZE: u32 = 1024 * 1024;
 pub const MAX_CHUNKS: u32 = 65_535;
@@ -993,6 +1244,57 @@ mod tests {
         assert_eq!(bytes.as_slice(), &[1, 2, 3]);
         assert_eq!(bytes.len(), 3);
         assert!(!bytes.is_empty());
+    }
+
+    #[test]
+    fn edit_plan_validates_text_drawing_adjustments_and_undo() {
+        let mut plan = MediaEditPlan::new(1920, 1080).unwrap();
+        plan.set_caption("설명").unwrap();
+        plan.push(EditOperation::Rotate(Rotation::Deg90)).unwrap();
+        plan.push(EditOperation::Adjust(ImageAdjustments {
+            brightness: 20,
+            contrast: -10,
+            saturation: 15,
+            sharpness: 30,
+            warmth: 5,
+            blur: 0,
+        })).unwrap();
+        plan.push(EditOperation::Draw(DrawStroke {
+            brush: BrushStyle {
+                width: 12,
+                opacity: 200,
+                sensitivity: 75,
+                smoothing: 60,
+                rotation_deg: 15,
+            },
+            points: vec![
+                DrawPoint { x_milli: 100, y_milli: 100, pressure: 180 },
+                DrawPoint { x_milli: 200, y_milli: 200, pressure: 220 },
+            ],
+        })).unwrap();
+        plan.push(EditOperation::AddText(TextOverlay {
+            text: "확인".into(),
+            x_milli: 500,
+            y_milli: 500,
+            style: TextStyle {
+                size: 48,
+                opacity: 255,
+                rotation_deg: -5,
+                bold: true,
+                italic: false,
+            },
+        })).unwrap();
+        assert!(matches!(plan.undo(), Some(EditOperation::AddText(_))));
+        assert_eq!(plan.caption, "설명");
+    }
+
+    #[test]
+    fn composer_rejects_invalid_timer() {
+        let mut composer = MediaComposerState::new(100, 100).unwrap();
+        assert!(composer.set_timer(0).is_err());
+        assert!(composer.set_timer(31 * 86_400).is_err());
+        composer.set_timer(30).unwrap();
+        assert_eq!(composer.view_policy, ViewPolicy::Timed { seconds: 30 });
     }
 
     #[test]

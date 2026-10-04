@@ -111,6 +111,21 @@ pub async fn send(
         Err(why) => return Err(ApiError::bad_request(format!("body: {why}"))),
     };
 
+    let group_id = header.group_id.to_vec();
+    let sender = &req.device.device_id;
+    let request_hash = {
+        let mut h = Sha256::new();
+        h.update(b"TreeSend/v1");
+        h.update(&group_id);
+        for recipient in &unique {
+            h.update((recipient.len() as u32).to_be_bytes());
+            h.update(recipient.as_bytes());
+        }
+        h.update((bytes.len() as u64).to_be_bytes());
+        h.update(&bytes);
+        h.finalize().to_vec()
+    };
+
     // Fan-out and membership authorization happen in the same write
     // transaction. Otherwise a concurrent device removal could race the
     // membership check and still receive one last unauthorized delivery.
@@ -144,20 +159,6 @@ pub async fn send(
     // The server cannot decrypt the MLS message, but it can enforce that the
     // authenticated sender and every recipient belong to the same current
     // server-side group roster. This blocks cross-group mailbox injection.
-    let group_id = header.group_id.to_vec();
-    let sender = &req.device.device_id;
-    let request_hash = {
-        let mut h = Sha256::new();
-        h.update(b"TreeSend/v1");
-        h.update(&group_id);
-        for recipient in &unique {
-            h.update((recipient.len() as u32).to_be_bytes());
-            h.update(recipient.as_bytes());
-        }
-        h.update((bytes.len() as u64).to_be_bytes());
-        h.update(&bytes);
-        h.finalize().to_vec()
-    };
     let sender_member =
         sqlx::query("SELECT 1 FROM group_devices WHERE group_id = ? AND device_id = ?")
             .bind(&group_id)

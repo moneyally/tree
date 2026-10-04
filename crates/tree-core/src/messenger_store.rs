@@ -306,11 +306,13 @@ impl crate::storage::StoredProvider {
         local_id: [u8; 16],
         server_id: &str,
     ) -> Result<(), TreeError> {
-        self.connection().execute(
-            "UPDATE tree_outbox SET state='sent', server_id=?2, last_error_code=NULL
-             WHERE local_id=?1 AND state='sending'",
-            params![local_id.as_slice(), server_id],
-        ).map_err(storage_err)?;
+        self.connection()
+            .execute(
+                "UPDATE tree_outbox SET state='sent', server_id=?2, last_error_code=NULL
+                 WHERE local_id=?1 AND state='sending'",
+                params![local_id.as_slice(), server_id],
+            )
+            .map_err(storage_err)?;
         Ok(())
     }
 
@@ -320,11 +322,13 @@ impl crate::storage::StoredProvider {
         error_code: &str,
         next_retry_at: i64,
     ) -> Result<(), TreeError> {
-        self.connection().execute(
-            "UPDATE tree_outbox SET state='retry', last_error_code=?2, next_retry_at=?3
-             WHERE local_id=?1 AND state='sending'",
-            params![local_id.as_slice(), error_code, next_retry_at],
-        ).map_err(storage_err)?;
+        self.connection()
+            .execute(
+                "UPDATE tree_outbox SET state='retry', last_error_code=?2, next_retry_at=?3
+                 WHERE local_id=?1 AND state='sending'",
+                params![local_id.as_slice(), error_code, next_retry_at],
+            )
+            .map_err(storage_err)?;
         Ok(())
     }
 
@@ -333,21 +337,26 @@ impl crate::storage::StoredProvider {
         local_id: [u8; 16],
         error_code: &str,
     ) -> Result<(), TreeError> {
-        self.connection().execute(
-            "UPDATE tree_outbox SET state='failed', last_error_code=?2
-             WHERE local_id=?1 AND state='sending'",
-            params![local_id.as_slice(), error_code],
-        ).map_err(storage_err)?;
+        self.connection()
+            .execute(
+                "UPDATE tree_outbox SET state='failed', last_error_code=?2
+                 WHERE local_id=?1 AND state='sending'",
+                params![local_id.as_slice(), error_code],
+            )
+            .map_err(storage_err)?;
         Ok(())
     }
 
     pub(crate) fn recover_sending_outbox(&self, now: i64) -> Result<u32, TreeError> {
-        let changed = self.connection().execute(
-            "UPDATE tree_outbox SET state='retry', next_retry_at=?1,
-                    last_error_code='CLIENT_RESTART'
-             WHERE state='sending'",
-            params![now],
-        ).map_err(storage_err)?;
+        let changed = self
+            .connection()
+            .execute(
+                "UPDATE tree_outbox SET state='retry', next_retry_at=?1,
+                        last_error_code='CLIENT_RESTART'
+                 WHERE state='sending'",
+                params![now],
+            )
+            .map_err(storage_err)?;
         u32::try_from(changed)
             .map_err(|_| TreeError::Storage("outbox recovery count overflow".into()))
     }

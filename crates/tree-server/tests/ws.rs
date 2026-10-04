@@ -17,11 +17,20 @@ async fn websocket_requires_signed_upgrade_and_delivers_ciphertext_until_ack() {
     let alice = api.signup().await;
     let bob = api.signup().await;
 
-    // reqwest performs an HTTP request for the unsigned upgrade check;
-    // the WebSocket scheme is only used by the actual WebSocket client below.
-    let unsigned = format!("http://{}/v1/ws", ts.server.addr);
-    let unsigned_resp = reqwest::Client::new().get(unsigned).send().await.unwrap();
-    assert_eq!(unsigned_resp.status(), StatusCode::UNAUTHORIZED);
+    // A plain HTTP request is not a WebSocket upgrade and is correctly
+    // rejected as malformed before authentication is evaluated. To test the
+    // authentication boundary itself, send a real unsigned WebSocket
+    // handshake and require a 401 response.
+    let unsigned = format!("ws://{}/v1/ws", ts.server.addr)
+        .into_client_request()
+        .unwrap();
+    let err = tokio_tungstenite::connect_async(unsigned).await.unwrap_err();
+    match err {
+        tokio_tungstenite::tungstenite::Error::Http(response) => {
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+        other => panic!("expected HTTP 401 for unsigned upgrade, got {other:?}"),
+    }
 
     let signed = Signed::new(reqwest::Method::GET, "/v1/ws", Some(&bob.device_id), None);
     let mut req = format!("ws://{}/v1/ws", ts.server.addr)

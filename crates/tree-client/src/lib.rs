@@ -224,6 +224,38 @@ impl Session {
         self.send_control(gid, &body)
     }
 
+    /// Creates the local composer state. Rendering/editing stays on-device;
+    /// this object only carries bounded edit operations and send policy.
+    pub fn media_composer(&self, width: u32, height: u32) -> Result<MediaComposerState, Error> {
+        Ok(MediaComposerState::new(width, height)?)
+    }
+
+    /// Sends the renderer's final edited bytes. The source bytes never leave
+    /// this call; only the final edited plaintext is chunk-encrypted and sent.
+    pub fn send_composed_media(
+        &self,
+        gid: &[u8],
+        rendered_plaintext: &[u8],
+        media_type: &str,
+        filename: &str,
+        mime: &str,
+        composer: &MediaComposerState,
+        preview_plaintext: Option<&[u8]>,
+    ) -> Result<SentMedia, Error> {
+        composer.edit.push_for_validation()?;
+        self.send_media_with_caption(
+            gid,
+            rendered_plaintext,
+            media_type,
+            filename,
+            mime,
+            composer.view_policy,
+            composer.preview_mode,
+            preview_plaintext,
+            &composer.edit.caption,
+        )
+    }
+
     pub fn send_media(
         &self,
         gid: &[u8],
@@ -234,6 +266,21 @@ impl Session {
         policy: ViewPolicy,
         preview_mode: PreviewMode,
         preview_plaintext: Option<&[u8]>,
+    ) -> Result<SentMedia, Error> {
+        self.send_media_with_caption(gid, plaintext, media_type, filename, mime, policy, preview_mode, preview_plaintext, "")
+    }
+
+    pub fn send_media_with_caption(
+        &self,
+        gid: &[u8],
+        plaintext: &[u8],
+        media_type: &str,
+        filename: &str,
+        mime: &str,
+        policy: ViewPolicy,
+        preview_mode: PreviewMode,
+        preview_plaintext: Option<&[u8]>,
+        caption: &str,
     ) -> Result<SentMedia, Error> {
         if plaintext.is_empty() {
             return Err(Error::Usage("media cannot be empty".into()));

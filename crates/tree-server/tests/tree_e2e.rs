@@ -194,6 +194,28 @@ async fn real_clients_chat_through_server_and_removed_device_is_locked_out() {
     api.ack(&bob_net, &[bob_msgs[0]["id"].as_str().unwrap()])
         .await;
 
+    // Charlie is a surviving recipient of the removal commit and must apply
+    // it before receiving application messages from the new epoch.
+    let charlie_commit_msgs = api.fetch(&charlie_net, 0).await;
+    assert_eq!(charlie_commit_msgs.len(), 1);
+    assert!(matches!(
+        c.receive(
+            &charlie,
+            &unb64(charlie_commit_msgs[0]["body"].as_str().unwrap())
+        )
+        .unwrap(),
+        Incoming::GroupChanged {
+            epoch: 3,
+            own_commit_discarded: false,
+            ..
+        }
+    ));
+    api.ack(
+        &charlie_net,
+        &[charlie_commit_msgs[0]["id"].as_str().unwrap()],
+    )
+    .await;
+
     // After the removal Bob cannot decrypt future application messages.
     let secret = a.send(&alice, b"only Alice and Charlie").unwrap();
     let (st, v) = api

@@ -829,7 +829,14 @@ impl Group {
         }
 
         let now = unix_now();
+        let before_prune = self.state.future.clone();
         self.state.prune_future(now);
+        if self.state.future != before_prune {
+            // Persist expiry/size pruning even when there is nothing ready to
+            // retry. Otherwise a restart can resurrect envelopes that were
+            // already expired or evicted from the in-memory queue.
+            self.save(me)?;
+        }
 
         let mut ready = self
             .state

@@ -184,7 +184,9 @@ impl MediaManifest {
         }
         let expected = self.plaintext_size.div_ceil(self.chunk_size as u64);
         if expected != self.chunk_count as u64 {
-            return Err(TreeError::FileCrypto("chunk count does not match size".into()));
+            return Err(TreeError::FileCrypto(
+                "chunk count does not match size".into(),
+            ));
         }
         Ok(())
     }
@@ -313,7 +315,11 @@ impl EncryptedChunk {
             )
             .map_err(|_| TreeError::FileCrypto("media chunk encryption failed".into()))?;
         let sha256 = Sha256::digest(&ciphertext).into();
-        Ok(Self { index, ciphertext, sha256 })
+        Ok(Self {
+            index,
+            ciphertext,
+            sha256,
+        })
     }
 
     pub fn decrypt(
@@ -323,7 +329,9 @@ impl EncryptedChunk {
     ) -> Result<Vec<u8>, TreeError> {
         manifest.validate()?;
         if chunk.index >= manifest.chunk_count {
-            return Err(TreeError::FileCrypto("media chunk index is out of range".into()));
+            return Err(TreeError::FileCrypto(
+                "media chunk index is out of range".into(),
+            ));
         }
         let expected: [u8; 32] = Sha256::digest(&chunk.ciphertext).into();
         if expected != chunk.sha256 {
@@ -370,7 +378,9 @@ pub fn encrypt_manifest(key: &MediaKey, manifest: &MediaManifest) -> Result<Vec<
 
 pub fn decrypt_manifest(key: &MediaKey, manifest_blob: &[u8]) -> Result<MediaManifest, TreeError> {
     if manifest_blob.len() < NONCE_LEN + 16 {
-        return Err(TreeError::FileCrypto("encrypted manifest is too short".into()));
+        return Err(TreeError::FileCrypto(
+            "encrypted manifest is too short".into(),
+        ));
     }
     let nonce: [u8; NONCE_LEN] = manifest_blob[..NONCE_LEN]
         .try_into()
@@ -382,7 +392,10 @@ pub fn decrypt_manifest(key: &MediaKey, manifest_blob: &[u8]) -> Result<MediaMan
     let plain = cipher
         .decrypt(
             Nonce::from_slice(&nonce),
-            Payload { msg: ciphertext, aad: b"tree-media-manifest-v1" },
+            Payload {
+                msg: ciphertext,
+                aad: b"tree-media-manifest-v1",
+            },
         )
         .map_err(|_| TreeError::FileCrypto("manifest authentication failed".into()))?;
     MediaManifest::decode(&plain)
@@ -419,7 +432,10 @@ pub fn encrypt_preview(
     let ciphertext = cipher
         .encrypt(
             Nonce::from_slice(&nonce),
-            Payload { msg: plaintext, aad: &aad },
+            Payload {
+                msg: plaintext,
+                aad: &aad,
+            },
         )
         .map_err(|_| TreeError::FileCrypto("preview encryption failed".into()))?;
     let mut wire = nonce.to_vec();
@@ -498,7 +514,9 @@ fn validate_index(
     let remaining = manifest.plaintext_size.saturating_sub(offset);
     let expected = remaining.min(manifest.chunk_size as u64) as usize;
     if plaintext_len != expected {
-        return Err(TreeError::FileCrypto("media chunk plaintext size is invalid".into()));
+        return Err(TreeError::FileCrypto(
+            "media chunk plaintext size is invalid".into(),
+        ));
     }
     Ok(())
 }
@@ -557,11 +575,15 @@ impl<'a> Reader<'a> {
     }
 
     fn u32(&mut self) -> Result<u32, TreeError> {
-        Ok(u32::from_be_bytes(self.take(4)?.try_into().expect("length checked")))
+        Ok(u32::from_be_bytes(
+            self.take(4)?.try_into().expect("length checked"),
+        ))
     }
 
     fn u64(&mut self) -> Result<u64, TreeError> {
-        Ok(u64::from_be_bytes(self.take(8)?.try_into().expect("length checked")))
+        Ok(u64::from_be_bytes(
+            self.take(8)?.try_into().expect("length checked"),
+        ))
     }
 
     fn array<const N: usize>(&mut self) -> Result<[u8; N], TreeError> {
@@ -571,7 +593,9 @@ impl<'a> Reader<'a> {
     fn bytes_u16(&mut self, max: usize) -> Result<Vec<u8>, TreeError> {
         let n = u16::from_be_bytes(self.take(2)?.try_into().expect("length checked")) as usize;
         if n > max {
-            return Err(TreeError::Malformed("media manifest field is too large".into()));
+            return Err(TreeError::Malformed(
+                "media manifest field is too large".into(),
+            ));
         }
         Ok(self.take(n)?.to_vec())
     }
@@ -644,14 +668,19 @@ impl MediaViewEvent {
             return Err(TreeError::Malformed("invalid media view event".into()));
         }
         let mut p = MEDIA_VIEW_MAGIC.len();
-        let message_id = MessageId::from_bytes(bytes[p..p + 16].try_into().expect("length checked"));
+        let message_id =
+            MessageId::from_bytes(bytes[p..p + 16].try_into().expect("length checked"));
         p += 16;
         let attachment_id = bytes[p..p + ATTACHMENT_ID_LEN]
             .try_into()
             .expect("length checked");
         p += ATTACHMENT_ID_LEN;
         let consumed_at = i64::from_be_bytes(bytes[p..p + 8].try_into().expect("length checked"));
-        Ok(Self { message_id, attachment_id, consumed_at })
+        Ok(Self {
+            message_id,
+            attachment_id,
+            consumed_at,
+        })
     }
 }
 
@@ -667,7 +696,9 @@ pub struct MediaEnvelope {
 }
 
 impl MediaEnvelope {
-    pub fn file_key_ref(&self) -> &MediaKey { &self.file_key }
+    pub fn file_key_ref(&self) -> &MediaKey {
+        &self.file_key
+    }
 
     pub fn new(
         media_id: String,
@@ -686,10 +717,16 @@ impl MediaEnvelope {
         }
         if let Some(p) = &preview {
             if p.index != u32::MAX {
-                return Err(TreeError::FileCrypto("media preview has invalid index".into()));
+                return Err(TreeError::FileCrypto(
+                    "media preview has invalid index".into(),
+                ));
             }
         }
-        Ok(Self { manifest, file_key, preview })
+        Ok(Self {
+            manifest,
+            file_key,
+            preview,
+        })
     }
 
     pub fn encode(&self) -> Result<Vec<u8>, TreeError> {
@@ -730,7 +767,9 @@ impl MediaEnvelope {
         let expected = manifest.key_commitment(&file_key)?;
         let received = r.array::<32>()?;
         if expected != received {
-            return Err(TreeError::FileCrypto("media key commitment mismatch".into()));
+            return Err(TreeError::FileCrypto(
+                "media key commitment mismatch".into(),
+            ));
         }
         let preview = match r.u8()? {
             0 => None,
@@ -741,7 +780,11 @@ impl MediaEnvelope {
                 }
                 let ciphertext = r.take(n)?.to_vec();
                 let sha256 = r.array::<32>()?;
-                Some(EncryptedChunk { index: u32::MAX, ciphertext, sha256 })
+                Some(EncryptedChunk {
+                    index: u32::MAX,
+                    ciphertext,
+                    sha256,
+                })
             }
             _ => return Err(TreeError::Malformed("invalid media preview flag".into())),
         };
@@ -786,7 +829,9 @@ impl MediaLifecycle {
             self.state = MediaViewState::Preview;
             Ok(())
         } else {
-            Err(TreeError::FileCrypto("preview state transition is invalid".into()))
+            Err(TreeError::FileCrypto(
+                "preview state transition is invalid".into(),
+            ))
         }
     }
 
@@ -797,14 +842,12 @@ impl MediaLifecycle {
                 self.state = MediaViewState::Opening;
                 Ok(())
             }
-            MediaViewState::Opening | MediaViewState::Open { .. } => {
-                Err(TreeError::FileCrypto("media is already opening/open".into()))
-            }
-            MediaViewState::Consumed | MediaViewState::Expired => {
-                Err(TreeError::FileCrypto(
-                    "media has expired or was already consumed".into(),
-                ))
-            }
+            MediaViewState::Opening | MediaViewState::Open { .. } => Err(TreeError::FileCrypto(
+                "media is already opening/open".into(),
+            )),
+            MediaViewState::Consumed | MediaViewState::Expired => Err(TreeError::FileCrypto(
+                "media has expired or was already consumed".into(),
+            )),
         }
     }
 
@@ -860,8 +903,7 @@ impl MediaLifecycle {
 
     pub fn remaining_seconds(&mut self, now: i64) -> Option<u32> {
         self.refresh(now);
-        self.expires_at
-            .map(|e| e.saturating_sub(now).max(0) as u32)
+        self.expires_at.map(|e| e.saturating_sub(now).max(0) as u32)
     }
 
     pub fn apply_remote_consumed(&mut self) {
@@ -872,10 +914,8 @@ impl MediaLifecycle {
     }
 
     pub fn is_reopenable(&self) -> bool {
-        matches!(
-            self.state,
-            MediaViewState::Preview | MediaViewState::Closed
-        ) && !matches!(self.policy, ViewPolicy::ViewOnce)
+        matches!(self.state, MediaViewState::Preview | MediaViewState::Closed)
+            && !matches!(self.policy, ViewPolicy::ViewOnce)
     }
 }
 
@@ -902,11 +942,26 @@ mod tests {
     fn manifest_and_media_envelope_round_trip() {
         let (manifest, key) = sample(5, ViewPolicy::ViewOnce);
         let preview = encrypt_preview(&key, &manifest, b"thumb").unwrap();
-        let envelope = MediaEnvelope::new("media123".into(), [8; CAP_BYTES], manifest.clone(), key.clone(), Some(preview)).unwrap();
+        let envelope = MediaEnvelope::new(
+            "media123".into(),
+            [8; CAP_BYTES],
+            manifest.clone(),
+            key.clone(),
+            Some(preview),
+        )
+        .unwrap();
         let decoded = MediaEnvelope::decode(&envelope.encode().unwrap()).unwrap();
         assert_eq!(decoded.manifest, manifest);
         assert_eq!(decoded.file_key.as_bytes(), key.as_bytes());
-        assert_eq!(decrypt_preview(decoded.file_key_ref(), &decoded.manifest, decoded.preview.as_ref().unwrap()).unwrap(), b"thumb");
+        assert_eq!(
+            decrypt_preview(
+                decoded.file_key_ref(),
+                &decoded.manifest,
+                decoded.preview.as_ref().unwrap()
+            )
+            .unwrap(),
+            b"thumb"
+        );
     }
 
     #[test]
@@ -926,7 +981,10 @@ mod tests {
             attachment_id: [4; 16],
             consumed_at: 123,
         };
-        assert_eq!(MediaViewEvent::decode(&event.encode().unwrap()).unwrap(), event);
+        assert_eq!(
+            MediaViewEvent::decode(&event.encode().unwrap()).unwrap(),
+            event
+        );
     }
 
     #[test]

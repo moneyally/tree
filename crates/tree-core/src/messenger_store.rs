@@ -263,12 +263,23 @@ impl crate::storage::StoredProvider {
             .map_err(storage_err)?;
         let mut out = Vec::new();
         for row in rows {
-            let (local, group, message, kind, envelope, state, attempts, next_retry, created, error, server) =
-                row.map_err(storage_err)?;
+            let (
+                local,
+                group,
+                message,
+                kind,
+                envelope,
+                state,
+                attempts,
+                next_retry,
+                created,
+                error,
+                server,
+            ) = row.map_err(storage_err)?;
             let attempts = u32::try_from(attempts)
                 .map_err(|_| TreeError::Storage("negative outbox attempts".into()))?;
-            let kind = u8::try_from(kind)
-                .map_err(|_| TreeError::Storage("invalid outbox kind".into()))?;
+            let kind =
+                u8::try_from(kind).map_err(|_| TreeError::Storage("invalid outbox kind".into()))?;
             out.push(OutboxItem {
                 local_id: parse_id(local, "outbox local_id")?,
                 group_id: group,

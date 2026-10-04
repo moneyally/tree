@@ -11,3 +11,15 @@ license = "Apache-2.0"
 opt-level = 3
 [profile.dev.package.blake2]
 opt-level = 3
+# Attachments are encrypted in 1 MiB chunks; unoptimised AES-GCM and SHA-256
+# would make multi-megabyte test files slow.
+[profile.dev.package.aes]
+opt-level = 3
+[profile.dev.package.aes-gcm]
+opt-level = 3
+[profile.dev.package.ghash]
+opt-level = 3
+[profile.dev.package.polyval]
+opt-level = 3
+[profile.dev.package.sha2]
+opt-level = 3

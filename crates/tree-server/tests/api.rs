@@ -948,9 +948,16 @@ async fn purge_counts_what_it_removes() {
     let db = &ts.server.state.db;
     api.send_msg(&a, &[&b.device_id], b"old").await;
     api.send_msg(&a, &[&b.device_id], b"older").await;
-    let mut up = Signed::new(Method::POST, "/v1/attachments", Some(&a.device_id), None);
+    // One finished upload (a file) and one left unfinished.
+    let mut ids = Vec::new();
+    for _ in 0..2 {
+        let (st, v) = api.call(&a, Method::POST, "/v1/uploads", Some(json!({ "size": 3 }))).await;
+        assert_eq!(st, StatusCode::CREATED);
+        ids.push(v["id"].as_str().unwrap().to_string());
+    }
+    let mut up = Signed::new(Method::PUT, &format!("/v1/uploads/{}/0", ids[0]), Some(&a.device_id), None);
     up.body = vec![1, 2, 3];
-    assert_eq!(api.send(&up, &a.key).await.0, StatusCode::CREATED);
+    assert_eq!(api.send(&up, &a.key).await.1["complete"], true);
     for t in [[1u8; 16], [2u8; 16], [3u8; 16]] {
         let body = json!({ "token_hash": b64(&tree_server::invites::token_hash(&t)), "lifetime": 60, "max_uses": 1 });
         assert_eq!(api.call(&a, Method::POST, "/v1/invites", Some(body)).await.0, StatusCode::CREATED);
@@ -963,8 +970,8 @@ async fn purge_counts_what_it_removes() {
             .unwrap();
     }
     let later = now() + 40 * 86_400;
-    // 2 messages + 1 file + 3 invite links + 4 reports.
-    assert_eq!(tree_server::purge_expired(&ts.server.state, later).await.unwrap(), 2 + 1 + 3 + 4);
+    // 2 messages + 1 file + 1 unfinished upload + 3 invite links + 4 reports.
+    assert_eq!(tree_server::purge_expired(&ts.server.state, later).await.unwrap(), 2 + 1 + 1 + 3 + 4);
     assert_eq!(tree_server::purge_expired(&ts.server.state, later).await.unwrap(), 0);
     ts.stop().await;
 }

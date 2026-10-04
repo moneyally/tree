@@ -11,7 +11,7 @@
 //! * [`push`] — content-free wake-ups to allowed push gateways
 //! * [`recovery`] — a new device joins its account with the recovery phrase
 //! * [`usernames`] — @usernames, stored as hashes only
-//! * [`attachments`] — encrypted attachments (ciphertext blobs)
+//! * [`attachments`] — encrypted attachments (padded ciphertext, uploaded in resumable parts)
 //! * [`reports`] — reports with message franking, account suspension
 //! * [`features`] — operator flags with apply/release
 //!
@@ -226,7 +226,9 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/messages", post(messages::send).get(messages::fetch))
         .route("/v1/messages/ack", post(messages::ack))
         .route("/v1/commits", post(commits::submit))
-        .route("/v1/attachments", post(attachments::upload))
+        .route("/v1/uploads", post(attachments::create))
+        .route("/v1/uploads/{id}", get(attachments::status).delete(attachments::cancel))
+        .route("/v1/uploads/{id}/{index}", put(attachments::put_part))
         .route("/v1/attachments/{id}", get(attachments::download))
         .route("/v1/usernames/apply", post(usernames::apply))
         .route("/v1/usernames/release", post(usernames::release))
@@ -292,7 +294,8 @@ async fn log_requests(req: Request, next: Next) -> Response {
 }
 
 /// Deletes undelivered messages older than the TTL and any orphaned bodies,
-/// idempotency records older than the TTL, and the ordering record of
+/// idempotency records older than the TTL, attachments older than the TTL,
+/// uploads unfinished after a day, and the ordering record of
 /// groups none of whose devices exist any more.
 /// Returns the number of bodies removed.
 pub async fn purge_expired(state: &AppState, now: i64) -> Result<u64, sqlx::Error> {
@@ -314,10 +317,11 @@ pub async fn purge_expired(state: &AppState, now: i64) -> Result<u64, sqlx::Erro
     .execute(&state.db)
     .await?;
     let files = attachments::purge(state, cutoff).await?;
+    let uploads = attachments::purge_uploads(state, now).await?;
     let invites = invites::purge(&state.db, now).await?;
     let reports = reports::purge(&state.db, now.div_euclid(86400)).await?;
     let keys = messages::purge_idempotency(&state.db, cutoff).await?;
-    Ok(expired + orphans + files + invites + reports + keys)
+    Ok(expired + orphans + files + uploads + invites + reports + keys)
 }
 
 /// A running server.

@@ -100,6 +100,9 @@ pub enum FeatureError {
     NotAdmin,
     /// `PLAN_REQUIRED`
     PlanRequired,
+    /// `INVALID_OPTION`: the option does not fit the feature (see
+    /// [`option_format`]); the text says what would.
+    InvalidOption(String),
 }
 
 impl FeatureError {
@@ -112,6 +115,7 @@ impl FeatureError {
             Self::LockedByChat => "LOCKED_BY_CHAT",
             Self::NotAdmin => "NOT_ADMIN",
             Self::PlanRequired => "PLAN_REQUIRED",
+            Self::InvalidOption(_) => "INVALID_OPTION",
         }
     }
 }
@@ -283,6 +287,7 @@ impl Registry {
             return Err(FeatureError::PlanRequired);
         }
         if matches!(f.lock, Lock::None) {
+            let option = check_option(f.key, option)?;
             self.state.insert((f.scope, f.key), (State::Applied, option));
         }
         self.status(key)
@@ -347,6 +352,120 @@ impl Registry {
     /// Operator flag for a key that also exists at a lower scope.
     pub fn set_server_flag(&mut self, key: &'static str, state: State) {
         self.state.insert((Scope::Server, key), (state, None));
+    }
+}
+
+/// What the option of a feature may be. The registry refuses anything
+/// else with `INVALID_OPTION`, and the apps draw their choices from
+/// [`option_choices`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OptionFormat {
+    /// No declared format: kept as given (checked where it is used).
+    Free,
+    /// `user.auto_download`: `<network>[:<size>]` (see [`AutoDownload`]).
+    /// `default` is stored when the feature is applied without one.
+    AutoDownload { default: &'static str },
+}
+
+/// The option format of `key`.
+pub fn option_format(key: &str) -> OptionFormat {
+    match key {
+        "user.auto_download" => OptionFormat::AutoDownload { default: AUTO_DOWNLOAD_DEFAULT },
+        _ => OptionFormat::Free,
+    }
+}
+
+/// Checks `option` for `key` and returns what is stored: the option as
+/// given (trimmed), or the format's default when there is none.
+pub fn check_option(key: &str, option: Option<String>) -> Result<Option<String>, FeatureError> {
+    match (option_format(key), option.map(|o| o.trim().to_string())) {
+        (OptionFormat::Free, o) => Ok(o),
+        (OptionFormat::AutoDownload { default }, None) => Ok(Some(default.to_string())),
+        (OptionFormat::AutoDownload { .. }, Some(o)) => match AutoDownload::parse(&o) {
+            Some(_) => Ok(Some(o)),
+            None => Err(FeatureError::InvalidOption(format!(
+                "{key}: wifi, wifi+mobile or never, optionally with a size limit up to 2g (e.g. wifi:20m)"
+            ))),
+        },
+    }
+}
+
+/// Values the apps offer for a feature's option (empty: no option).
+pub fn option_choices(key: &str) -> Vec<String> {
+    let v: &[&str] = match option_format(key) {
+        OptionFormat::AutoDownload { .. } => &["wifi:5m", "wifi:20m", "wifi:100m", "wifi+mobile:5m", "wifi+mobile:20m", "never"],
+        OptionFormat::Free => &[],
+    };
+    v.iter().map(|s| s.to_string()).collect()
+}
+
+/// `user.auto_download` when applied without an option.
+pub const AUTO_DOWNLOAD_DEFAULT: &str = "wifi:20m";
+
+/// The network a device is on, as its app reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Network {
+    /// Wi-Fi or any other unmetered network (wired).
+    Wifi,
+    /// A metered mobile network.
+    Mobile,
+    /// Offline or unknown: nothing downloads by itself.
+    None,
+}
+
+/// The `user.auto_download` option: on which networks received files are
+/// fetched without a tap, and up to which plaintext size. Written
+/// `<network>[:<size>]`: network `wifi`, `wifi+mobile` or `never`; size a
+/// whole number with `k`, `m` or `g` (powers of 1024), at most `2g`
+/// (default `20m`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AutoDownload {
+    pub wifi: bool,
+    pub mobile: bool,
+    pub max_bytes: u64,
+}
+
+impl AutoDownload {
+    pub const DEFAULT_MAX: u64 = 20 << 20;
+
+    pub fn parse(s: &str) -> Option<Self> {
+        let (net, size) = match s.trim().split_once(':') {
+            Some((n, z)) => (n, Some(z)),
+            None => (s.trim(), None),
+        };
+        let (wifi, mobile) = match net {
+            "wifi" => (true, false),
+            "wifi+mobile" => (true, true),
+            "never" => (false, false),
+            _ => return None,
+        };
+        let max_bytes = match size {
+            None => Self::DEFAULT_MAX,
+            Some(z) => {
+                let (num, mul) = match z.chars().last()? {
+                    'k' => (&z[..z.len() - 1], 1u64 << 10),
+                    'm' => (&z[..z.len() - 1], 1 << 20),
+                    'g' => (&z[..z.len() - 1], 1 << 30),
+                    _ => (z, 1),
+                };
+                if num.is_empty() || num.len() > 10 || !num.bytes().all(|b| b.is_ascii_digit()) {
+                    return None;
+                }
+                num.parse::<u64>().ok()?.checked_mul(mul).filter(|n| *n <= 2 << 30)?
+            }
+        };
+        Some(AutoDownload { wifi, mobile, max_bytes })
+    }
+
+    /// Whether a file of `size` plaintext bytes downloads by itself on
+    /// `network` (other rules, such as "contacts only", are the caller's).
+    pub fn allows(&self, network: Network, size: u64) -> bool {
+        let net = match network {
+            Network::Wifi => self.wifi,
+            Network::Mobile => self.mobile,
+            Network::None => false,
+        };
+        net && size <= self.max_bytes
     }
 }
 
@@ -451,5 +570,30 @@ mod tests {
         assert_eq!(kind(&pro), Kind::BillingCapability);
         let bot = Feature { key: "bot.inline", scope: Scope::Bot, default: State::Released, lock: Lock::None, plan: Plan::Free, stage: 2 };
         assert_eq!(kind(&bot), Kind::UserPreference);
+    }
+
+    #[test]
+    fn auto_download_option() {
+        let p = |s: &str| AutoDownload::parse(s);
+        assert_eq!(p("wifi"), Some(AutoDownload { wifi: true, mobile: false, max_bytes: 20 << 20 }));
+        assert_eq!(p("wifi+mobile:5m"), Some(AutoDownload { wifi: true, mobile: true, max_bytes: 5 << 20 }));
+        assert_eq!(p("never").map(|a| (a.wifi, a.mobile)), Some((false, false)));
+        assert_eq!(p("wifi:2g").map(|a| a.max_bytes), Some(2 << 30));
+        assert_eq!(p("wifi:1500").map(|a| a.max_bytes), Some(1500));
+        for bad in ["", "lte", "wifi:", "wifi:3g", "wifi:-1m", "wifi:1t", "wifi:m", "mobile"] {
+            assert_eq!(p(bad), None, "{bad}");
+        }
+        let a = p("wifi:1k").unwrap();
+        assert!(a.allows(Network::Wifi, 1024) && !a.allows(Network::Wifi, 1025));
+        assert!(!a.allows(Network::Mobile, 1) && !a.allows(Network::None, 1));
+        assert!(p("wifi+mobile").unwrap().allows(Network::Mobile, 1));
+        // The registry checks it and stores the default.
+        let mut r = Registry::standard();
+        let me = Caller { plan: Plan::Free, is_admin: false };
+        assert_eq!(r.apply("user.auto_download", None, me).unwrap().option.as_deref(), Some(AUTO_DOWNLOAD_DEFAULT));
+        assert_eq!(r.apply("user.auto_download", Some("lte".into()), me).unwrap_err().code(), "INVALID_OPTION");
+        assert_eq!(r.apply("user.auto_download", Some(" wifi+mobile:5m ".into()), me).unwrap().option.as_deref(), Some("wifi+mobile:5m"));
+        assert!(option_choices("user.auto_download").iter().all(|c| p(c).is_some()));
+        assert!(option_choices("user.typing").is_empty());
     }
 }

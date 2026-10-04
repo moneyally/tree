@@ -109,22 +109,64 @@ pub struct FileInfo {
     /// Opened once, then the reference is deleted (chat.view_once).
     #[serde(default)]
     pub view_once: bool,
-    /// A voice message (`chat.voice`), with its length.
+    /// A voice message (`chat.voice`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub voice: bool,
+    /// Length of a voice message, video or other recording.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
     /// Server attachment id.
     pub id: String,
-    /// File key (base64, 32 bytes) and STREAM nonce prefix (base64, 7 bytes).
+    /// The file secret (base64, 32 bytes): input to HKDF, which derives the
+    /// cipher key, the nonce prefix and the commitment key.
     pub key: String,
-    pub nonce: String,
+    /// Plaintext size in bytes (the server sees only the padded size).
     pub size: u64,
-    /// Hex SHA-256 of the ciphertext and of the plaintext (key commitment).
-    pub ct_sha256: String,
+    /// Hex SHA-256 of the plaintext.
     pub pt_sha256: String,
     pub name: String,
     pub mime: String,
+    /// Attachment format version ([`tree_core::attachment::VERSION`]).
+    #[serde(default)]
+    pub v: u32,
+    /// Picture or video size in pixels, if the sender's app gave it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    /// A small preview picture made by the sender (base64 JPEG or PNG, at
+    /// most [`MAX_THUMB`] bytes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thumb: Option<String>,
+}
+
+/// Largest preview picture in a message (decoded bytes).
+pub const MAX_THUMB: usize = 32 * 1024;
+/// Longest file name and type, in characters.
+pub const MAX_NAME: usize = 255;
+pub const MAX_MIME: usize = 127;
+
+impl FileInfo {
+    /// Fits the format and its limits (checked on sending and on receiving;
+    /// a reference that does not is dropped).
+    pub fn is_valid(&self) -> bool {
+        let b64 = |s: &str| crate::api::unb64(s).ok();
+        let hex64 = |s: &str| s.len() == 64 && hex::decode(s).is_ok();
+        self.v == tree_core::attachment::VERSION
+            && b64(&self.key).is_some_and(|k| k.len() == 32)
+            && hex64(&self.pt_sha256)
+            && self.size <= tree_core::attachment::MAX_FILE
+            && self.name.chars().count() <= MAX_NAME
+            && self.mime.chars().count() <= MAX_MIME
+            && self.width.is_none_or(|w| w <= 100_000)
+            && self.height.is_none_or(|h| h <= 100_000)
+            && self.thumb.as_deref().is_none_or(|t| b64(t).is_some_and(|b| b.len() <= MAX_THUMB))
+    }
+
+    /// The preview picture's bytes.
+    pub fn thumbnail(&self) -> Option<Vec<u8>> {
+        self.thumb.as_deref().and_then(|t| crate::api::unb64(t).ok())
+    }
 }
 
 impl Payload {

@@ -9,6 +9,7 @@
 pub mod api;
 pub mod franking;
 pub mod invites;
+pub mod media;
 pub mod messages;
 pub mod organize;
 pub mod outbox;
@@ -34,7 +35,9 @@ use tree_core::{
 use zeroize::Zeroizing;
 
 pub use api::{Api, Creds};
+pub use media::{Downloader, MediaMeta, SendOptions, Source, Transfer, TransferState, Transfers};
 pub use messages::TextOptions;
+pub use tree_core::features::Network;
 pub use outbox::OutboxEntry;
 pub use tree_core::storage::outbox::OutboxState;
 pub use payload::{FileInfo, Payload};
@@ -100,7 +103,9 @@ pub enum Event {
     /// A member reacted to message `id` (or took the reaction back).
     Reaction { group: Vec<u8>, id: String, from: MemberId, emoji: String, remove: bool },
     /// An attachment arrived; fetch it with [`Session::download`].
-    File { group: Vec<u8>, from: MemberId, name: Option<String>, file: FileInfo, request: bool },
+    /// `auto_download`: `user.auto_download` says to fetch it now, without
+    /// a tap (a contact's file, the right network, small enough).
+    File { group: Vec<u8>, from: MemberId, name: Option<String>, file: FileInfo, request: bool, auto_download: bool },
     /// A stranger started a chat (`direct`) or added this device to a
     /// group; shown in the request inbox until accepted or declined.
     Request { group: Vec<u8>, from: String, direct: bool },
@@ -271,6 +276,7 @@ pub struct Session {
     creds: Creds,
     groups: HashMap<Vec<u8>, Group>,
     refresh_policy: refresh::RefreshPolicy,
+    media: media::MediaState,
 }
 
 impl Session {
@@ -322,7 +328,8 @@ impl Session {
         client.set_app_data(K_ACCOUNT, Some(creds.account_id.as_bytes()))?;
         client.set_app_data(K_DEVICE, Some(creds.device_id.as_bytes()))?;
         client.set_app_data(K_AUTH_KEY, Some(&seed[..]))?;
-        let mut s = Self { client, api, creds, groups: HashMap::new(), refresh_policy: Default::default() };
+        let media = media::MediaState::new(path);
+        let mut s = Self { client, api, creds, groups: HashMap::new(), refresh_policy: Default::default(), media };
         s.ensure_key_packages()?;
         Ok(s)
     }
@@ -342,7 +349,9 @@ impl Session {
         let seed: Zeroizing<Vec<u8>> = Zeroizing::new(client.app_data(K_AUTH_KEY)?.unwrap_or_default());
         let seed: [u8; 32] = seed.as_slice().try_into().map_err(|_| Error::Protocol("bad auth key".into()))?;
         let creds = Creds { account_id: text(K_ACCOUNT)?, device_id: text(K_DEVICE)?, key: SigningKey::from_bytes(&seed) };
-        let mut s = Self { client, api, creds, groups: HashMap::new(), refresh_policy: Default::default() };
+        let media = media::MediaState::new(path);
+        let mut s = Self { client, api, creds, groups: HashMap::new(), refresh_policy: Default::default(), media };
+        s.load_transfers()?;
         let mut outcomes = Vec::new();
         for gid in s.client.group_ids()? {
             if s.group(&gid)?.pending_commit().is_some() {
@@ -540,7 +549,10 @@ impl Session {
             }
         }
         self.api.delete_account(&self.creds)?;
+        let media = self.media.dir.clone();
         drop(self);
+        // Blobs waiting for upload and partial downloads (ciphertext only).
+        let _ = std::fs::remove_dir_all(media);
         for p in [path.to_string(), format!("{path}.hdr"), format!("{path}-wal"), format!("{path}-shm"), format!("{path}-journal")] {
             match std::fs::remove_file(&p) {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(Error::Usage(format!("{p}: {e}"))),

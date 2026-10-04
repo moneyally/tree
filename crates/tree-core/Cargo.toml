@@ -43,6 +43,8 @@ getrandom = "0.2"
 # HKDF (RFC 5869) and Ed25519 for the account recovery key.
 bip39 = { version = "3", default-features = false, features = ["std", "korean", "zeroize"] }
 hkdf = "0.12"
+# Attachment key commitment (HMAC-SHA256 under its own HKDF-derived key).
+hmac = "0.12"
 ed25519-dalek = { version = "2", features = ["zeroize"] }
 
 [dev-dependencies]

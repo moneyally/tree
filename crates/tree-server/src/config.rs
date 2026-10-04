@@ -44,8 +44,14 @@ pub struct Config {
     pub max_welcome_bytes: usize,
     /// `ATTACHMENT_DIR`: where encrypted attachments are stored.
     pub attachment_dir: std::path::PathBuf,
-    /// `MAX_ATTACHMENT_BYTES`: size of one encrypted attachment.
-    pub max_attachment_bytes: usize,
+    /// `MAX_ATTACHMENT_BYTES`: size of one encrypted attachment (the padded
+    /// ciphertext). Default: a 2 GiB file plus its encryption overhead.
+    pub max_attachment_bytes: u64,
+    /// `UPLOAD_CHUNK_BYTES`: size of one upload / download part.
+    pub upload_chunk_bytes: usize,
+    /// `UPLOAD_QUOTA_BYTES_PER_DAY`: attachment bytes one account may start
+    /// uploading per day (UTC).
+    pub upload_quota_bytes_per_day: u64,
     /// `MAX_MAILBOX_MESSAGES`: pending messages per device mailbox.
     pub max_mailbox_messages: u32,
     /// `MAX_IDEMPOTENCY_KEYS`: idempotency records kept per sending device
@@ -92,7 +98,9 @@ impl Default for Config {
             max_commit_bytes: 4 * 1024 * 1024,
             max_welcome_bytes: 4 * 1024 * 1024,
             attachment_dir: "attachments".into(),
-            max_attachment_bytes: 100 * 1024 * 1024,
+            max_attachment_bytes: DEFAULT_MAX_ATTACHMENT,
+            upload_chunk_bytes: 1024 * 1024,
+            upload_quota_bytes_per_day: 20 * 1024 * 1024 * 1024,
             max_mailbox_messages: 10_000,
             max_idempotency_keys: 10_000,
             fetch_limit: 100,
@@ -107,6 +115,11 @@ impl Default for Config {
         }
     }
 }
+
+/// Default `MAX_ATTACHMENT_BYTES`: a 2 GiB file padded to its bucket (2 GiB)
+/// plus the key commitment and one 16-byte tag per 1 MiB chunk
+/// (PROTOCOL.md 6.12), rounded up to 64 KiB.
+pub const DEFAULT_MAX_ATTACHMENT: u64 = (2 << 30) + 64 * 1024;
 
 #[derive(Debug)]
 pub struct ConfigError(pub String);
@@ -172,6 +185,8 @@ impl Config {
             max_welcome_bytes: env_parse("MAX_WELCOME_BYTES", d.max_welcome_bytes)?,
             attachment_dir: env_parse("ATTACHMENT_DIR", d.attachment_dir)?,
             max_attachment_bytes: env_parse("MAX_ATTACHMENT_BYTES", d.max_attachment_bytes)?,
+            upload_chunk_bytes: env_parse("UPLOAD_CHUNK_BYTES", d.upload_chunk_bytes)?,
+            upload_quota_bytes_per_day: env_parse("UPLOAD_QUOTA_BYTES_PER_DAY", d.upload_quota_bytes_per_day)?,
             max_mailbox_messages: env_parse("MAX_MAILBOX_MESSAGES", d.max_mailbox_messages)?,
             max_idempotency_keys: env_parse("MAX_IDEMPOTENCY_KEYS", d.max_idempotency_keys)?,
             fetch_limit: env_parse("FETCH_LIMIT", d.fetch_limit)?,
@@ -202,6 +217,7 @@ impl Config {
             || self.max_commit_bytes == 0
             || self.max_welcome_bytes == 0
             || self.max_attachment_bytes == 0
+            || self.upload_quota_bytes_per_day == 0
             || self.max_key_packages_per_upload == 0
             || self.max_idempotency_keys == 0
         {
@@ -216,6 +232,9 @@ impl Config {
             return Err(ConfigError(
                 "SIGNUP_PER_HOUR must be > 0 and SIGNUP_BURST >= 1".into(),
             ));
+        }
+        if !(4096..=16 * 1024 * 1024).contains(&self.upload_chunk_bytes) {
+            return Err(ConfigError("UPLOAD_CHUNK_BYTES must be from 4096 to 16777216".into()));
         }
         if self.push_interval_secs == 0 {
             return Err(ConfigError("PUSH_INTERVAL_SECS must be positive".into()));
@@ -266,6 +285,9 @@ mod tests {
             |c| c.max_commit_bytes = 0,
             |c| c.max_welcome_bytes = 0,
             |c| c.max_attachment_bytes = 0,
+            |c| c.upload_quota_bytes_per_day = 0,
+            |c| c.upload_chunk_bytes = 100,
+            |c| c.upload_chunk_bytes = 64 * 1024 * 1024,
             |c| c.max_key_packages_per_upload = 0,
             |c| c.max_idempotency_keys = 0,
             |c| c.rate_per_sec = 0.0,

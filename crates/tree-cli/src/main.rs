@@ -231,16 +231,20 @@ fn run(args: Vec<String>) -> Result<(), String> {
             None => println!("no one is called {name} (or they hid their name)"),
         },
         ["send-file", g, path] => {
-            let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
-            let name = std::path::Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or("file");
-            let f = s.send_file(&hex_arg(g)?, &bytes, name, "application/octet-stream", false).map_err(e)?;
-            println!("sent {} ({} bytes) as attachment {}", f.name, f.size, f.id);
+            let p = std::path::Path::new(path);
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+            let o = tree_client::SendOptions::default();
+            let f = s.send_media(&hex_arg(g)?, tree_client::Source::Path(p), name, "application/octet-stream", &o).map_err(e)?;
+            if f.id.is_empty() {
+                println!("{} ({} bytes) waits in the outbox; `tree sync` sends it", f.name, f.size);
+            } else {
+                println!("sent {} ({} bytes) as attachment {}", f.name, f.size, f.id);
+            }
         }
         ["download", id, out] => {
             let f = s.received_file(id).map_err(e)?.ok_or("no such received file")?;
-            let bytes = s.download(&f).map_err(e)?;
-            std::fs::write(out, &bytes).map_err(|e| format!("{out}: {e}"))?;
-            println!("saved {} ({} bytes, checked) to {out}", f.name, bytes.len());
+            s.download_to(&f, std::path::Path::new(out)).map_err(e)?;
+            println!("saved {} ({} bytes, checked) to {out}", f.name, f.size);
         }
         ["group-settings", g] => {
             let st = s.group_settings(&hex_arg(g)?).map_err(e)?;
@@ -460,7 +464,7 @@ fn print_event(ev: &Event) {
             &from.to_hex()[..8],
             if *remove { "took back" } else { "reacted" }
         ),
-        Event::File { group, from, name, file, request } => println!(
+        Event::File { group, from, name, file, request, .. } => println!(
             "[{}]{} {} ({}) sent a file: {} ({} bytes): tree download {} <path>",
             &hex(group)[..8],
             if *request { " [request]" } else { "" },

@@ -11,6 +11,26 @@ fn now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64
 }
 
+/// F-033: `user.username` follows the name: applied once one is chosen,
+/// releasing it releases the name on the server, applying needs a name.
+#[test]
+fn username_switch_releases_the_name() {
+    let env = Env::new("usernameswitch");
+    let alice = env.device("alice");
+    let bob = env.device("bob");
+    assert_eq!(alice.feature("user.username").unwrap().state, State::Released);
+    assert!(matches!(alice.apply_feature("user.username", None), Err(Error::Usage(_))), "needs a name");
+    alice.set_username("alice_u").unwrap();
+    assert_eq!(alice.feature("user.username").unwrap().state, State::Applied);
+    assert_eq!(bob.find("alice_u").unwrap().as_deref(), Some(alice.account_id()));
+    assert_eq!(alice.release_feature("user.username").unwrap().state, State::Released);
+    assert_eq!(alice.username().unwrap(), None);
+    assert_eq!(bob.find("alice_u").unwrap(), None, "released on the server");
+    // The name is free again.
+    bob.set_username("alice_u").unwrap();
+    assert_eq!(bob.feature("user.username").unwrap().state, State::Applied);
+}
+
 /// `user.discoverable`: released, nobody finds the @username (the answer is
 /// the same as for a name nobody has); applied again, they do. It holds for
 /// a name registered while released, too.

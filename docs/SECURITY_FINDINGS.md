@@ -454,3 +454,24 @@ Issues found by testing Tree's own design. Each one has a regression test.
 - **Test:** `requests::tests::the_invite_link_names_its_owner_and_the_server_never_sees_the_nonce`,
   `requests::tests::an_old_link_still_works_but_arrives_as_a_request`,
   `invite::tests::nonce_round_trip_and_binding`.
+
+## F-026: attachments could fill the server's disk (fixed)
+
+- **Found:** 2026-10-04, security review of wave 2.
+- **What:** uploads were bounded only per account per day (20 GiB) and kept
+  30 days, with no cap on what an account holds and no check of the disk;
+  a handful of cheap accounts could fill it. Any size from 1 byte was
+  accepted, so one account could create about 1.7 million tiny files a day
+  (database rows and inodes).
+- **Severity:** medium (availability of the whole server).
+- **Fix:** only sizes the attachment format produces are accepted (the
+  smallest is 1072 bytes; the server's copy of the bucket rule is checked
+  against the client's); `MAX_LIVE_BYTES_PER_ACCOUNT` (default 5 GiB) caps
+  the bytes an account started within the attachment lifetime (the daily
+  counters are now kept that long); uploads get `507` when the attachment
+  file system would keep less than `MIN_FREE_DISK_BYTES` (default 1 GiB,
+  read with statvfs) after the upload and all unfinished ones, or, where
+  free space cannot be read, beyond `MAX_TOTAL_ATTACHMENT_BYTES`.
+- **Test:** `sizes_holdings_and_disk_are_bounded`,
+  `attachments::tests::valid_sizes_are_exactly_the_formats`,
+  `size_limit_and_daily_quota`.

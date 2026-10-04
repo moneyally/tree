@@ -394,5 +394,8 @@ Parts are written to `.<id>.part` in `ATTACHMENT_DIR` at `index ·
 UPLOAD_CHUNK_BYTES`. With the last part the file is renamed to `<id>`, the
 `uploads` row deleted and an `attachments` row made (no uploader). The purge
 deletes uploads older than 24 hours with their partial files, partial files
-whose upload row is gone (device deleted), and quota rows of past days.
+whose upload row is gone (device deleted), and quota rows older than the
+attachment lifetime (`MESSAGE_TTL_SECS` plus a day): they bound what an
+account holds (`MAX_LIVE_BYTES_PER_ACCOUNT`, F-026), so the account and the
+bytes it started per day stay that long.
 Numbers `0012` and `0013` are reserved for other branches.

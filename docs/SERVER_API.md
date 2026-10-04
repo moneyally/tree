@@ -28,6 +28,7 @@ Some errors add fields (named with the endpoint).
 | `TRANSCRIPT_MISMATCH` | 403 | device link: the hash differs from the one the new device confirmed |
 | `LINK_SIGNATURE` | 403 | device link: a confirmation or authorisation signature does not verify |
 | `LIMITED` | 403 | a message or commit to more devices than the account may reach for now (new account, or recent verified reports; PROTOCOL.md 8.9) |
+| `STORAGE_LIMIT` | 403 | the account holds as many attachment bytes as `MAX_LIVE_BYTES_PER_ACCOUNT` allows (F-026) |
 | `RECOVERY_REFUSED` | 403 | no account holds this recovery key, or the recovery signature is wrong |
 | `NOT_FOUND` | 404 | no such endpoint, account or device |
 | `UNKNOWN_FEATURE` | 404 | unknown feature key |
@@ -44,6 +45,7 @@ Some errors add fields (named with the endpoint).
 | `TOO_LARGE` | 413 | body, message, commit, welcome, key package, or a list (recipients, key packages, ack ids) too large |
 | `RATE_LIMITED` | 429 | slow down; see `Retry-After` (seconds) |
 | `INTERNAL` | 500 | server error |
+| `INSUFFICIENT_STORAGE` | 507 | the server is short of disk space for attachments (F-026) |
 
 ## Authentication
 
@@ -343,10 +345,19 @@ in parts and resume; downloads go by ranges.
 
 `{ "size": N }`: the blob size in bytes. At most `MAX_ATTACHMENT_BYTES`
 (default 2 GiB + 64 KiB, a 2 GiB file with its encryption overhead), else
-`413 TOO_LARGE` with `max_bytes`; `0` is `BAD_REQUEST`. The size counts
-against the account's `UPLOAD_QUOTA_BYTES_PER_DAY` (UTC day, all devices of
-the account; not given back when an upload is cancelled or dropped): over
-it, `403 QUOTA_EXCEEDED`.
+`413 TOO_LARGE` with `max_bytes`. Only sizes the attachment format produces
+are accepted (`32 + padded + 16 · ceil(padded / 1 MiB)` with `padded` a
+bucket of PROTOCOL.md 6.12; the smallest is 1072): any other, `0`
+included, is `BAD_REQUEST` (F-026). The size counts against the account's
+`UPLOAD_QUOTA_BYTES_PER_DAY` (UTC day, all devices of the account; not
+given back when an upload is cancelled or dropped): over it, `403
+QUOTA_EXCEEDED`; and against `MAX_LIVE_BYTES_PER_ACCOUNT`, all bytes the
+account started uploading within the attachment lifetime (an upper bound on
+what it holds): over it, `403 STORAGE_LIMIT` with `max_bytes`. If the file
+system of `ATTACHMENT_DIR` would keep less than `MIN_FREE_DISK_BYTES` free
+after this and the unfinished uploads (or, where free space cannot be read,
+`MAX_TOTAL_ATTACHMENT_BYTES` would be passed), `507
+INSUFFICIENT_STORAGE`.
 
 `201` →
 
@@ -662,6 +673,9 @@ Logs contain method, route template, status and latency only.
 | `ATTACHMENT_DIR` / `MAX_ATTACHMENT_BYTES` | `attachments` / `2147549184` (2 GiB + 64 KiB) |
 | `UPLOAD_CHUNK_BYTES` (part and download range size, 4096 to 16777216) | `1048576` |
 | `UPLOAD_QUOTA_BYTES_PER_DAY` (per account) | `21474836480` (20 GiB) |
+| `MAX_LIVE_BYTES_PER_ACCOUNT` (bytes started within the attachment lifetime) | `5368709120` (5 GiB) |
+| `MIN_FREE_DISK_BYTES` (free space kept on the attachment file system; `0` = no check) | `1073741824` (1 GiB) |
+| `MAX_TOTAL_ATTACHMENT_BYTES` (all attachments and unfinished uploads; `0` = no limit) | `0` |
 | `RATE_PER_SEC` / `RATE_BURST` (per device) | `20` / `200` |
 | `SIGNUP_PER_HOUR` / `SIGNUP_BURST` (per address, IPv6 per /64) | `20` / `10` |
 | `TRUST_FORWARDED_FOR` | `false` (set `true` only behind a proxy that overwrites `X-Forwarded-For`) |

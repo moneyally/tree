@@ -9,6 +9,7 @@
 pub mod api;
 pub mod franking;
 pub mod invites;
+pub mod link;
 pub mod messages;
 pub mod organize;
 pub mod payload;
@@ -33,6 +34,7 @@ use tree_core::{
 use zeroize::Zeroizing;
 
 pub use api::{Api, Creds};
+pub use link::{LinkStatus, NewDevice};
 pub use messages::TextOptions;
 pub use payload::{FileInfo, Payload};
 pub use tree_core::recovery::{Phrase, Words};
@@ -261,6 +263,8 @@ pub struct Session {
     creds: Creds,
     groups: HashMap<Vec<u8>, Group>,
     refresh_policy: refresh::RefreshPolicy,
+    /// A device link this device scanned and has not finished.
+    link: Option<link::ExistingLink>,
 }
 
 impl Session {
@@ -312,9 +316,13 @@ impl Session {
         client.set_app_data(K_ACCOUNT, Some(creds.account_id.as_bytes()))?;
         client.set_app_data(K_DEVICE, Some(creds.device_id.as_bytes()))?;
         client.set_app_data(K_AUTH_KEY, Some(&seed[..]))?;
-        let mut s = Self { client, api, creds, groups: HashMap::new(), refresh_policy: Default::default() };
+        let mut s = Self::from_parts(client, api, creds);
         s.ensure_key_packages()?;
         Ok(s)
+    }
+
+    pub(crate) fn from_parts(client: Client<StoredProvider>, api: Api, creds: Creds) -> Self {
+        Self { client, api, creds, groups: HashMap::new(), refresh_policy: Default::default(), link: None }
     }
 
     /// Opens an existing profile and resubmits any commit that was waiting
@@ -329,7 +337,7 @@ impl Session {
         let seed: Zeroizing<Vec<u8>> = Zeroizing::new(client.app_data(K_AUTH_KEY)?.unwrap_or_default());
         let seed: [u8; 32] = seed.as_slice().try_into().map_err(|_| Error::Protocol("bad auth key".into()))?;
         let creds = Creds { account_id: text(K_ACCOUNT)?, device_id: text(K_DEVICE)?, key: SigningKey::from_bytes(&seed) };
-        let mut s = Self { client, api, creds, groups: HashMap::new(), refresh_policy: Default::default() };
+        let mut s = Self::from_parts(client, api, creds);
         let mut outcomes = Vec::new();
         for gid in s.client.group_ids()? {
             if s.group(&gid)?.pending_commit().is_some() {
@@ -1034,7 +1042,13 @@ impl Session {
                     self.pin(&a, &ids, events)?;
                 }
                 // The roster's sender added us if we are still a request.
-                if let Some(adder) = self.map(&accounts_key(gid))?.get(&from.to_hex()).cloned() {
+                // Another device of this account (known from a confirmed
+                // device link, PROTOCOL.md 8.9) adds us to its own groups.
+                if self.own_members()?.contains(&from.to_hex()) {
+                    if matches!(self.group_status(gid)?, GroupStatus::Request { .. }) {
+                        self.set_group_status(gid, &GroupStatus::Accepted)?;
+                    }
+                } else if let Some(adder) = self.map(&accounts_key(gid))?.get(&from.to_hex()).cloned() {
                     self.decide_request(gid, &adder, link.as_deref(), events)?;
                 }
                 events.push(Event::RosterUpdated { group: gid.to_vec() });
@@ -1046,6 +1060,19 @@ impl Session {
                 events.push(Event::Profile { group: gid.to_vec(), member: from, name });
             }
             Some(Payload::Leave) => events.push(Event::LeaveRequested { group: gid.to_vec(), member: from }),
+            Some(Payload::RemoveDevice { members }) => {
+                // Only devices of the sender's own account, as this device
+                // knows the accounts (PROTOCOL.md 8.9).
+                let accounts = self.map(&accounts_key(gid))?;
+                let current = self.group(gid)?.members();
+                if let Some(acc) = accounts.get(&from.to_hex()) {
+                    for m in members.iter().filter_map(|m| MemberId::from_hex(m)) {
+                        if m != from && current.contains(&m) && accounts.get(&m.to_hex()) == Some(acc) {
+                            events.push(Event::LeaveRequested { group: gid.to_vec(), member: m });
+                        }
+                    }
+                }
+            }
             Some(Payload::Read { ids }) => self.on_read(gid, from, ids, events)?,
             Some(Payload::Seen) => self.on_seen(gid, from)?,
             Some(Payload::Typing { on }) => {

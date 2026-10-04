@@ -63,6 +63,9 @@ pub enum Payload {
     Profile { name: String },
     /// The sender asks to be removed (PROTOCOL.md 6.5).
     Leave,
+    /// The sender asks the admins to remove other devices of its own
+    /// account (member ids, hex) that it unlinked (PROTOCOL.md 8.9).
+    RemoveDevice { members: Vec<String> },
     /// The sender read these messages (`user.read_receipts`).
     Read { ids: Vec<String> },
     /// The sender started or stopped typing (`user.typing`); not stored.
@@ -173,6 +176,9 @@ mod tests {
         let p = Payload::Profile { name: "bob".into() };
         assert_eq!(Payload::decode(&p.encode()), Some(p));
         assert_eq!(Payload::decode(br#"{"t":"leave"}"#), Some(Payload::Leave));
+        let r = Payload::RemoveDevice { members: vec!["ab".into()] };
+        assert_eq!(String::from_utf8(r.encode()).unwrap(), r#"{"t":"remove_device","members":["ab"]}"#);
+        assert_eq!(Payload::decode(&r.encode()), Some(r));
         assert_eq!(Payload::decode(br#"{"t":"sticker"}"#), None);
         assert_eq!(Payload::decode(b"plain"), None);
     }

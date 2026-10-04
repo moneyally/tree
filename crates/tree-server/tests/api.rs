@@ -344,11 +344,11 @@ async fn devices_add_list_remove() {
         StatusCode::OK
     );
 
-    // Proof by the wrong key.
+    // The new device's steps signed by another key.
     let (st, v) = api.add_device_raw(&a1, &new_key(), &new_key()).await;
     assert_eq!(
         (st, code(&v)),
-        (StatusCode::BAD_REQUEST, "BAD_REQUEST"),
+        (StatusCode::UNAUTHORIZED, "UNAUTHORIZED"),
         "{v}"
     );
     // Re-registering an existing key.
@@ -361,7 +361,7 @@ async fn devices_add_list_remove() {
 
     let _a3 = api.add_device(&a1).await;
     let (st, v) = api.add_device_raw(&a1, &new_key(), &new_key()).await;
-    assert_eq!(st, StatusCode::BAD_REQUEST, "{v}");
+    assert_eq!(st, StatusCode::UNAUTHORIZED, "{v}");
     let k = new_key();
     let (st, v) = api.add_device_raw(&a1, &k, &k).await;
     assert_eq!(

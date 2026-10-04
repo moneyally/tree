@@ -30,7 +30,7 @@ impl TestServer {
     }
 }
 
-fn random<const N: usize>() -> [u8; N] {
+pub fn random<const N: usize>() -> [u8; N] {
     let mut b = [0u8; N];
     getrandom::getrandom(&mut b).unwrap();
     b
@@ -115,6 +115,17 @@ pub fn now() -> i64 {
 
 pub fn fresh_nonce() -> String {
     hex::encode(random::<16>())
+}
+
+/// Length-prefixed concatenation of the device-link messages (written from
+/// PROTOCOL.md 8.9): each part preceded by its length, 4 bytes big-endian.
+pub fn link_lp(parts: &[&[u8]]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for p in parts {
+        out.extend_from_slice(&(p.len() as u32).to_be_bytes());
+        out.extend_from_slice(p);
+    }
+    out
 }
 
 /// The documented signing string.
@@ -269,6 +280,12 @@ impl Api {
         }
     }
 
+    /// Links a new device to `dev`'s account through a device-link session
+    /// (PROTOCOL.md 8.9): `dev` opens it, the new device (`prover` signing
+    /// for the key `new`) reveals and confirms a transcript hash, `dev`
+    /// authorises the same hash. Returns the first failing answer, or the
+    /// final one. The relayed messages are opaque to the server, so dummy
+    /// bytes stand in for them here.
     pub async fn add_device_raw(
         &self,
         dev: &Device,
@@ -276,16 +293,44 @@ impl Api {
         prover: &SigningKey,
     ) -> (StatusCode, Value) {
         let pubkey = new.verifying_key().to_bytes();
-        let mut msg = format!("tree-add-device-v1\n{}\n", dev.account_id).into_bytes();
-        msg.extend_from_slice(&pubkey);
-        let proof = prover.sign(&msg).to_bytes();
+        let raw_id = random::<16>();
+        let id = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw_id);
+        let (st, v) = self
+            .call(dev, Method::POST, "/v1/links", Some(json!({ "link_id": id, "new_auth_pub": b64(&pubkey), "offer": b64(b"offer") })))
+            .await;
+        if st != StatusCode::CREATED {
+            return (st, v);
+        }
+        let path = format!("/v1/links/{id}/new");
+        let (st, v) = self.new_device(prover, Method::POST, &path, Some(json!({ "action": "reveal", "reveal": b64(b"reveal") }))).await;
+        if st != StatusCode::OK {
+            // The existing device gives up on it (frees the open slot).
+            self.call(dev, Method::POST, &format!("/v1/links/{id}/cancel"), None).await;
+            return (st, v);
+        }
+        let hash = random::<32>();
+        let sig = prover.sign(&link_lp(&[b"tree/link/confirm/v1", &raw_id, &hash])).to_bytes();
+        let (st, v) = self
+            .new_device(prover, Method::POST, &path, Some(json!({ "action": "confirm", "transcript_hash": b64(&hash), "signature": b64(&sig) })))
+            .await;
+        if st != StatusCode::OK {
+            return (st, v);
+        }
+        let auth = dev.key.sign(&link_lp(&[b"tree/link/authorise/v1", &raw_id, dev.account_id.as_bytes(), &pubkey, &hash])).to_bytes();
         self.call(
             dev,
             Method::POST,
-            "/v1/devices",
-            Some(json!({ "auth_pub": b64(&pubkey), "proof": b64(&proof) })),
+            &format!("/v1/links/{id}/complete"),
+            Some(json!({ "transcript_hash": b64(&hash), "signature": b64(&auth), "sealed": b64(b"sealed") })),
         )
         .await
+    }
+
+    /// A request of a device that is not registered yet (no device id),
+    /// signed with `key`.
+    pub async fn new_device(&self, key: &SigningKey, method: Method, path: &str, body: Option<Value>) -> (StatusCode, Value) {
+        let s = Signed::new(method, path, None, body.as_ref());
+        self.send(&s, key).await
     }
 
     pub async fn admin(&self, token: Option<&str>, key: &str, action: &str) -> (StatusCode, Value) {

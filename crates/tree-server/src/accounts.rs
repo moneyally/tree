@@ -1,5 +1,6 @@
 //! Accounts and devices. No phone number or email: an account is a random id
-//! with one or more device authentication keys.
+//! with one or more device authentication keys. Further devices join
+//! through a confirmed device link ([`crate::links`]) or the recovery phrase.
 
 use std::net::SocketAddr;
 
@@ -14,12 +15,10 @@ use crate::auth::{parse_json, parse_public_key, read_body, AuthHeaders, NoBody, 
 use crate::error::{ApiError, ApiResult};
 use crate::features::{is_applied, SIGNUPS};
 use crate::util::{check_id, new_id, today};
-use crate::{json_body, AppState};
+use crate::AppState;
 
 /// Domain separation tag for the signup proof-of-work.
 pub const POW_CONTEXT: &[u8] = b"tree-signup-v1";
-/// Domain separation tag for the proof that a new device holds its key.
-pub const ADD_DEVICE_CONTEXT: &str = "tree-add-device-v1";
 
 /// SHA-256("tree-signup-v1" || auth_pub || nonce as 8 bytes big-endian).
 pub fn pow_hash(auth_pub: &[u8; 32], nonce: u64) -> [u8; 32] {
@@ -44,13 +43,6 @@ pub fn leading_zero_bits(hash: &[u8]) -> u32 {
 
 pub fn pow_ok(auth_pub: &[u8; 32], nonce: u64, bits: u32) -> bool {
     leading_zero_bits(&pow_hash(auth_pub, nonce)) >= bits
-}
-
-/// The message a new device signs to prove it holds its key.
-pub fn add_device_message(account_id: &str, auth_pub: &[u8; 32]) -> Vec<u8> {
-    let mut m = format!("{ADD_DEVICE_CONTEXT}\n{account_id}\n").into_bytes();
-    m.extend_from_slice(auth_pub);
-    m
 }
 
 fn is_unique_violation(e: &sqlx::Error) -> bool {
@@ -146,65 +138,6 @@ pub async fn signup(
             device_id,
         }),
     ))
-}
-
-#[derive(Deserialize)]
-pub struct AddDeviceReq {
-    pub auth_pub: String,
-    /// Signature by the new key over [`add_device_message`].
-    pub proof: String,
-}
-json_body!(AddDeviceReq, |_cfg| 1024);
-
-#[derive(Serialize)]
-pub struct AddDeviceResp {
-    pub device_id: String,
-}
-
-/// `POST /v1/devices`
-pub async fn add_device(
-    State(state): State<AppState>,
-    req: Signed<AddDeviceReq>,
-) -> ApiResult<(StatusCode, Json<AddDeviceResp>)> {
-    let (key, raw) = parse_public_key(&req.body.auth_pub)?;
-    let proof: [u8; 64] = crate::util::unb64(&req.body.proof, "proof")?
-        .try_into()
-        .map_err(|_| ApiError::bad_request("proof must be a 64-byte signature"))?;
-    key.verify_strict(
-        &add_device_message(&req.device.account_id, &raw),
-        &ed25519_dalek::Signature::from_bytes(&proof),
-    )
-    .map_err(|_| ApiError::bad_request("proof does not verify with auth_pub"))?;
-
-    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
-    let count: i64 = sqlx::query("SELECT COUNT(*) AS n FROM devices WHERE account_id = ?")
-        .bind(&req.device.account_id)
-        .fetch_one(&mut *tx)
-        .await?
-        .try_get("n")?;
-    if count >= state.cfg.max_devices_per_account as i64 {
-        return Err(ApiError::limit_exceeded(
-            "device limit reached for this account",
-        ));
-    }
-    let device_id = new_id();
-    let inserted = sqlx::query(
-        "INSERT INTO devices (id, account_id, auth_pub, created_day) VALUES (?, ?, ?, ?)",
-    )
-    .bind(&device_id)
-    .bind(&req.device.account_id)
-    .bind(&raw[..])
-    .bind(today())
-    .execute(&mut *tx)
-    .await;
-    match inserted {
-        Err(e) if is_unique_violation(&e) => return Err(already_registered()),
-        r => {
-            r?;
-        }
-    }
-    tx.commit().await?;
-    Ok((StatusCode::CREATED, Json(AddDeviceResp { device_id })))
 }
 
 #[derive(Serialize)]

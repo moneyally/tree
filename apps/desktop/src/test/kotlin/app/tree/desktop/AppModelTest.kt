@@ -138,6 +138,32 @@ class AppModelTest {
     }
 
     @Test
+    fun linkASecondDeviceWithTheCode() = runBlocking {
+        val phone = AppModel(this, Dispatchers.IO)
+        assertTrue(phone.createAccount("$dir/phone.db", "phone pass", "carol", url, 8u))
+        val g = assertNotNull(phone.newChat())
+        val desk = AppModel(this, Dispatchers.IO)
+        val text = assertNotNull(desk.startLinkNewDevice("$dir/desk.db", "desk pass", "carol", url))
+        assertEquals("waiting", phone.scanLink(text))
+        assertEquals("code", desk.pollNewDevice())
+        assertEquals("code", phone.linkStatus())
+        val code = assertNotNull(desk.state.value.link?.code)
+        assertEquals(code, phone.state.value.link?.code, "the same digits on both screens")
+        assertEquals("confirmed", desk.confirmNewDevice(true))
+        assertEquals("linked", phone.confirmLink(true))
+        assertEquals("linked", desk.pollNewDevice())
+        assertTrue(desk.state.value.signedIn)
+        assertEquals(phone.state.value.account, desk.state.value.account)
+        desk.syncNow()
+        assertTrue(desk.state.value.chats.any { it.id == g && it.status == "accepted" })
+        assertEquals(2, phone.state.value.devices.size)
+        val deskId = desk.session!!.deviceId()
+        assertTrue(phone.removeDevice(deskId))
+        assertEquals(listOf(phone.session!!.deviceId()), phone.state.value.devices)
+        phone.stop(); desk.stop()
+    }
+
+    @Test
     fun twoPeopleChatThroughTheModel() = runBlocking {
         val alice = AppModel(this, Dispatchers.IO)
         val bob = AppModel(this, Dispatchers.IO)

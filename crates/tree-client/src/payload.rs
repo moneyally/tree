@@ -72,6 +72,9 @@ pub enum Payload {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         quiet: bool,
     },
+    /// The sender asks the admins to remove other devices of its own
+    /// account (member ids, hex) that it unlinked (PROTOCOL.md 8.11).
+    RemoveDevice { members: Vec<String> },
     /// The sender read these messages (`user.read_receipts`).
     Read { ids: Vec<String> },
     /// The sender started or stopped typing (`user.typing`); not stored.
@@ -189,6 +192,9 @@ mod tests {
         let s = Payload::Text { id: "02".into(), text: "shh".into(), fmt: false, mentions: vec![], all: false, preview: None, silent: true };
         assert_eq!(String::from_utf8(s.encode()).unwrap(), r#"{"t":"text","id":"02","text":"shh","silent":true}"#);
         assert_eq!(Payload::decode(&s.encode()), Some(s));
+        let r = Payload::RemoveDevice { members: vec!["ab".into()] };
+        assert_eq!(String::from_utf8(r.encode()).unwrap(), r#"{"t":"remove_device","members":["ab"]}"#);
+        assert_eq!(Payload::decode(&r.encode()), Some(r));
         assert_eq!(Payload::decode(br#"{"t":"sticker"}"#), None);
         assert_eq!(Payload::decode(b"plain"), None);
     }

@@ -13,10 +13,12 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.tree_ffi.Attachment
 import uniffi.tree_ffi.Feature
+import uniffi.tree_ffi.LinkState
 import uniffi.tree_ffi.Member
 import uniffi.tree_ffi.Message
 import uniffi.tree_ffi.TreeEvent
 import uniffi.tree_ffi.TreeException
+import uniffi.tree_ffi.TreeLink
 import uniffi.tree_ffi.TreeSession
 
 /** One chat as the list shows it. */
@@ -40,6 +42,18 @@ data class Chat(
      * while user.stranger_labels is released.
      */
     val labels: List<String> = emptyList(),
+)
+
+/**
+ * A device link in progress on this device. On the new device `text` is
+ * what it shows (QR code content); on both, `code` is what the person
+ * compares before confirming.
+ */
+data class LinkUi(
+    val text: String? = null,
+    val state: String = "waiting",
+    val code: String? = null,
+    val reason: String? = null,
 )
 
 data class UiState(
@@ -76,6 +90,9 @@ data class UiState(
     val notified: Int = 0,
     /** This account's username link (user.username_link), also shown as a QR code. */
     val usernameLink: String? = null,
+    /** A device link in progress (either side), and this account's devices. */
+    val link: LinkUi? = null,
+    val devices: List<String> = emptyList(),
     val notice: String? = null,
     val error: String? = null,
 )
@@ -216,6 +233,9 @@ class AppModel(
             }
             // An admin carries out a leave request (quiet or not: the
             // others' devices decide whether a line is shown).
+            // Never automatic: which account a device belongs to comes from
+            // other members' rosters (PROTOCOL.md 8.11).
+            is TreeEvent.RemoveDeviceRequested -> _state.update { it.copy(notice = Strings.t("remove_device_asked")) }
             is TreeEvent.LeaveRequested -> call { s ->
                 if (s.group(e.group).admins.contains(s.memberId())) s.remove(e.group, listOf(e.member))
             }
@@ -447,6 +467,96 @@ class AppModel(
 
     /** Findable by others only while `user.discoverable` is applied. */
     suspend fun setUsername(name: String): String? = call { it.setUsername(name) }
+
+    // --- device linking (both devices show a code; the person confirms on both) ---
+
+    private var newDevice: TreeLink? = null
+
+    private fun show(l: LinkState, text: String? = _state.value.link?.text) =
+        _state.update { it.copy(link = LinkUi(text, l.state, l.code, l.reason)) }
+
+    private suspend fun <T> linkCall(block: () -> T): T? = try {
+        withContext(io) { block() }
+    } catch (e: TreeException) {
+        _state.update { it.copy(error = describe(e)) }
+        null
+    }
+
+    /** New device: makes the profile and returns the link to show. */
+    suspend fun startLinkNewDevice(path: String, passphrase: String, name: String, server: String): String? {
+        val l = linkCall { uniffi.tree_ffi.startLinkNewDevice(path, passphrase, name, server) } ?: return null
+        newDevice = l
+        profilePath = path
+        val text = linkCall { l.link() } ?: return null
+        _state.update { it.copy(link = LinkUi(text)) }
+        return text
+    }
+
+    /** New device: checks for progress; signs in once linked. */
+    suspend fun pollNewDevice(): String? {
+        val l = newDevice ?: return null
+        val st = linkCall { l.poll() } ?: return null
+        show(st)
+        if (st.state == "linked") {
+            val s = linkCall { l.finish() } ?: return st.state
+            newDevice = null
+            session = s
+            _state.update { it.copy(signedIn = true, name = s.name(), account = s.accountId(), link = null, error = null) }
+            refresh()
+        }
+        if (st.state == "cancelled") newDevice = null
+        return st.state
+    }
+
+    /** New device: the person compared the codes. */
+    suspend fun confirmNewDevice(matches: Boolean): String? {
+        val l = newDevice ?: return null
+        val st = linkCall { l.confirm(matches) } ?: return null
+        show(st)
+        if (st.state == "cancelled") newDevice = null
+        return st.state
+    }
+
+    /** Existing device: answers a new device's link (scanned or pasted). */
+    suspend fun scanLink(text: String): String? = call { it.scanLink(text.trim()) }?.also { show(it, null) }?.state
+
+    /** Existing device: checks for progress (the code appears, then "linked"). */
+    suspend fun linkStatus(): String? {
+        val st = call { it.linkStatus() } ?: return null
+        show(st, null)
+        if (st.state == "linked") loadDevices()
+        return st.state
+    }
+
+    /** Existing device: the person compared the codes. */
+    suspend fun confirmLink(matches: Boolean): String? {
+        val st = call { it.confirmLink(matches) } ?: return null
+        show(st, null)
+        if (st.state == "linked") loadDevices()
+        return st.state
+    }
+
+    /** Polls whichever side is linking until it is linked or cancelled. */
+    fun watchLink(onLinked: () -> Unit = {}) {
+        scope.launch {
+            while (isActive) {
+                val st = if (newDevice != null) pollNewDevice() else if (session != null) linkStatus() else null
+                if (st == "linked") onLinked()
+                if (st == null || st == "linked" || st == "cancelled") break
+                kotlinx.coroutines.delay(1000)
+            }
+        }
+    }
+
+    fun closeLink() = _state.update { it.copy(link = null) }
+
+    suspend fun loadDevices() {
+        val d = call { it.devices() } ?: return
+        _state.update { it.copy(devices = d) }
+    }
+
+    /** Removes another device of this account from its chats and the server. */
+    suspend fun removeDevice(deviceId: String): Boolean = (call { it.removeDevice(deviceId) } != null).also { loadDevices(); refresh() }
 
     fun clearMessages() = _state.update { it.copy(error = null, notice = null) }
 }

@@ -22,6 +22,7 @@ One JSON object per application message, UTF-8, field `t` names the type:
 | `profile` | `name` | the sender's own display name | any member, about itself |
 | `roster` | `devices`: member id (hex) -> device id; `names` (optional): member id -> name; `accounts` (optional): member id -> account id; `link` (optional): the nonce (hex) the new member's device sent with its invite-link request (PROTOCOL.md 8.7) | who is reachable at which server device, the sender's view of names, and which account each device belongs to | the member that just added devices (others may too) |
 | `leave` | `quiet` (optional; true: quiet leave, no "left" line, 6.1) | the sender asks to be removed (PROTOCOL.md 6.5) | any member |
+| `remove_device` | `members` (member ids, hex) | the sender unlinked these devices of its own account and asks the admins to remove them (PROTOCOL.md 8.11); shown to admins as a removal request for each named member whose known account is the sender's; an admin decides, apps never carry it out automatically (unlike `leave`), as the account labels are other members' claims | a member that is not an admin |
 | `read` | `ids` (at most 100 message ids) | the sender read these messages | any member, while its `user.read_receipts` is applied; shown only while the receiver's is applied too |
 | `typing` | `on` | the sender started or stopped typing; never stored | any member, both sides `user.typing` |
 | `seen` | — | the sender's app is open; the receiver records its own time | any member, both sides `user.last_seen` (released by default) |

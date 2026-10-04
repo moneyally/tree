@@ -44,6 +44,10 @@ getrandom = "0.2"
 bip39 = { version = "3", default-features = false, features = ["std", "korean", "zeroize"] }
 hkdf = "0.12"
 ed25519-dalek = { version = "2", features = ["zeroize"] }
+# Device linking: HPKE (RFC 9180) Auth mode for the account data a new
+# device receives (the same HPKE library OpenMLS uses).
+hpke-rs = { version = "0.7", features = ["rustcrypto"] }
+base64 = "0.22"
 
 [dev-dependencies]
 proptest = "1"

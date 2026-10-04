@@ -1,0 +1,160 @@
+(* Tree Protocol v1 -- model (i'), negative control for device_link.pv:
+   the person confirms on both devices without comparing the codes (a QR
+   code alone links). Expected: the new device can be given data the
+   relay chose (property 1 fails).
+
+   Original model (i): device linking with a two-sided code.
+
+   Construction (docs/PROTOCOL.md 8.11):
+     N shows inv = (link_id, auth_N, hpke_N, commit = H(nonce))  (QR code)
+     E -> N   offer  = (account, auth_E, hpke_E)                  (relayed)
+     N -> E   reveal = nonce, only after the offer arrived         (relayed)
+     both     T = H(inv, offer, nonce); the person compares code(T)
+     N -> E   Sig_N(confirm, link_id, T)                          (relayed)
+     E -> srv Sig_E(authorise, link_id, account, auth_N, T),
+              HPKE-Auth(hpke_E -> hpke_N, info = T, account data)
+     server   adds auth_N to the account iff both signatures verify
+              over the same T (E's key is the one registered).
+
+   Properties checked:
+   (1) A new device that accepts account data got exactly the data the
+       honest existing device sent to it (no relay-chosen account or data).
+   (2) The existing device authorises only a new device that confirmed the
+       same transcript.
+   (3) The server adds a device only after the existing device authorised
+       it and the new device confirmed the same transcript.
+   (4) The account data stays secret.
+   Reachability: a link completes.
+
+   Abstractions:
+   - Dolev-Yao attacker is the network and the relay (the server's relay
+     role); the server's final check is a separate honest process (the
+     database guard of POST /v1/links/{id}/complete).
+   - The QR code is an authentic channel from the new device to the
+     existing device; the attacker reads it. The person comparing codes is
+     an authentic channel to both screens that lets both continue only if
+     the two transcript hashes are equal. Symbolically, codes are equal
+     exactly when the hashes are equal: the model does not capture the
+     six-digit truncation (one in a million chance of equal codes for
+     different transcripts); the commit-then-reveal order, which keeps a
+     relay from searching for such a collision, is in the protocol and
+     the tests but not proved here.
+   - Phishing (the person scans an attacker's QR code and confirms a code
+     read to them) is outside the model: the person then approves on
+     purpose.
+   - HPKE Auth mode is an ideal authenticated public-key encryption:
+     opening needs the recipient's private key and the sender's public key
+     used for sealing, and the same info.
+*)
+
+free c: channel.
+
+type sskey.
+type spkey.
+type skey.
+type pkey.
+
+fun spk(sskey): spkey.
+fun sign(bitstring, sskey): bitstring.
+reduc forall m: bitstring, k: sskey; checksign(sign(m, k), spk(k)) = m.
+
+fun pk(skey): pkey.
+fun hseal(skey, pkey, bitstring, bitstring): bitstring.
+reduc forall s: skey, r: skey, i: bitstring, m: bitstring;
+  hopen(r, pk(s), i, hseal(s, pk(r), i, m)) = m.
+
+fun h(bitstring): bitstring.
+
+const confirmtag: bitstring.
+const authtag: bitstring.
+
+(* The honest account and its existing device's request key. *)
+free acct: bitstring.
+free skE: sskey [private].
+free accountData: bitstring [private].
+
+(* Secrecy assumptions; ProVerif proves them before using them. *)
+not attacker(skE).
+not attacker(new skEe).
+not attacker(new skNe).
+not attacker(new skN).
+
+event NConfirmed(spkey, bitstring).
+event NLinked(spkey, bitstring, bitstring).
+event NLinkedHonest.
+event EAuthorised(bitstring, spkey, bitstring).
+event ESent(bitstring, spkey, bitstring).
+event DeviceAdded(bitstring, spkey).
+
+query kN: spkey, a: bitstring, d: bitstring;
+  event(NLinked(kN, a, d)) ==> event(ESent(a, kN, d)).
+query a: bitstring, kN: spkey, t: bitstring;
+  event(EAuthorised(a, kN, t)) ==> event(NConfirmed(kN, t)).
+query a: bitstring, kN: spkey, t: bitstring;
+  event(DeviceAdded(a, kN)) ==> event(EAuthorised(a, kN, t)) && event(NConfirmed(kN, t)).
+query attacker(accountData).
+query event(NLinkedHonest).
+
+(* The new device. show / ok: its screen and the person's answer. *)
+let newDevice(qr: channel, show: channel, ok: channel) =
+  new skN: sskey;
+  new skNe: skey;
+  new l: bitstring;
+  new n: bitstring;
+  let inv = (l, spk(skN), pk(skNe), h(n)) in
+  out(qr, inv);
+  out(c, inv);
+  in(c, offer: bitstring);
+  let (a: bitstring, kE: spkey, eE: pkey) = offer in
+  out(c, n);
+  let t = h((inv, offer, n)) in
+  out(show, t);
+  in(ok, =t);
+  event NConfirmed(spk(skN), t);
+  out(c, sign((confirmtag, l, t), skN));
+  in(c, ct: bitstring);
+  let d = hopen(skNe, eE, t, ct) in
+  event NLinked(spk(skN), a, d);
+  if a = acct then event NLinkedHonest.
+
+(* The existing device of the honest account. *)
+let existingDevice(qr: channel, show: channel, ok: channel) =
+  new skEe: skey;
+  in(qr, inv: bitstring);
+  let (l: bitstring, kN: spkey, eN: pkey, com: bitstring) = inv in
+  let offer = (acct, spk(skE), pk(skEe)) in
+  out(c, offer);
+  in(c, n: bitstring);
+  if h(n) = com then
+  let t = h((inv, offer, n)) in
+  out(show, t);
+  in(ok, =t);
+  in(c, sigN: bitstring);
+  let (=confirmtag, =l, =t) = checksign(sigN, kN) in
+  event EAuthorised(acct, kN, t);
+  event ESent(acct, kN, accountData);
+  out(c, (l, kN, t, sign((authtag, l, acct, kN, t), skE), hseal(skEe, eN, t, accountData))).
+
+(* The person: continues on both devices only if the codes are equal
+   (confirming the code each screen showed). *)
+let person(showN: channel, okN: channel, showE: channel, okE: channel) =
+  in(showN, tN: bitstring);
+  in(showE, tE: bitstring);
+  (out(okN, tN) | out(okE, tE)).
+
+(* The server's check before it adds a device to the account. *)
+let server =
+  in(c, (l: bitstring, kN: spkey, t: bitstring, sigN: bitstring, sigE: bitstring));
+  let (=confirmtag, =l, =t) = checksign(sigN, kN) in
+  let (=authtag, =l, =acct, =kN, =t) = checksign(sigE, spk(skE)) in
+  event DeviceAdded(acct, kN).
+
+let session =
+  new qr: channel;
+  new showN: channel; new okN: channel;
+  new showE: channel; new okE: channel;
+  (newDevice(qr, showN, okN) | existingDevice(qr, showE, okE) | person(showN, okN, showE, okE)).
+
+process
+  out(c, spk(skE));
+  (!session) | (!server)

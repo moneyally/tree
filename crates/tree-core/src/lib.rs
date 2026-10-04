@@ -5,6 +5,7 @@
 //! * [`client`] — a device identity: signing key, credential, key packages.
 //! * [`group`]  — an end-to-end encrypted conversation (1:1 is a two-member group).
 //! * [`features`] — the feature registry: every feature has apply/release.
+//! * [`link`] — device linking with a two-sided confirmation code.
 //! * [`storage`] — the encrypted on-device database (SQLCipher) that keeps
 //!   identity and groups across restarts.
 //!
@@ -18,6 +19,7 @@ pub mod features;
 pub mod group;
 pub mod group_settings;
 mod group_state;
+pub mod link;
 pub mod provider;
 pub mod recovery;
 pub mod safety;

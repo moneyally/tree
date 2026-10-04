@@ -3,7 +3,8 @@
 //! Stores and forwards ciphertext. It never sees plaintext or MLS keys:
 //! messages and key packages are opaque byte strings.
 //!
-//! * [`accounts`] — signup with proof-of-work, extra devices
+//! * [`accounts`] — signup with proof-of-work, device list and removal
+//! * [`links`] — device linking with a two-sided confirmation code
 //! * [`keypackages`] — one-time MLS key packages
 //! * [`messages`] — per-device mailboxes with long-poll
 //! * [`commits`] — commit ordering: first commit per group and epoch wins
@@ -32,6 +33,7 @@ pub mod features;
 pub mod invites;
 pub mod keypackages;
 pub mod limits;
+pub mod links;
 pub mod messages;
 pub mod push;
 pub mod recovery;
@@ -216,8 +218,13 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/accounts", post(accounts::signup).delete(accounts::delete_account))
         .route(
             "/v1/devices",
-            post(accounts::add_device).get(accounts::list_devices),
+            post(links::add_device_refused).get(accounts::list_devices),
         )
+        .route("/v1/links", post(links::create))
+        .route("/v1/links/{link_id}", get(links::status))
+        .route("/v1/links/{link_id}/complete", post(links::complete))
+        .route("/v1/links/{link_id}/cancel", post(links::cancel))
+        .route("/v1/links/{link_id}/new", get(links::new_status).post(links::new_step))
         .route("/v1/devices/{device_id}", delete(accounts::remove_device))
         .route("/v1/keypackages", post(keypackages::upload))
         .route("/v1/keypackages/claim", post(keypackages::claim))
@@ -318,9 +325,10 @@ pub async fn purge_expired(state: &AppState, now: i64) -> Result<u64, sqlx::Erro
     .await?;
     let files = attachments::purge(state, cutoff).await?;
     let invites = invites::purge(&state.db, now).await?;
+    let links = links::purge(&state.db, now).await?;
     let reports = reports::purge(&state.db, now.div_euclid(86400)).await?;
     let keys = messages::purge_idempotency(&state.db, cutoff).await?;
-    Ok(expired + orphans + files + invites + reports + keys)
+    Ok(expired + orphans + files + invites + links + reports + keys)
 }
 
 /// A running server.

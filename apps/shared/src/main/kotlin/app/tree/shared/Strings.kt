@@ -93,6 +93,18 @@ object Strings {
         "added" to "친구로 추가했습니다",
         "menu" to "더보기",
         "draft" to "임시 저장",
+        "link_new" to "기존 계정에 이 기기 연결",
+        "link_show" to "이미 쓰는 기기에서 이 링크를 스캔하거나 붙여 넣으세요:",
+        "link_scan" to "새 기기 연결 (링크 붙여 넣기)",
+        "link_code" to "두 기기에 같은 숫자가 보이는지 확인하세요. 지금 두 기기를 모두 손에 들고 있을 때만 확인을 누르세요.",
+        "link_match" to "숫자가 같음",
+        "link_differ" to "다름 / 내가 시작하지 않음",
+        "link_wait" to "다른 기기를 기다리는 중…",
+        "link_done" to "연결됨",
+        "link_cancelled" to "연결되지 않음",
+        "devices" to "내 기기",
+        "remove_device" to "기기 제거",
+        "remove_device_asked" to "멤버가 자기 다른 기기를 이 대화에서 빼 달라고 합니다. 맞는지 확인한 뒤 관리자가 직접 빼 주세요.",
     )
 
     private val en = mapOf(
@@ -181,6 +193,18 @@ object Strings {
         "added" to "Added to your contacts",
         "menu" to "More",
         "draft" to "Draft",
+        "link_new" to "Link this device to an existing account",
+        "link_show" to "On a device you already use, scan or paste this link:",
+        "link_scan" to "Link a new device (paste its link)",
+        "link_code" to "Check that both devices show the same digits. Confirm only while you hold both devices yourself.",
+        "link_match" to "Digits match",
+        "link_differ" to "Different / I did not start this",
+        "link_wait" to "Waiting for the other device…",
+        "link_done" to "Linked",
+        "link_cancelled" to "Not linked",
+        "devices" to "My devices",
+        "remove_device" to "Remove device",
+        "remove_device_asked" to "A member asks to remove another of their devices from this chat. Check it, then remove it yourself as an admin.",
     )
 
     fun t(key: String): String = (if (lang == Lang.KO) ko[key] else null) ?: en[key] ?: key

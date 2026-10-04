@@ -53,7 +53,7 @@ in section 5.
 | Message history and on-device search | done | `tree_messages` in the encrypted database; `history`, `search` |
 | Recovery phrase (12-24 words) | done | PROTOCOL.md 8.6: BIP-39 (English, Korean), HKDF → Ed25519 recovery key; `/v1/recovery/*`; new device with optional revoke of the others; `user.recovery_phrase` follows the server ("release pending until <date>" while a release without the phrase waits 7 days); CLI `recovery-phrase`, `recover`. Not yet: notify other devices and a waiting period |
 | Safety number / QR comparison, key change warning | done | PROTOCOL.md 5.4 (Q4 decided); pinning on first use, warning on any new device key; CLI `safety`, `verify` |
-| Device link with confirmation code on both devices | missing | permanent lock in the registry, no code (multi-device is stage 3) |
+| Device link with confirmation code on both devices | done (branch `claude/device-link`) | PROTOCOL.md 8.11: commit-then-reveal six-digit code over the whole transcript, confirmed on both devices; the server adds a device only with the new device's confirmation and the existing device's signature over the same hash (`POST /v1/devices` without a link is gone); account data HPKE-sealed to the new device; the existing device adds the new one to its groups by commit; removing a device removes it from groups. `user.device_link_code` stays permanently applied. Client, FFI, desktop UI (paste link, compare code); Android shares the model, no screen yet |
 | Per-file encryption for attachments | done | PROTOCOL.md 6.12: AES-256-GCM STREAM per file, key in the message, ciphertext and plaintext hashes as key commitment; `chat.media` enforced; CLI `send-file`, `download` |
 | Message franking for reports | done | PROTOCOL.md 8.5: HMAC commitment per message, server tag bound to the account; every text, edit and file is franked; CLI `report` |
 | Admin roles inside the group (admins, kick) | done | PROTOCOL.md 6.11: admins, name and chat settings in the MLS group context; non-admin settings changes and removals rejected by every device; CLI `make-admin`, `name`, `group-apply` |
@@ -107,10 +107,10 @@ in section 5.
 | --- | --- | --- |
 | Attack-scenario tests on the core | done | 111 core tests, proptest; TESTING.md |
 | Mutation testing | done for the core | 3.1: 277 mutants of the changed files; TESTING.md |
-| Formal models of Tree's own additions | done | 9 ProVerif models (envelope, commit ordering, removal, PCS, FS), abstract; formal/README.md |
+| Formal models of Tree's own additions | done | ProVerif models (envelope, commit ordering, removal, PCS, FS, franking, device link) with negative controls, abstract; formal/README.md |
 | Design's "tests not run yet" for stage 1: removed member cannot read (real OpenMLS code) | done | `removed_member_cannot_decrypt_even_if_ignoring_removal` |
 | Same: key-committing file encryption | done | `attachment::tests::key_commitment`, `files_end_to_end` |
-| Same: device link code commitment | missing | multi-device is stage 3 |
+| Same: device link code commitment | done | `crates/tree-client/tests/link.rs` (swapped key: different codes, nothing linked; swapped nonce: refused), `tree-core` `link::tests`, `formal/device_link.pv` with negative control |
 | Load test | missing | |
 | External review of the crypto code (stage-1 exit criterion) | missing | owner to engage a reviewer |
 | Reproducible builds | missing (stage 4) | |

@@ -68,6 +68,28 @@ impl Env {
         })
     }
 
+    /// Reads one blob from the server database.
+    pub fn sql_blob(&self, q: &'static str, arg: &str) -> Option<Vec<u8>> {
+        let arg = arg.to_string();
+        self._rt.block_on(async {
+            let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", self.db.display())).await.unwrap();
+            let r: Option<(Vec<u8>,)> = sqlx::query_as(q).bind(arg).fetch_optional(&pool).await.unwrap();
+            pool.close().await;
+            r.map(|r| r.0)
+        })
+    }
+
+    /// Runs one statement with a blob and a text argument; rows changed.
+    pub fn sql_set_blob(&self, q: &'static str, blob: &[u8], arg: &str) -> u64 {
+        let (blob, arg) = (blob.to_vec(), arg.to_string());
+        self._rt.block_on(async {
+            let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", self.db.display())).await.unwrap();
+            let n = sqlx::query(q).bind(blob).bind(arg).execute(&pool).await.unwrap().rows_affected();
+            pool.close().await;
+            n
+        })
+    }
+
     /// The last-resort key package the server holds for a device.
     pub fn last_resort(&self, device: &str) -> Option<Vec<u8>> {
         let device = device.to_string();

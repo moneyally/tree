@@ -7,7 +7,7 @@
 use std::ops::{Deref, DerefMut};
 use std::sync::{Mutex, MutexGuard};
 
-use tree_client::{CommitOutcome, Event, FileInfo, GroupStatus, MemberId, OutboxState, Session, TextOptions, Words};
+use tree_client::{CommitOutcome, Event, FileInfo, GroupStatus, LinkStatus, MemberId, NewDevice, OutboxState, Session, TextOptions, Words};
 
 uniffi::setup_scaffolding!();
 
@@ -142,6 +142,9 @@ pub enum TreeEvent {
     RosterUpdated { group: String },
     /// `quiet`: the member left quietly (no "left" line is stored).
     LeaveRequested { group: String, member: String, quiet: bool },
+    /// For an admin to decide (never automatic): `by` asks to remove
+    /// `member`, which it says is another device of its account.
+    RemoveDeviceRequested { group: String, member: String, by: String },
     RemovedFromGroup { group: String },
     Held,
     Dropped { reason: String },
@@ -194,6 +197,9 @@ impl From<Event> for TreeEvent {
             Event::KeyChanged { account, new_members, was_verified } => TreeEvent::KeyChanged { account, new_members: ids(new_members), was_verified },
             Event::RosterUpdated { group } => TreeEvent::RosterUpdated { group: h(group) },
             Event::LeaveRequested { group, member, quiet } => TreeEvent::LeaveRequested { group: h(group), member: member.to_hex(), quiet },
+            Event::RemoveDeviceRequested { group, member, by } => {
+                TreeEvent::RemoveDeviceRequested { group: h(group), member: member.to_hex(), by: by.to_hex() }
+            }
             Event::RemovedFromGroup { group } => TreeEvent::RemovedFromGroup { group: h(group) },
             Event::Held => TreeEvent::Held,
             Event::Dropped { reason } => TreeEvent::Dropped { reason },
@@ -1055,5 +1061,124 @@ impl TreeSession {
     /// Warn the user if `pending` is set and they did not ask for it.
     pub fn recovery_status(&self) -> R<Recovery> {
         Ok(self.s().recovery_status()?.into())
+    }
+
+    // --- device linking (PROTOCOL.md 8.11) ---
+
+    /// Answers a new device's link (scanned QR code or pasted text); poll
+    /// `link_status` until it shows the code.
+    pub fn scan_link(&self, link: String) -> R<LinkState> {
+        Ok(self.s().scan_link(&link)?.into())
+    }
+
+    pub fn link_status(&self) -> R<LinkState> {
+        Ok(self.s().link_status()?.into())
+    }
+
+    /// The person compared the codes on both devices: `true` if they match.
+    pub fn confirm_link(&self, matches: bool) -> R<LinkState> {
+        Ok(self.s().confirm_link(matches)?.into())
+    }
+
+    /// This account's devices (server ids).
+    pub fn devices(&self) -> R<Vec<String>> {
+        Ok(self.s().devices()?)
+    }
+
+    /// Removes another device of this account from its groups and the
+    /// server. Returns the groups (hex) where only the admins were asked.
+    pub fn remove_device(&self, device_id: String) -> R<Vec<String>> {
+        Ok(self.s().remove_device(&device_id)?.into_iter().map(hex::encode).collect())
+    }
+}
+
+/// A device link as either device sees it.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct LinkState {
+    /// `waiting`, `code` (compare, then confirm), `confirmed` (waiting for
+    /// the other device), `linked` or `cancelled`.
+    pub state: String,
+    /// The six digits to compare, as "123 456".
+    pub code: Option<String>,
+    pub device_id: Option<String>,
+    /// Why nothing was linked.
+    pub reason: Option<String>,
+    /// Groups (hex) the new device could not be added to.
+    pub missed_groups: Vec<String>,
+}
+
+impl From<LinkStatus> for LinkState {
+    fn from(s: LinkStatus) -> Self {
+        let mut out = LinkState { state: String::new(), code: None, device_id: None, reason: None, missed_groups: vec![] };
+        match s {
+            LinkStatus::Waiting => out.state = "waiting".into(),
+            LinkStatus::Code { code } => (out.state, out.code) = ("code".into(), Some(code)),
+            LinkStatus::Confirmed { code } => (out.state, out.code) = ("confirmed".into(), Some(code)),
+            LinkStatus::Linked { device_id, missed_groups } => {
+                out.state = "linked".into();
+                out.device_id = Some(device_id);
+                out.missed_groups = missed_groups.into_iter().map(hex::encode).collect();
+            }
+            LinkStatus::Cancelled { reason } => (out.state, out.reason) = ("cancelled".into(), Some(reason)),
+        }
+        out
+    }
+}
+
+/// A new device waiting to be linked to an account (its profile exists
+/// already and is deleted again if the link does not complete).
+#[derive(uniffi::Object)]
+pub struct TreeLink {
+    inner: Mutex<Option<NewDevice>>,
+}
+
+/// Starts linking this device to an existing account: show `link()` as a
+/// QR code or text, then poll.
+#[uniffi::export]
+pub fn start_link_new_device(path: String, passphrase: String, name: String, server: String) -> R<std::sync::Arc<TreeLink>> {
+    Ok(std::sync::Arc::new(TreeLink { inner: Mutex::new(Some(NewDevice::start(&path, &passphrase, &name, &server)?)) }))
+}
+
+impl TreeLink {
+    fn with<T>(&self, f: impl FnOnce(&mut NewDevice) -> Result<T, tree_client::Error>) -> R<T> {
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let nd = g.as_mut().ok_or_else(|| TreeError::Usage { reason: "this link is finished".into() })?;
+        Ok(f(nd)?)
+    }
+}
+
+#[uniffi::export]
+impl TreeLink {
+    /// The text for the QR code (or to paste on the other device).
+    pub fn link(&self) -> R<String> {
+        self.with(|n| Ok(n.link()))
+    }
+
+    /// Checks for progress; call every second or two.
+    pub fn poll(&self) -> R<LinkState> {
+        Ok(self.with(|n| n.poll())?.into())
+    }
+
+    /// The person compared the codes: `true` if they match.
+    pub fn confirm(&self, matches: bool) -> R<LinkState> {
+        Ok(self.with(|n| n.confirm(matches))?.into())
+    }
+
+    /// The linked session, once `poll` says `linked`.
+    pub fn finish(&self) -> R<std::sync::Arc<TreeSession>> {
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let nd = g.take().ok_or_else(|| TreeError::Usage { reason: "this link is finished".into() })?;
+        if !matches!(nd.status(), LinkStatus::Linked { .. }) {
+            *g = Some(nd);
+            return Err(TreeError::Usage { reason: "not linked yet".into() });
+        }
+        Ok(TreeSession::wrap(nd.finish()?))
+    }
+
+    /// Gives up and deletes the new profile.
+    pub fn abandon(&self) {
+        if let Some(nd) = self.inner.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            nd.abandon();
+        }
     }
 }

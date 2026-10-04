@@ -1262,6 +1262,132 @@ after the message TTL, with their device, and beyond `MAX_IDEMPOTENCY_KEYS`
 (default 10,000) per device the oldest are dropped at once, so they cannot
 grow without bound; a client retries within minutes, far inside both.
 
+### 8.11 Device linking with a two-sided code
+
+`user.device_link_code` (user scope, permanently applied: a QR code alone
+never links). A person adds a new device (N, e.g. a desktop) to the account
+of a device they already use (E, e.g. a phone). Both devices show a
+six-digit code computed from their own view of the exchange; the person
+confirms on **both** that the codes are the same. Only then does E authorise
+N on the server, send N the account data, and add N to its groups. Code:
+`crates/tree-core/src/link.rs` (formats, transcript, code, HPKE),
+`crates/tree-client/src/link.rs`, `crates/tree-server/src/links.rs`.
+
+Notation: `lp(a, b, ...)` is each input preceded by its length as a 4-byte
+big-endian number, concatenated. Every hash and signature input starts with
+its own label. `b64u` is base64url without padding.
+
+**Invitation (N shows it; QR code or text).** N makes its request-signing
+key `auth_N` (Ed25519), an HPKE key pair `hpke_N` (X25519, from a 32-byte
+random seed by RFC 9180 DeriveKeyPair), a random 16-byte `link_id` and a
+secret 32-byte `nonce`, and shows
+
+```text
+tree://link/ b64u( 0x01 || link_id(16) || auth_N(32) || hpke_N(32) || commit(32) )
+commit = SHA-256(lp("tree/link/commit/v1", nonce))
+```
+
+N also creates its encrypted profile now (it holds N's MLS identity).
+
+**Offer (E → N, relayed).** E reads the invitation and makes a fresh HPKE
+key pair `hpke_E` (X25519). It opens a link session (`POST /v1/links`,
+authenticated as E) with `link_id`, `auth_N` and the offer, JSON:
+`{account_id, device_id, member_id, auth_pub: b64u(auth_E), hpke_pub:
+b64u(hpke_E)}` (`member_id`: E's MLS member id, hex).
+
+**Reveal (N → E, relayed).** Only after it fetched the offer, N reveals:
+`{nonce: b64u, key_packages: [b64u ...]}` with 8 one-time MLS key packages
+and its last-resort key package last (at most 9). Requests of N carry no
+device id and are signed with `auth_N` exactly as in 8.1; the server checks
+them against the `auth_N` E registered for the session.
+
+**Transcript and code (each device computes its own).** E first checks
+`SHA-256(lp("tree/link/commit/v1", nonce)) = commit` and that all key
+packages name one member; on failure it cancels.
+
+```text
+kp_digest = SHA-256(lp("tree/link/key-packages/v1", kp_1, ..., kp_n))
+H = SHA-256(lp("tree/link/transcript/v1", link_id, auth_N, hpke_N, commit,
+               account_id, device_id_E, member_id_E, auth_E, hpke_E,
+               nonce, kp_digest))
+d = SHA-256(lp("tree/link/code/v1", H))
+code = (first 8 bytes of d as a big-endian u64) mod 1 000 000, shown "123 456"
+```
+
+The server relays every message but never computes or chooses the code; it
+cannot, as N's inputs to H come from the invitation (out of band) and E's
+check of the nonce against `commit` binds the reveal.
+
+**Why a commitment.** A six-digit code alone could be ground: a relay that
+replaces `hpke_E` toward N could try a million keys until N's code equals
+E's. Here everything the relay could change toward N (the offer) must be
+fixed before N reveals `nonce`, and toward E it cannot change the nonce
+(the commitment came out of band). So a relay that changed anything sees
+matching codes with probability 10^-6, once: a link id is used once. This
+is the usual commit-then-reveal short authentication string.
+
+**Confirmation.** When its person confirms, N signs
+`lp("tree/link/confirm/v1", link_id, H)` with `auth_N` and posts it with
+`H`. When its person confirms and N's confirmation is there, E checks that
+N's `H` equals its own and the signature verifies with the `auth_N` from the
+invitation; otherwise it cancels ("the codes differed: nothing was
+linked"). Then E sends `POST /v1/links/{id}/complete` with `H`, its
+authorisation `Sig_E(lp("tree/link/authorise/v1", link_id, account_id,
+auth_N, H))` and the sealed account data. The server adds `auth_N` as a
+device of E's account only if the session is E's, open, confirmed, not
+expired, N's stored hash equals `H` (constant-time), and E's signature
+verifies with E's registered key. Refusing on either device cancels the
+session; nothing is added.
+
+**Account data (sealed to N).** HPKE (RFC 9180) mode Auth,
+DHKEM(X25519, HKDF-SHA256), HKDF-SHA256, ChaCha20Poly1305: sender key
+`hpke_E`, recipient `hpke_N`, `info = lp("tree/link/seal/v1", H)`, empty
+AAD; carried as `enc || ciphertext`. The plaintext is JSON
+`{account_id, entries: {key: base64 value}}` with the account's app data:
+contacts (`contact/…`), settings (`feature/…`, which includes the
+recovery-phrase state), username, notes chat, folders, muted chats, and the
+member ids of the account's other linked devices. N opens it with the
+`hpke_E` from the offer it saw and its own `H`: a relay that changed
+anything, or forged a payload, fails here. N keeps only the listed keys.
+
+**Groups.** E adds N itself, the simplest path that reuses the commit
+machinery: for every group where E is a member and the group is accepted,
+one add commit with one of N's key packages from the reveal (one-time ones
+first, then the last-resort one), the usual roster message naming N's
+device and account, and, where E is an admin, a settings commit making N an
+admin too. N learns E's member id from the confirmed transcript and accepts
+groups whose roster comes from it without a request. Other members see a
+new device of the account (`Event::KeyChanged`) as for any key change.
+Groups that fail (e.g. a lost commit three times) are returned so the app
+can offer to invite the device by hand.
+
+**Removing a device** (`DELETE /v1/devices/{id}` after the groups): E
+removes the device's members by commit where it is an admin, and elsewhere
+sends a `remove_device` message (`{"t":"remove_device","members":[hex]}`)
+that admins see as a leave request for each named member, accepted only for
+members of the sender's own account.
+
+**Server limits.** A session lives 10 minutes and is used once (`linked` or
+`cancelled`, never reopened; the link id stays taken until purged). At most
+2 open sessions per account and 10 per hour; offer up to 1 KiB, reveal up to
+64 KiB, sealed data up to 256 KiB. Relayed data is deleted when N
+acknowledges it, on cancel, and on expiry; rows are purged an hour after
+expiry. `POST /v1/devices` (adding a device with an existing device's
+signature alone) is gone (`410 LINK_REQUIRED`).
+
+**What the server sees.** The link id, `auth_N`, the offer (account and
+device id, member id, public keys), the reveal (nonce, N's key packages),
+`H`, both signatures, the size of the sealed account data, timing, and that
+the account gained a device. It does not see the account data, cannot
+choose the code, cannot add a device without E's signature over the hash N
+confirmed, and cannot get a different key added than the one in the
+invitation.
+
+**Residual risk.** A person who is talked into scanning someone else's code
+and confirming a code read to them over the phone still links that device:
+the app says to confirm only while holding both devices. A device linked in
+error is removed as above.
+
 ---
 
 ## 9. Security claims

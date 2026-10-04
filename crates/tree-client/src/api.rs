@@ -4,7 +4,7 @@ use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
 use ed25519_dalek::{Signer, SigningKey};
 use reqwest::blocking::Client as Http;
-use reqwest::{Method, StatusCode};
+use reqwest::{header::{HeaderMap, HeaderValue}, Method, StatusCode};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
@@ -15,6 +15,20 @@ pub struct Creds {
     pub account_id: String,
     pub device_id: String,
     pub key: SigningKey,
+}
+
+#[derive(Debug, Clone)]
+pub struct MediaUploadInfo {
+    pub media_id: String,
+    pub capability: String,
+    pub expires_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct MediaChunk {
+    pub index: u32,
+    pub ciphertext: Vec<u8>,
+    pub sha256: [u8; 32],
 }
 
 #[derive(Debug)]
@@ -157,6 +171,137 @@ impl Api {
         Ok(out)
     }
 
+    pub fn media_init(
+        &self,
+        c: &Creds,
+        manifest: &[u8],
+        key_commitment: &[u8; 32],
+        plaintext_size: u64,
+        chunk_size: u32,
+        chunk_count: u32,
+    ) -> Result<MediaUploadInfo, ClientError> {
+        let body = json!({
+            "manifest": b64(manifest),
+            "key_commitment": hex::encode(key_commitment),
+            "plaintext_size": plaintext_size,
+            "chunk_size": chunk_size,
+            "chunk_count": chunk_count,
+        });
+        let value = self.call(c, Method::POST, "/v1/media", Some(&body))?.ok()?;
+        Ok(MediaUploadInfo {
+            media_id: field(&value, "media_id")?,
+            capability: field(&value, "capability")?,
+            expires_at: value["expires_at"]
+                .as_i64()
+                .ok_or_else(|| ClientError::Usage("invalid media expiry".into()))?,
+        })
+    }
+
+    pub fn media_put_chunk(
+        &self,
+        c: &Creds,
+        media_id: &str,
+        capability: &str,
+        index: u32,
+        ciphertext: &[u8],
+    ) -> Result<(), ClientError> {
+        let body = json!({
+            "index": index,
+            "ciphertext": b64(ciphertext),
+            "sha256": hex::encode(Sha256::digest(ciphertext)),
+        });
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-tree-media-capability",
+            HeaderValue::from_str(capability)
+                .map_err(|_| ClientError::Usage("invalid media capability".into()))?,
+        );
+        self.call_with_headers(
+            c,
+            Method::POST,
+            &format!("/v1/media/{media_id}/chunks"),
+            Some(&body),
+            headers,
+        )?
+        .ok()?;
+        Ok(())
+    }
+
+    pub fn media_finalize(
+        &self,
+        c: &Creds,
+        media_id: &str,
+        capability: &str,
+    ) -> Result<(), ClientError> {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-tree-media-capability",
+            HeaderValue::from_str(capability)
+                .map_err(|_| ClientError::Usage("invalid media capability".into()))?,
+        );
+        self.call_with_headers(
+            c,
+            Method::POST,
+            &format!("/v1/media/{media_id}"),
+            None,
+            headers,
+        )?
+        .ok()?;
+        Ok(())
+    }
+
+    pub fn media_manifest(
+        &self,
+        c: &Creds,
+        media_id: &str,
+        capability: &str,
+    ) -> Result<Value, ClientError> {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-tree-media-capability",
+            HeaderValue::from_str(capability)
+                .map_err(|_| ClientError::Usage("invalid media capability".into()))?,
+        );
+        self.call_with_headers(
+            c,
+            Method::GET,
+            &format!("/v1/media/{media_id}"),
+            None,
+            headers,
+        )?
+        .ok()
+    }
+
+    pub fn media_get_chunk(
+        &self,
+        c: &Creds,
+        media_id: &str,
+        capability: &str,
+        index: u32,
+    ) -> Result<MediaChunk, ClientError> {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-tree-media-capability",
+            HeaderValue::from_str(capability)
+                .map_err(|_| ClientError::Usage("invalid media capability".into()))?,
+        );
+        let value = self.call_with_headers(
+            c,
+            Method::GET,
+            &format!("/v1/media/{media_id}/chunks/{index}"),
+            None,
+            headers,
+        )?
+        .ok()?;
+        let raw = unb64(value["ciphertext"].as_str().unwrap_or(""))?;
+        let hash = hex::decode(value["sha256"].as_str().unwrap_or(""))
+            .map_err(|_| ClientError::Usage("invalid media chunk hash".into()))?;
+        let sha256: [u8; 32] = hash
+            .try_into()
+            .map_err(|_| ClientError::Usage("invalid media chunk hash length".into()))?;
+        Ok(MediaChunk { index, ciphertext: raw, sha256 })
+    }
+
     pub fn ack(&self, c: &Creds, ids: &[String]) -> Result<(), ClientError> {
         if ids.is_empty() {
             return Ok(());
@@ -181,6 +326,17 @@ impl Api {
         self.request(&c.key, &c.device_id, method, path, body)
     }
 
+    fn call_with_headers(
+        &self,
+        c: &Creds,
+        method: Method,
+        path: &str,
+        body: Option<&Value>,
+        headers: HeaderMap,
+    ) -> Result<Reply, ClientError> {
+        self.request_with_headers(&c.key, &c.device_id, method, path, body, headers)
+    }
+
     fn request(
         &self,
         key: &SigningKey,
@@ -188,6 +344,18 @@ impl Api {
         method: Method,
         path: &str,
         body: Option<&Value>,
+    ) -> Result<Reply, ClientError> {
+        self.request_with_headers(key, device_id, method, path, body, HeaderMap::new())
+    }
+
+    fn request_with_headers(
+        &self,
+        key: &SigningKey,
+        device_id: &str,
+        method: Method,
+        path: &str,
+        body: Option<&Value>,
+        extra_headers: HeaderMap,
     ) -> Result<Reply, ClientError> {
         let body = body
             .map(|value| {
@@ -214,7 +382,8 @@ impl Api {
             .request(method, format!("{}{}", self.base, path))
             .header("X-Tree-Timestamp", timestamp)
             .header("X-Tree-Nonce", nonce)
-            .header("X-Tree-Signature", b64(&signature.to_bytes()));
+            .header("X-Tree-Signature", b64(&signature.to_bytes()))
+            .headers(extra_headers);
 
         if !device_id.is_empty() {
             request = request.header("X-Tree-Device", device_id);

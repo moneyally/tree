@@ -118,10 +118,12 @@ json_body!(ChunkReq, |cfg| (cfg.max_media_chunk_bytes + 16) * 4 / 3 + 512);
 pub async fn put_chunk(
     State(state): State<AppState>,
     Path(media_id): Path<String>,
+    headers: HeaderMap,
     req: Signed<ChunkReq>,
 ) -> ApiResult<Json<serde_json::Value>> {
+    let cap = capability(&headers)?;
     let row = sqlx::query(
-        "SELECT capability_hash, chunk_size, chunk_count, plaintext_size, finalized, expires_at
+        "SELECT capability_hash, owner_device_id, chunk_size, chunk_count, plaintext_size, finalized, expires_at
          FROM media_objects WHERE id = ?",
     )
     .bind(&media_id)
@@ -129,6 +131,15 @@ pub async fn put_chunk(
     .await?
     .ok_or_else(|| ApiError::not_found("media not found"))?;
 
+    let cap_hash: [u8; 32] = Sha256::digest(&cap).into();
+    let stored_cap: Vec<u8> = row.try_get("capability_hash")?;
+    if stored_cap.as_slice() != cap_hash.as_slice() {
+        return Err(ApiError::unauthorized("invalid media capability"));
+    }
+    let owner: String = row.try_get("owner_device_id")?;
+    if owner != req.device.device_id {
+        return Err(ApiError::forbidden("media belongs to another device"));
+    }
     let expires_at: i64 = row.try_get("expires_at")?;
     if expires_at <= now_secs() {
         return Err(ApiError::not_found("media not found"));
@@ -144,8 +155,12 @@ pub async fn put_chunk(
         return Err(ApiError::bad_request("chunk index out of range"));
     }
     let ciphertext = unb64(&req.body.ciphertext, "ciphertext")?;
-    if ciphertext.len() < 16 || ciphertext.len() > chunk_size + 16 {
-        return Err(ApiError::too_large("invalid encrypted chunk size"));
+    let plaintext_size: u64 = row.try_get::<i64, _>("plaintext_size")? as u64;
+    let offset = req.body.index as u64 * chunk_size as u64;
+    let remaining = plaintext_size.saturating_sub(offset);
+    let expected_ciphertext = remaining.min(chunk_size as u64) as usize + 16;
+    if ciphertext.len() != expected_ciphertext {
+        return Err(ApiError::bad_request("encrypted chunk size does not match manifest"));
     }
     let expected_hash = Sha256::digest(&ciphertext);
     let claimed = hex::decode(&req.body.sha256)

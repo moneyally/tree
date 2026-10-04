@@ -405,7 +405,7 @@ impl Session {
             ViewPolicy::Timed { seconds } => seconds,
             _ => 0,
         };
-        let body = self.with_group(gid, |group| {
+        let _body = self.with_group(gid, |group| {
             group.send_message_with_id(
                 &self.client,
                 message_id,

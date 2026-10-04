@@ -807,7 +807,9 @@ async fn old_messages_are_purged() {
     let a = api.signup().await;
     let b = api.signup().await;
     api.seed_fake_group(&a, &[&b]).await;
-    api.send_msg(&a, &[&b.device_id], b"old").await;
+    let (st, value) = api.send_msg(&a, &[&b.device_id], b"old").await;
+    assert_eq!(st, StatusCode::OK, "{value}");
+    assert_eq!(value["delivered"], 1, "message must enter the mailbox");
     let deadline = Instant::now() + Duration::from_secs(10);
     while blob_count(&ts).await > 0 && Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(200)).await;

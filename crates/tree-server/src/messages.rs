@@ -125,7 +125,15 @@ pub async fn send(
                 .fetch_optional(&mut *tx)
                 .await?
                 .is_some();
-        if !member {
+        let known_device = sqlx::query("SELECT 1 FROM devices WHERE id = ?")
+            .bind(recipient)
+            .fetch_optional(&mut *tx)
+            .await?
+            .is_some();
+        // Unknown ids are intentionally passed through to `deliver`, which
+        // reports them as unknown_devices. A registered device in another
+        // group must still be rejected to prevent cross-group injection.
+        if known_device && !member {
             return Err(ApiError::forbidden(
                 "NOT_ELIGIBLE",
                 "one or more recipients are not members of this group",

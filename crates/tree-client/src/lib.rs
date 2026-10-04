@@ -49,6 +49,7 @@ pub struct SyncEvent {
     pub server_id: String,
     pub group_id: Vec<u8>,
     pub incoming: Incoming,
+    pub media_consumed: Option<MediaViewEvent>,
 }
 
 pub struct SentMedia {
@@ -349,7 +350,7 @@ impl Session {
             sha256: chunk.sha256,
         };
         let plaintext = EncryptedChunk::decrypt(key, manifest, &encrypted)?;
-        Ok(DownloadedMediaChunk { index, plaintext })
+        Ok(DownloadedMediaChunk { index, plaintext: SecureMediaBytes::new(plaintext) })
     }
 
     pub fn decrypt_media_preview(
@@ -357,11 +358,11 @@ impl Session {
         envelope: &MediaEnvelope,
     ) -> Result<Option<Vec<u8>>, Error> {
         match &envelope.preview {
-            Some(preview) => Ok(Some(decrypt_preview(
+            Some(preview) => Ok(Some(SecureMediaBytes::new(decrypt_preview(
                 &envelope.file_key,
                 &envelope.manifest,
                 preview,
-            )?)),
+            )?))),
             None => Ok(None),
         }
     }
@@ -369,6 +370,51 @@ impl Session {
     pub fn new_media_view(&self, envelope: &MediaEnvelope) -> MediaLifecycle {
         MediaLifecycle::new(envelope.manifest.view_policy)
     }
+    pub fn confirm_media_open(
+        &self,
+        envelope: &MediaEnvelope,
+        consumed_at: i64,
+    ) -> Result<String, Error> {
+        if !matches!(envelope.manifest.view_policy, ViewPolicy::ViewOnce) {
+            return Err(Error::Usage("media is not configured as view-once".into()));
+        }
+        let event = MediaViewEvent {
+            message_id: envelope.manifest.message_id,
+            attachment_id: envelope.manifest.attachment_id,
+            consumed_at,
+        };
+        let body = event.encode()?;
+        let roster = self.roster(&envelope.manifest.group_id)?;
+        let recipients = roster
+            .values()
+            .filter(|device| device.as_str() != self.device_id())
+            .cloned()
+            .collect::<Vec<_>>();
+        if recipients.is_empty() {
+            return Err(Error::Usage("group has no other devices".into()));
+        }
+        let reply = self.api.send(&self.creds, &recipients, &{
+            let mut group = self.client.load_group(&envelope.manifest.group_id)?;
+            group.send(&self.client, &body)?
+        })?;
+        self.client.set_app_data(
+            &format!("media/consumed/{}", hex::encode(envelope.manifest.attachment_id)),
+            Some(&body),
+        )?;
+        reply.body["id"]
+            .as_str()
+            .or_else(|| reply.body["message_id"].as_str())
+            .map(str::to_string)
+            .ok_or_else(|| Error::Usage("server did not return a media consumption message id".into()))
+    }
+
+    pub fn media_was_consumed(&self, attachment_id: &[u8; 16]) -> Result<bool, Error> {
+        Ok(self
+            .client
+            .app_data(&format!("media/consumed/{}", hex::encode(attachment_id)))?
+            .is_some())
+    }
+
 
     pub fn send_text(&self, gid: &[u8], text: &str) -> Result<String, Error> {
         let roster = self.roster(gid)?;
@@ -414,7 +460,30 @@ impl Session {
                     } else {
                         ack.push(server_id.clone());
                     }
+                    let media_consumed = if let Incoming::Message { body, .. } = &incoming {
+                        match MediaViewEvent::decode(body) {
+                            Ok(event) => {
+                                self.client.set_app_data(
+                                    &format!("media/consumed/{}", hex::encode(event.attachment_id)),
+                                    Some(body),
+                                )?;
+                                Some(event)
+                            }
+                            Err(_) => None,
+                        }
+                    } else {
+                        None
+                    };
                     if let Incoming::Message { from, name, body } = &incoming {
+                        if media_consumed.is_some() {
+                            events.push(SyncEvent {
+                                server_id,
+                                group_id: gid,
+                                incoming: Incoming::NoOp,
+                                media_consumed,
+                            });
+                            continue;
+                        }
                         let entry = HistoryEntry {
                             group_id: hex::encode(&gid),
                             from: from.to_hex(),
@@ -432,6 +501,7 @@ impl Session {
                         server_id,
                         group_id: gid,
                         incoming,
+                        media_consumed,
                     });
                 }
                 Err(_) => {
@@ -453,6 +523,7 @@ impl Session {
                             epoch: group.epoch(),
                             own_commit_discarded: false,
                         },
+                        media_consumed: None,
                     });
                 }
             }
@@ -475,6 +546,7 @@ impl Session {
                         server_id: String::new(),
                         group_id: gid.clone(),
                         incoming,
+                        media_consumed: None,
                     });
                 }
             }

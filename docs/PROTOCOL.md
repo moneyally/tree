@@ -1364,36 +1364,58 @@ bytes; the client sends the 32-byte key of 6.13). In the same database
 transaction as the delivery the server keeps the record
 
 ```text
-(sending device id, key) -> request hash, delivered count, day
-request hash = SHA-256( lp("tree/send-request/v1") || lp(body)
-                        || uint32 n || lp(r_1) ... lp(r_n) )
+(sending device id, key) -> key_id || tag, delivered count, day
+tag = HMAC-SHA-256( K_day, lp("tree/send-request/v2") || lp(body)
+                           || uint32 n || lp(r_1) ... lp(r_n) )
 ```
 
 with `r_1 ... r_n` the recipient ids sorted and de-duplicated (`lp` as in
-6.13), and applies, before anything is delivered:
+6.13). `K_day` is 32 random bytes the server makes for each UTC day on
+first use and holds **only in memory** (never in the database, a log or a
+backup), identified by a random 8-byte `key_id`; it is forgotten once the
+day after its day has passed. The server applies, before anything is
+delivered:
 
 1. no record for (device, key): deliver, store the record;
-2. a record with the same request hash: answer `200` with the stored
-   `delivered` count and `"replayed": true`; nothing is delivered or
-   charged again;
-3. a record with another request hash: `409 IDEMPOTENCY_KEY_REUSE`; nothing
-   is delivered.
+2. a record whose tag equals the tag of this request under the record's
+   key (constant-time compare): answer `200` with the stored `delivered`
+   count and `"replayed": true`; nothing is delivered or charged again;
+3. a record with another tag: `409 IDEMPOTENCY_KEY_REUSE`; nothing is
+   delivered;
+4. a record whose key the server no longer holds (it restarted): it cannot
+   be compared, and is answered as in 2 (the client's key already hashes
+   the body, 6.13, so this is a retry of the same request).
 
 The lookup and the delivery are one `BEGIN IMMEDIATE` transaction, so
 concurrent copies of one request deliver once. Keys are scoped per sending
 device: the same key bytes from another device are another record.
 Duplicate recipient ids in one request are delivered once (they always were).
 
-Metadata. The record is new metadata: the server keeps, for up to the
-message TTL (30 days), that a device sent a keyed message on a given day,
-with a hash of the request. It does not keep the body, the recipients, the
-message id or the time of day; the replayed answer therefore has empty
-`unknown_devices` / `full_devices` (keeping them would link sender and
-recipients). Once the body is acknowledged and erased, the request hash
-cannot be checked against anything. Records are deleted by the purge task
-after the message TTL, with their device, and beyond `MAX_IDEMPOTENCY_KEYS`
-(default 10,000) per device the oldest are dropped at once, so they cannot
-grow without bound; a client retries within minutes, far inside both.
+Metadata (F-023). The record is new metadata: the server keeps, for one to
+two days, that a device sent a keyed message on a given day. It does not
+keep the body, the recipients, the message id or the time of day; the
+replayed answer therefore has empty `unknown_devices` / `full_devices`.
+Before F-023 the record held a plain SHA-256 of the request, so anyone with
+a copy of the database could recompute it for every stored body (`blobs`)
+and its recipients (`deliveries`) and so learn which device sent which
+message, for as long as the body was stored (up to 30 days). Now:
+
+- a copy of the database (a backup, a seized disk) cannot join a record to
+  a message: the tag needs `K_day`, which is never written down;
+- what remains: the running server process (or whoever can read its
+  memory) can, while `K_day` is held (at most two days), recompute the tag
+  of each stored body for each sending device's records and so link a
+  sender to a message. That process sees the authenticated sender of every
+  request as it arrives anyway; Tree's claim is about what is stored;
+- after `K_day` is forgotten its records are useless and the purge task
+  deletes them (records of days before yesterday; records in the old
+  format at once). Records also go with their device, and beyond
+  `MAX_IDEMPOTENCY_KEYS` (default 10,000) per device the oldest are dropped
+  at once.
+
+A client retries within minutes, far inside the lifetime. A retry after the
+record is gone is delivered again; receivers drop the second copy (its MLS
+keys are used up), so a late duplicate costs only mailbox space.
 
 ### 8.11 Device linking with a two-sided code
 

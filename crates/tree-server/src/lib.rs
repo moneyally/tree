@@ -21,8 +21,10 @@
 //! carry method, route template, status and latency only. The sender of a
 //! message is known only while its request is processed and is never stored
 //! with the message; a send with an idempotency key leaves a record of the
-//! sending device and the day, without recipients or body, until the
-//! message TTL ([`messages`], PROTOCOL.md 8.10).
+//! sending device and the day, without recipients or body, for one to two
+//! days, holding only an HMAC of the request under a key that is never
+//! stored, so a copy of the database cannot join it to a message
+//! ([`messages`], PROTOCOL.md 8.10).
 
 pub mod accounts;
 pub mod attachments;
@@ -86,6 +88,8 @@ pub struct Inner {
     pub push: Option<tokio::sync::mpsc::Sender<String>>,
     /// GIF and map relays (see [`relay`]).
     pub relay: relay::Relay,
+    /// Keys of the idempotency request tags, in memory only (PROTOCOL.md 8.10).
+    pub request_tags: messages::RequestTagKeys,
 }
 
 impl Deref for AppState {
@@ -109,6 +113,7 @@ impl AppState {
             franking: tokio::sync::OnceCell::new(),
             push,
             relay: relay::Relay::new(),
+            request_tags: messages::RequestTagKeys::default(),
             db,
             cfg,
         }))
@@ -313,7 +318,7 @@ async fn log_requests(req: Request, next: Next) -> Response {
 }
 
 /// Deletes undelivered messages older than the TTL and any orphaned bodies,
-/// idempotency records older than the TTL, attachments older than the TTL,
+/// idempotency records older than yesterday, attachments older than the TTL,
 /// uploads unfinished after a day, and the ordering record of
 /// groups none of whose devices exist any more.
 /// Returns the number of bodies removed.
@@ -340,7 +345,7 @@ pub async fn purge_expired(state: &AppState, now: i64) -> Result<u64, sqlx::Erro
     let invites = invites::purge(&state.db, now).await?;
     let links = links::purge(&state.db, now).await?;
     let reports = reports::purge(&state.db, now.div_euclid(86400)).await?;
-    let keys = messages::purge_idempotency(&state.db, cutoff).await?;
+    let keys = messages::purge_idempotency(&state.db, now).await?;
     Ok(expired + orphans + files + uploads + invites + links + reports + keys)
 }
 

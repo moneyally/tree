@@ -390,3 +390,24 @@ Issues found by testing Tree's own design. Each one has a regression test.
 - **Test:** `requests::tests::relabelling_does_not_escape_a_block`,
   `requests::tests::claiming_the_receivers_own_account_gets_nothing` (both
   fail before the fix).
+
+## F-023: idempotency records linked the sender to the stored message (fixed)
+
+- **Found:** 2026-10-04, security review of wave 2.
+- **What:** the idempotency record stored the sending device with
+  `SHA-256(label, body, sorted recipients)`. The body is in `blobs` and the
+  recipients in `deliveries` until acknowledged (up to 30 days), so anyone
+  with a copy of the database could recompute the hash for every stored
+  message and learn its sender, which the server otherwise never stores.
+  SERVER_API said the records hold "never recipients", which was not true
+  in effect.
+- **Severity:** medium (metadata privacy against a database copy).
+- **Fix:** the record holds a key id and an HMAC-SHA-256 of the request
+  under a random per-day key held only in the server's memory; keys are
+  forgotten after the next day and their records purged (lifetime one to
+  two days, down from 30); records in the old format are purged at once; a
+  record whose key is gone (restart) is answered as a replay. What remains
+  (documented in PROTOCOL.md 8.10): the running process can link while it
+  holds the key.
+- **Test:** `records_do_not_link_the_sender_to_a_stored_body` (fails before:
+  the stored value was the recomputable hash), `records_are_bounded_and_purged`.

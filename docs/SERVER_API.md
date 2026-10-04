@@ -237,8 +237,10 @@ request (same body, same set of recipients) with the same key from the same
 device is answered `200` with the first `delivered` count and
 `"replayed": true`, and delivers nothing again. The same key with another
 body or other recipients: `409 IDEMPOTENCY_KEY_REUSE`. Keys are per sending
-device and expire with the message TTL; at most `MAX_IDEMPOTENCY_KEYS` per
-device are kept (the oldest go first). Malformed key: `400`.
+device and kept one to two days (until the day after the send has passed);
+at most `MAX_IDEMPOTENCY_KEYS` per device are kept (the oldest go first).
+After a server restart a retry of a key from before is answered as a
+replay (it can no longer be compared). Malformed key: `400`.
 
 The body must be a Tree envelope holding an MLS application message
 (PROTOCOL.md 4.1; the server reads only the cleartext header). Refused with
@@ -623,7 +625,7 @@ Errors: `UNAUTHORIZED`, `UNKNOWN_FEATURE`.
 | per group: last accepted epoch, the device ids that may commit next, SHA-256 and id of the last 64 accepted commits | while one of its devices exists |
 | message ciphertext + recipient device + arrival minute | until acknowledged, at most 30 days |
 | message sender | **no** (not with the message) |
-| idempotency records (`POST /v1/messages` with a key) | sending device, key, request hash, delivered count, day; until the message TTL, at most `MAX_IDEMPOTENCY_KEYS` per device, deleted with the device; never recipients, body or message id |
+| idempotency records (`POST /v1/messages` with a key) | sending device, key, a tag of the request (HMAC under a key held only in memory, forgotten after a day, PROTOCOL.md 8.10), delivered count, day; one to two days, at most `MAX_IDEMPOTENCY_KEYS` per device, deleted with the device. Not stored: the body, the recipients, the message id. A database copy cannot match a record to a stored message; the running server can, for the record's lifetime, by recomputing tags of stored bodies with the key in its memory |
 | IP addresses | **no** (signup rate limit keeps them in memory only) |
 | relays | **no**: search words and tile coordinates are passed on and forgotten; media ids (opaque id -> provider URL) in memory for one hour |
 | operator flag changes | key, state, time, optional reason |

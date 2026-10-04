@@ -314,7 +314,7 @@ CREATE TABLE idempotency_keys (
     seq          INTEGER PRIMARY KEY AUTOINCREMENT,      -- age order for the per-device cap
     device_id    TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,  -- sending device
     key          BLOB NOT NULL,                          -- 16..64 bytes chosen by the device
-    request_hash BLOB NOT NULL,                          -- SHA-256 over body and sorted recipients
+    request_hash BLOB NOT NULL,                          -- tag key id (8) || HMAC-SHA-256 under an in-memory key (32)
     delivered    INTEGER NOT NULL,                       -- the first answer's count
     created_day  INTEGER NOT NULL,                       -- day only
     UNIQUE (device_id, key)
@@ -323,9 +323,11 @@ CREATE INDEX idempotency_keys_device ON idempotency_keys(device_id, seq);
 CREATE INDEX idempotency_keys_day ON idempotency_keys(created_day);
 ```
 
-No recipients, body, message id or time of day. Deleted by the purge task
-once the whole day is older than `MESSAGE_TTL_SECS`, with the device, and
-beyond `MAX_IDEMPOTENCY_KEYS` per device (oldest first).
+No recipients, body, message id or time of day; the tag cannot be
+recomputed without a key held only in the server's memory (F-023). Deleted by
+the purge task once its day is before yesterday (the tag key is forgotten
+then; records in the old 32-byte SHA-256 format are deleted at once), with
+the device, and beyond `MAX_IDEMPOTENCY_KEYS` per device (oldest first).
 
 ### 2.9 Device links (migration `0012_device_links.sql`, PROTOCOL.md 8.11)
 

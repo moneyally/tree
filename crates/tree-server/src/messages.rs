@@ -8,7 +8,10 @@
 //!
 //! A send may carry an idempotency key (PROTOCOL.md 8.10): a retry of the
 //! same request with the same key gets the first answer and delivers
-//! nothing again; the same key with another request is refused.
+//! nothing again; the same key with another request is refused. The record
+//! holds an HMAC of the request under a key that exists only in this
+//! process's memory and is forgotten after a day, so a copy of the database
+//! cannot match a record to a stored body (F-023).
 
 use std::collections::HashSet;
 use std::time::Duration;
@@ -17,7 +20,8 @@ use axum::extract::rejection::QueryRejection;
 use axum::extract::{Query, State};
 use axum::Json;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
 use sqlx::Row;
 use tokio::time::Instant;
 
@@ -31,8 +35,51 @@ pub const MAX_ACK_IDS: usize = 1000;
 /// Decoded length of an idempotency key.
 pub const IDEMPOTENCY_KEY_MIN: usize = 16;
 pub const IDEMPOTENCY_KEY_MAX: usize = 64;
-/// Domain label of the request hash stored with an idempotency key.
-const REQUEST_HASH_LABEL: &[u8] = b"tree/send-request/v1";
+/// Domain label of the request tag stored with an idempotency key.
+const REQUEST_TAG_LABEL: &[u8] = b"tree/send-request/v2";
+/// Length of a tag key id; a stored record is `key id || tag`.
+const TAG_KEY_ID: usize = 8;
+
+/// The keys of the request tags (PROTOCOL.md 8.10): 32 random bytes per
+/// UTC day, made on first use, held only in memory (never in the database
+/// or logs), and forgotten once the day after has passed. Records made
+/// under a forgotten key are purged with it ([`purge_idempotency`]).
+#[derive(Default)]
+pub struct RequestTagKeys(std::sync::Mutex<Vec<TagKey>>);
+
+struct TagKey {
+    day: i64,
+    id: [u8; TAG_KEY_ID],
+    key: [u8; 32],
+}
+
+impl RequestTagKeys {
+    fn keep_window(keys: &mut Vec<TagKey>, today: i64) {
+        keys.retain(|k| k.day >= today - 1 && k.day <= today);
+    }
+
+    /// Today's key and its id.
+    fn current(&self, today: i64) -> ([u8; TAG_KEY_ID], [u8; 32]) {
+        let mut keys = self.0.lock().expect("tag keys lock");
+        Self::keep_window(&mut keys, today);
+        if let Some(k) = keys.iter().find(|k| k.day == today) {
+            return (k.id, k.key);
+        }
+        let mut k = TagKey { day: today, id: [0; TAG_KEY_ID], key: [0; 32] };
+        getrandom::getrandom(&mut k.id).expect("operating system random number generator failed");
+        getrandom::getrandom(&mut k.key).expect("operating system random number generator failed");
+        let out = (k.id, k.key);
+        keys.push(k);
+        out
+    }
+
+    /// The key with this id, if it is still held (today's or yesterday's).
+    fn by_id(&self, id: &[u8], today: i64) -> Option<[u8; 32]> {
+        let mut keys = self.0.lock().expect("tag keys lock");
+        Self::keep_window(&mut keys, today);
+        keys.iter().find(|k| k.id == id).map(|k| k.key)
+    }
+}
 
 #[derive(Deserialize)]
 pub struct SendReq {
@@ -60,24 +107,25 @@ pub struct SendResp {
     pub replayed: bool,
 }
 
-/// SHA-256 over the label, the body and the sorted, de-duplicated
-/// recipients, each length-prefixed (u32 big-endian), so two different
-/// requests cannot have the same encoding.
-pub fn request_hash(body: &[u8], recipients: &[String]) -> [u8; 32] {
+/// HMAC-SHA-256 under `key` over the label, the body and the sorted,
+/// de-duplicated recipients, each length-prefixed (u32 big-endian), so two
+/// different requests cannot have the same encoding. Without the key (which
+/// never leaves memory) the tag cannot be recomputed from a stored body.
+pub fn request_tag(key: &[u8; 32], body: &[u8], recipients: &[String]) -> [u8; 32] {
     let mut sorted: Vec<&String> = recipients.iter().collect();
     sorted.sort();
     sorted.dedup();
-    let mut h = Sha256::new();
-    h.update((REQUEST_HASH_LABEL.len() as u32).to_be_bytes());
-    h.update(REQUEST_HASH_LABEL);
-    h.update((body.len() as u32).to_be_bytes());
+    let mut h = <Hmac<Sha256> as Mac>::new_from_slice(key).expect("HMAC takes any key length");
+    h.update(&(REQUEST_TAG_LABEL.len() as u32).to_be_bytes());
+    h.update(REQUEST_TAG_LABEL);
+    h.update(&(body.len() as u32).to_be_bytes());
     h.update(body);
-    h.update((sorted.len() as u32).to_be_bytes());
+    h.update(&(sorted.len() as u32).to_be_bytes());
     for r in sorted {
-        h.update((r.len() as u32).to_be_bytes());
+        h.update(&(r.len() as u32).to_be_bytes());
         h.update(r.as_bytes());
     }
-    h.finalize().into()
+    h.finalize().into_bytes().into()
 }
 
 fn parse_key(k: &str) -> ApiResult<Vec<u8>> {
@@ -145,13 +193,19 @@ pub async fn send(
         }
         Err(why) => return Err(ApiError::bad_request(format!("body: {why}"))),
     }
-    let hash = key.as_ref().map(|_| request_hash(&bytes, &unique));
+    let day = today();
+    let record = key.as_ref().map(|_| {
+        let (id, k) = state.request_tags.current(day);
+        let mut r = id.to_vec();
+        r.extend_from_slice(&request_tag(&k, &bytes, &unique));
+        r
+    });
     let sender = req.device.device_id.as_str();
 
     // The lookup, the delivery and the record are one transaction, so two
     // concurrent requests with the same key deliver once.
     let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
-    if let (Some(key), Some(hash)) = (&key, &hash) {
+    if let Some(key) = &key {
         let seen = sqlx::query("SELECT request_hash, delivered FROM idempotency_keys WHERE device_id = ? AND key = ?")
             .bind(sender)
             .bind(key.as_slice())
@@ -159,7 +213,15 @@ pub async fn send(
             .await?;
         if let Some(row) = seen {
             let stored: Vec<u8> = row.try_get("request_hash")?;
-            if stored.as_slice() != hash.as_slice() {
+            // Recompute under the key the record was made with. If that key
+            // is gone (the server restarted), the request cannot be compared
+            // and is taken as the retry it almost surely is: the client's
+            // key already hashes the body (PROTOCOL.md 6.13).
+            let differs = stored.len() == TAG_KEY_ID + 32
+                && state.request_tags.by_id(&stored[..TAG_KEY_ID], day).is_some_and(|k| {
+                    !bool::from(subtle::ConstantTimeEq::ct_eq(&request_tag(&k, &bytes, &unique)[..], &stored[TAG_KEY_ID..]))
+                });
+            if differs {
                 return Err(ApiError::conflict(
                     "IDEMPOTENCY_KEY_REUSE",
                     "this idempotency key was used for another request",
@@ -178,15 +240,15 @@ pub async fn send(
     req.device.charge_outreach(&state, (unique.len() / 100) as f64)?;
 
     let d = deliver(&mut tx, cfg, &bytes, unique).await?;
-    if let (Some(key), Some(hash)) = (&key, &hash) {
+    if let (Some(key), Some(record)) = (&key, &record) {
         sqlx::query(
             "INSERT INTO idempotency_keys (device_id, key, request_hash, delivered, created_day) VALUES (?, ?, ?, ?, ?)",
         )
         .bind(sender)
         .bind(key.as_slice())
-        .bind(hash.as_slice())
+        .bind(record.as_slice())
         .bind(d.delivered.len() as i64)
-        .bind(today())
+        .bind(day)
         .execute(&mut *tx)
         .await?;
         // At most MAX_IDEMPOTENCY_KEYS per device: the oldest go first.
@@ -212,12 +274,15 @@ pub async fn send(
     }))
 }
 
-/// Removes idempotency records older than the message TTL (`cutoff` in
-/// unix seconds): a record of day `d` goes once all of that day is past the
-/// cutoff. Returns how many.
-pub async fn purge_idempotency(db: &sqlx::SqlitePool, cutoff: i64) -> Result<u64, sqlx::Error> {
-    Ok(sqlx::query("DELETE FROM idempotency_keys WHERE (created_day + 1) * 86400 <= ?")
-        .bind(cutoff)
+/// Removes idempotency records whose tag key is forgotten: those of days
+/// before yesterday (`now` in unix seconds), so a record lives one to two
+/// days. Also removes records in the old format (a plain SHA-256 of the
+/// request, which anyone holding the stored body could recompute).
+/// Returns how many.
+pub async fn purge_idempotency(db: &sqlx::SqlitePool, now: i64) -> Result<u64, sqlx::Error> {
+    Ok(sqlx::query("DELETE FROM idempotency_keys WHERE created_day < ? OR length(request_hash) <> ?")
+        .bind(now.div_euclid(86_400) - 1)
+        .bind((TAG_KEY_ID + 32) as i64)
         .execute(db)
         .await?
         .rows_affected())

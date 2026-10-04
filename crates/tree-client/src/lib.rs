@@ -188,20 +188,16 @@ impl Session {
         self.submit_pending(gid, pending, BTreeMap::new(), BTreeMap::new())
     }
 
-    pub fn set_group_name(&self, gid: &[u8], name: Option<&str>) -> Result<CommitOutcome, Error> {
-        let pending = self.with_group(gid, |group| group.set_title(&self.client, name))?;
-        self.submit_pending(gid, pending, BTreeMap::new(), BTreeMap::new())
+    pub fn set_group_name(&self, gid: &[u8], name: Option<&str>) -> Result<String, Error> {
+        let body = self.with_group(gid, |group| group.set_title(&self.client, name))?;
+        self.send_control(gid, &body)
     }
 
-    pub fn set_disappearing_seconds(
-        &self,
-        gid: &[u8],
-        seconds: u32,
-    ) -> Result<CommitOutcome, Error> {
-        let pending = self.with_group(gid, |group| {
+    pub fn set_disappearing_seconds(&self, gid: &[u8], seconds: u32) -> Result<String, Error> {
+        let body = self.with_group(gid, |group| {
             group.set_disappearing_seconds(&self.client, seconds)
         })?;
-        self.submit_pending(gid, pending, BTreeMap::new(), BTreeMap::new())
+        self.send_control(gid, &body)
     }
 
     pub fn make_admin(
@@ -209,15 +205,15 @@ impl Session {
         gid: &[u8],
         member: MemberId,
         admin: bool,
-    ) -> Result<CommitOutcome, Error> {
-        let pending = self.with_group(gid, |group| {
+    ) -> Result<String, Error> {
+        let body = self.with_group(gid, |group| {
             if admin {
                 group.add_admin(&self.client, member)
             } else {
                 group.remove_admin(&self.client, member)
             }
         })?;
-        self.submit_pending(gid, pending, BTreeMap::new(), BTreeMap::new())
+        self.send_control(gid, &body)
     }
 
     pub fn send_text(&self, gid: &[u8], text: &str) -> Result<String, Error> {
@@ -230,7 +226,7 @@ impl Session {
         if recipients.is_empty() {
             return Err(Error::Usage("group has no other devices".into()));
         }
-        let body = self.with_group(gid, |group| group.send(&self.client, text.as_bytes()))?;
+        let (_, body) = self.with_group(gid, |group| group.send_message(&self.client, text.as_bytes()))?;
         let reply = self.api.send(&self.creds, &recipients, &body)?;
         let id = reply.body["id"]
             .as_str()
@@ -370,6 +366,24 @@ impl Session {
             .map_err(|e| Error::Usage(format!("roster encode failed: {e}")))?;
         self.client.set_app_data(&key, Some(&bytes))?;
         Ok(())
+    }
+
+    fn send_control(&self, gid: &[u8], body: &[u8]) -> Result<String, Error> {
+        let roster = self.roster(gid)?;
+        let recipients: Vec<String> = roster
+            .values()
+            .filter(|device| device.as_str() != self.device_id())
+            .cloned()
+            .collect();
+        if recipients.is_empty() {
+            return Err(Error::Usage("group has no other devices".into()));
+        }
+        let reply = self.api.send(&self.creds, &recipients, body)?;
+        reply.body["id"]
+            .as_str()
+            .or_else(|| reply.body["message_id"].as_str())
+            .map(str::to_string)
+            .ok_or_else(|| Error::Usage("server did not return a message id".into()))
     }
 
     fn submit_pending(

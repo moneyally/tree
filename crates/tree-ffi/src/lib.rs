@@ -11,9 +11,11 @@ use tree_client::{CommitOutcome, Event, FileInfo, GroupStatus, LinkStatus, Media
 
 uniffi::setup_scaffolding!();
 
+mod device;
 mod rich;
 mod rich_media;
 pub use rich_media::*;
+pub use device::*;
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum TreeError {
@@ -31,6 +33,12 @@ pub enum TreeError {
     /// Wrong passphrase, or a damaged database.
     #[error("wrong passphrase or damaged database")]
     WrongKey,
+    /// A wrong PIN; `attempts_left` before the passphrase is needed.
+    #[error("wrong PIN ({attempts_left} attempts left)")]
+    WrongPin { attempts_left: u32 },
+    /// PIN unlock is off or used up: open with the passphrase.
+    #[error("PIN unlock is not available")]
+    PinUnavailable,
     #[error("{reason}")]
     Usage { reason: String },
     #[error("{reason}")]
@@ -47,6 +55,8 @@ impl From<tree_client::Error> for TreeError {
             E::InvalidOption(reason) => TreeError::InvalidOption { reason },
             E::Usage(reason) => TreeError::Usage { reason },
             E::Core(tree_core::error::TreeError::WrongKey) => TreeError::WrongKey,
+            E::Core(tree_core::error::TreeError::WrongPin(n)) => TreeError::WrongPin { attempts_left: n as u32 },
+            E::Core(tree_core::error::TreeError::PinUnavailable) => TreeError::PinUnavailable,
             other => TreeError::Other { reason: other.to_string() },
         }
     }
@@ -264,6 +274,8 @@ pub enum TreeEvent {
     Rsvp { group: String, id: String, from: String, answer: String },
     /// A member's photo changed (`member_photo`).
     ProfilePhoto { group: String, member: String, removed: bool },
+    /// Another device of this account changed these settings: reload them.
+    SettingsSynced { keys: Vec<String> },
 }
 
 fn ids(v: Vec<MemberId>) -> Vec<String> {
@@ -339,6 +351,7 @@ impl From<Event> for TreeEvent {
             }
             Event::Rsvp { group, id, from, answer } => TreeEvent::Rsvp { group: h(group), id, from: from.to_hex(), answer },
             Event::ProfilePhoto { group, member, removed } => TreeEvent::ProfilePhoto { group: h(group), member: member.to_hex(), removed },
+            Event::SettingsSynced { keys } => TreeEvent::SettingsSynced { keys },
         }
     }
 }
@@ -729,7 +742,10 @@ impl TreeSession {
     // --- groups ---
 
     pub fn groups(&self) -> R<Vec<String>> {
-        Ok(self.s().group_ids()?.into_iter().map(hex::encode).collect())
+        // The account's own settings group is never shown.
+        let s = self.s();
+        let own = s.self_group()?;
+        Ok(s.group_ids()?.into_iter().filter(|g| own.as_ref() != Some(g)).map(hex::encode).collect())
     }
 
     pub fn create_group(&self) -> R<String> {
@@ -1245,16 +1261,19 @@ impl TreeSession {
     /// `option`: one of `option_choices(key)` or another value of the
     /// feature's format; anything else is `InvalidOption`.
     pub fn apply_feature(&self, key: String, option: Option<String>) -> R<Feature> {
-        let s = self.s();
+        let mut s = self.s();
         let f = s.apply_feature(&key, option)?;
+        // To the account's other devices; a failure here is retried by sync.
+        let _ = s.push_settings();
         user_feature(&s, f)
     }
 
     /// Check `release_pending_until` in the answer: some releases (the
     /// recovery phrase without its words) take effect only later.
     pub fn release_feature(&self, key: String) -> R<Feature> {
-        let s = self.s();
+        let mut s = self.s();
         let f = s.release_feature(&key)?;
+        let _ = s.push_settings();
         user_feature(&s, f)
     }
 

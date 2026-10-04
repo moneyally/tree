@@ -21,6 +21,8 @@ mod forward;
 pub mod key;
 pub mod messages;
 pub mod outbox;
+pub mod pin;
+pub mod search;
 #[cfg(test)]
 mod tests;
 

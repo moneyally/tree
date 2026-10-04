@@ -570,5 +570,6 @@ fn print_event(ev: &Event) {
         Event::ProfilePhoto { group, member, removed } => {
             println!("[{}] {} {} a profile photo", &hex(group)[..8], &member.to_hex()[..8], if *removed { "removed" } else { "set" })
         }
+        Event::SettingsSynced { keys } => println!("settings from another device of yours: {}", keys.join(", ")),
     }
 }

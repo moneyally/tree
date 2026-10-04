@@ -35,8 +35,9 @@ pub const LINK_KEY_PACKAGES: usize = core::MAX_KEY_PACKAGES - 1;
 pub const MAX_ENTRIES: usize = 4096;
 /// App-data keys copied to a new device: the account's contacts and
 /// settings, username, recovery state (a setting), notes chat and folders.
-const CARRIED_PREFIXES: &[&str] = &["contact/", "feature/"];
-const CARRIED_KEYS: &[&str] = &["profile/username", "note/self", "folders", "muted", OWN_MEMBERS];
+/// Also the settings-sync state and the self group's id (`self_sync.rs`).
+const CARRIED_PREFIXES: &[&str] = &["contact/", "feature/", "sync/"];
+const CARRIED_KEYS: &[&str] = &["profile/username", "note/self", "folders", "muted", "archived", "pinned", OWN_MEMBERS, crate::self_sync::SELF_GROUP];
 /// MLS member ids (hex) of this account's other devices, learned through
 /// device links: their group additions are this account's own.
 pub(crate) const OWN_MEMBERS: &str = "own/members";
@@ -82,6 +83,7 @@ fn protocol(e: impl std::fmt::Display) -> Error {
 }
 
 fn remove_profile(path: &str) {
+    let _ = tree_core::storage::pin::disable_pin(std::path::Path::new(path));
     for p in [path.to_string(), format!("{path}.hdr"), format!("{path}-wal"), format!("{path}-shm"), format!("{path}-journal")] {
         let _ = std::fs::remove_file(p);
     }
@@ -260,6 +262,7 @@ impl NewDevice {
         s.set_time(crate::LAST_RESORT_AT, crate::messages::now())?;
         let _ = self.step(json!({ "action": "done" }));
         s.ensure_key_packages()?;
+        s.sync_search_index()?;
         self.session = Some(s);
         self.status = LinkStatus::Linked { device_id, missed_groups: vec![] };
         Ok(())
@@ -394,6 +397,11 @@ impl Session {
     /// transcript hash, authorises it, seals the account data and adds the
     /// new device to the groups.
     fn complete_link(&mut self, v: &Value) -> Result<LinkStatus, Error> {
+        // The account's own settings group, which the new device joins like
+        // any other group; changes made here so far go to the devices
+        // already in it (`self_sync.rs`).
+        self.ensure_self_group()?;
+        self.push_settings()?;
         let l = self.link.as_ref().expect("open");
         let hash = l.hash.expect("set");
         let theirs = v["transcript_hash"].as_str().map(unb64).transpose()?.unwrap_or_default();
@@ -445,7 +453,7 @@ impl Session {
         Ok(self.client.app_data(OWN_MEMBERS)?.and_then(|v| serde_json::from_slice(&v).ok()).unwrap_or_default())
     }
 
-    fn add_own_member(&self, m: &MemberId) -> Result<(), Error> {
+    pub(crate) fn add_own_member(&self, m: &MemberId) -> Result<(), Error> {
         let mut own = self.own_members()?;
         if !own.contains(&m.to_hex()) {
             own.push(m.to_hex());
@@ -566,7 +574,7 @@ mod tests {
 
     #[test]
     fn only_account_data_is_carried() {
-        for k in ["contact/abc", "feature/user.typing", "profile/username", "note/self", "folders", "muted", "own/members"] {
+        for k in ["contact/abc", "feature/user.typing", "profile/username", "note/self", "folders", "muted", "own/members", "self/group", "sync/ts/muted"] {
             assert!(carried(k), "{k}");
         }
         for k in ["server/auth_key", "server/device_id", "roster/00", "pending/00", "keypackages/last_resort", "held/1", "invite/00", "gstatus/00"] {

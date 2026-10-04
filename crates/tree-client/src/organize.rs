@@ -514,8 +514,9 @@ impl Session {
     pub fn chat_list(&self) -> Result<Vec<ChatState>, Error> {
         let pins: Vec<Vec<u8>> = self.pinned_chats()?;
         let mut rest = Vec::new();
+        let own = self.self_group()?;
         for g in self.group_ids()? {
-            if !pins.contains(&g) {
+            if !pins.contains(&g) && own.as_ref() != Some(&g) {
                 rest.push(self.chat_state(&g)?);
             }
         }
@@ -565,7 +566,8 @@ impl Session {
     /// All folders the settings allow: user folders, then the built-in ones.
     pub fn folders(&mut self) -> Result<Vec<Folder>, Error> {
         let mut out = Vec::new();
-        let gids = self.group_ids()?;
+        let own = self.self_group()?;
+        let gids: Vec<Vec<u8>> = self.group_ids()?.into_iter().filter(|g| own.as_ref() != Some(g)).collect();
         let alive: BTreeSet<String> = gids.iter().map(hex::encode).collect();
         if self.is_applied("user.folders")? {
             for (name, chats) in self.json::<Folders>(K_FOLDERS)?.0 {

@@ -215,7 +215,7 @@ impl KeySource for Passphrase {
 }
 
 /// Argon2 work memory, wiped block by block when dropped.
-struct WorkMemory(Vec<Block>);
+pub(crate) struct WorkMemory(pub(crate) Vec<Block>);
 
 impl Drop for WorkMemory {
     fn drop(&mut self) {

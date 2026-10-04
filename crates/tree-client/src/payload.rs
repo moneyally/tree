@@ -89,6 +89,9 @@ pub enum Payload {
     /// The sender asks the admins to remove other devices of its own
     /// account (member ids, hex) that it unlinked (PROTOCOL.md 8.11).
     RemoveDevice { members: Vec<String> },
+    /// Settings of the sender's account, sent only to the account's own
+    /// self group (`self_sync.rs`; APP_PROTOCOL.md 6.4).
+    Settings { s: Vec<crate::self_sync::SyncEntry> },
     /// The sender read these messages (`user.read_receipts`).
     Read { ids: Vec<String> },
     /// The sender started or stopped typing (`user.typing`); not stored.

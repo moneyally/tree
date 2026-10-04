@@ -8,6 +8,7 @@
 
 pub mod api;
 pub mod chat_events;
+pub mod device;
 pub mod forward;
 pub mod franking;
 pub mod invites;
@@ -28,6 +29,7 @@ pub mod requests;
 pub mod rich;
 pub mod rich_media;
 pub mod schedule;
+pub mod self_sync;
 pub mod settings;
 pub mod stickers;
 pub mod storage_clean;
@@ -203,6 +205,9 @@ pub enum Event {
     /// A member set (or `removed`) its profile photo in this group;
     /// [`Session::member_photo`] fetches it.
     ProfilePhoto { group: Vec<u8>, member: MemberId, removed: bool },
+    /// Another device of this account changed these settings (app-data
+    /// keys, `self_sync.rs`): read the settings again.
+    SettingsSynced { keys: Vec<String> },
 }
 
 /// Recovery as the server has it (PROTOCOL.md 8.6).
@@ -366,6 +371,8 @@ pub struct Session {
     /// A device link this device scanned and has not finished.
     link: Option<link::ExistingLink>,
     media: media::MediaState,
+    /// The profile's database path (side files `.hdr`, `.pin` next to it).
+    path: String,
 }
 
 impl Session {
@@ -419,12 +426,13 @@ impl Session {
         client.set_app_data(K_AUTH_KEY, Some(&seed[..]))?;
         let mut s = Self::from_parts(client, api, creds, path);
         s.ensure_key_packages()?;
+        s.sync_search_index()?;
         Ok(s)
     }
 
     pub(crate) fn from_parts(client: Client<StoredProvider>, api: Api, creds: Creds, path: &str) -> Self {
         let media = media::MediaState::new(path);
-        Self { client, api, creds, groups: HashMap::new(), refresh_policy: Default::default(), link: None, media }
+        Self { client, api, creds, groups: HashMap::new(), refresh_policy: Default::default(), link: None, media, path: path.to_string() }
     }
 
     /// Opens an existing profile and resubmits any commit that was waiting
@@ -432,7 +440,14 @@ impl Session {
     /// items an interrupted attempt left in `sending` become `retry`
     /// (PROTOCOL.md 6.13); the next sync sends them.
     pub fn open(path: &str, passphrase: &str) -> Result<(Self, Vec<CommitOutcome>), Error> {
-        let client = Client::open(path, passphrase)?;
+        Self::open_with(path, &tree_core::Passphrase::new(passphrase)?)
+    }
+
+    /// [`Session::open`] with another way to rebuild the database key: a
+    /// PIN ([`Session::open_with_pin`]) or a key the platform unwrapped
+    /// (biometric unlock, `device.rs`).
+    pub fn open_with(path: &str, source: &dyn tree_core::KeySource) -> Result<(Self, Vec<CommitOutcome>), Error> {
+        let client = Client::open_with_key(path, source)?;
         client.outbox_recover(messages::now())?;
         let text = |k: &str| -> Result<String, Error> {
             let v = client.app_data(k)?.ok_or_else(|| Error::Protocol(format!("profile lacks {k}")))?;
@@ -444,6 +459,7 @@ impl Session {
         let creds = Creds { account_id: text(K_ACCOUNT)?, device_id: text(K_DEVICE)?, key: SigningKey::from_bytes(&seed) };
         let mut s = Self::from_parts(client, api, creds, path);
         s.load_transfers()?;
+        s.sync_search_index()?;
         let mut outcomes = Vec::new();
         for gid in s.client.group_ids()? {
             if s.group(&gid)?.pending_commit().is_some() {
@@ -652,6 +668,7 @@ impl Session {
         drop(self);
         // Blobs waiting for upload and partial downloads (ciphertext only).
         let _ = std::fs::remove_dir_all(media);
+        tree_core::storage::pin::disable_pin(std::path::Path::new(path))?;
         for p in [path.to_string(), format!("{path}.hdr"), format!("{path}-wal"), format!("{path}-shm"), format!("{path}-journal")] {
             match std::fs::remove_file(&p) {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(Error::Usage(format!("{p}: {e}"))),
@@ -1032,6 +1049,8 @@ impl Session {
         // Live locations due for an update, profile photos and per-chat
         // profiles the groups should have (`rich_media.rs`).
         self.rich_sync()?;
+        // Settings changed here go to the account's other devices (`self_sync.rs`).
+        self.push_settings()?;
         events.extend(self.send_pending()?);
         Ok(events)
     }
@@ -1210,6 +1229,11 @@ impl Session {
                 for (a, ids) in by_account {
                     self.pin(&a, &ids, false, events)?;
                 }
+                // In the self group every member is one of this account's devices.
+                if self.is_self_group(gid)? && members.contains(&from.to_hex()) {
+                    let named: Vec<String> = roster.keys().cloned().collect();
+                    self.note_own_devices(gid, &named)?;
+                }
                 // The roster's sender added us if we are still a request.
                 // Another device of this account (known from a confirmed
                 // device link, PROTOCOL.md 8.11) adds us to its own groups.
@@ -1260,6 +1284,7 @@ impl Session {
                     events.push(Event::Typing { group: gid.to_vec(), from, on });
                 }
             }
+            Some(Payload::Settings { s }) => self.on_settings(gid, from, s, events)?,
             Some(Payload::Franked { .. }) | None => events.push(Event::Dropped { reason: format!("unsupported message from {}", &from.to_hex()[..8]) }),
         }
         Ok(())

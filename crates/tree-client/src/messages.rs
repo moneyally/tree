@@ -298,13 +298,16 @@ impl Session {
         Ok(self.client.messages(gid, limit, None)?)
     }
 
-    /// Searches the history on this device (`user.search_index`).
+    /// Searches the history on this device through the full-text index
+    /// (`user.search_index`; words match by prefix, `device.rs`). Refused
+    /// while the setting is released: there is no index then.
     pub fn search(&self, needle: &str) -> Result<Vec<StoredMessage>, Error> {
         if !self.is_applied("user.search_index")? {
             return Err(Error::Feature("RELEASED".into()));
         }
         self.client.purge_expired_messages(now())?;
-        Ok(self.client.search_messages(needle, 100)?)
+        self.sync_search_index()?;
+        Ok(self.client.search_index(needle, 100)?)
     }
 
     /// Handles a message-type payload from member `from` (blocked senders

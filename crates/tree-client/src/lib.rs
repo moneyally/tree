@@ -233,6 +233,19 @@ fn merge_pins(old: Option<Contact>, account: &str, members: &[MemberId]) -> Opti
 }
 
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatSetting {
+    pub applied: bool,
+    pub option: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupSettings {
+    pub admins: Vec<MemberId>,
+    pub name: Option<String>,
+    pub features: BTreeMap<String, ChatSetting>,
+}
+
 /// One device: its encrypted profile, its server account and its groups.
 pub struct Session {
     client: Client<StoredProvider>,
@@ -714,53 +727,79 @@ impl Session {
     }
 
     /// The settings every member of the group agrees on: admins, name, chat features.
-    pub fn group_settings(&mut self, gid: &[u8]) -> Result<tree_core::group_settings::GroupSettings, Error> {
-        Ok(self.group(gid)?.settings())
+    pub fn group_settings(&mut self, gid: &[u8]) -> Result<GroupSettings, Error> {
+        let g = self.group(gid)?;
+        let mut registry = tree_core::features::Registry::standard();
+        let mut features = BTreeMap::new();
+        for status in registry.list(tree_core::features::Scope::Chat) {
+            let (applied, option) = if status.key == "chat.disappearing" {
+                let seconds = g.disappearing_seconds();
+                (seconds != 0, (seconds != 0).then(|| seconds.to_string()))
+            } else {
+                (status.state == tree_core::features::State::Applied, status.option)
+            };
+            features.insert(status.key.to_string(), ChatSetting { applied, option });
+        }
+        Ok(GroupSettings {
+            admins: g.admins(),
+            name: g.title(),
+            features,
+        })
     }
 
-    /// An admin changes the group settings (one commit through the server).
-    pub fn change_group_settings(&mut self, gid: &[u8], new: &tree_core::group_settings::GroupSettings) -> Result<CommitOutcome, Error> {
-        self.with(gid, |g, c| g.change_settings(c, new))?;
+    fn submit_group_commit(
+        &mut self,
+        gid: &[u8],
+        pending: PendingCommit,
+    ) -> Result<CommitOutcome, Error> {
         self.save_pending(gid, &PendingExtra::default())?;
-        let o = self.submit(gid)?;
-        if let CommitOutcome::Accepted { .. } = o {
+        let outcome = self.submit(gid)?;
+        if matches!(outcome, CommitOutcome::Accepted { .. }) {
             self.note_refreshed(gid)?;
         }
-        Ok(o)
+        drop(pending);
+        Ok(outcome)
     }
 
     pub fn make_admin(&mut self, gid: &[u8], member: MemberId, admin: bool) -> Result<CommitOutcome, Error> {
-        let mut s = self.group_settings(gid)?;
-        s.admins.retain(|a| *a != member);
-        if admin {
-            s.admins.push(member);
-        }
-        self.change_group_settings(gid, &s)
+        let pending = self.with(gid, |g, c| {
+            if admin {
+                g.add_admin(c, member)
+            } else {
+                g.remove_admin(c, member)
+            }
+        })?;
+        self.submit_group_commit(gid, pending)
     }
 
     pub fn set_group_name(&mut self, gid: &[u8], name: Option<String>) -> Result<CommitOutcome, Error> {
-        let mut s = self.group_settings(gid)?;
-        s.name = name;
-        self.change_group_settings(gid, &s)
+        let pending = self.with(gid, |g, c| g.set_title(c, name.as_deref()))?;
+        self.submit_group_commit(gid, pending)
     }
 
-    /// An admin applies or releases a chat-scope feature for the whole group
-    /// (checked against the registry: permanent locks, server locks).
-    pub fn set_chat_feature(&mut self, gid: &[u8], key: &str, apply: bool, option: Option<String>) -> Result<CommitOutcome, Error> {
-        use tree_core::features::{Caller, Plan, Registry, Scope};
-        let mut r = Registry::standard();
-        let admin = Caller { plan: Plan::Free, is_admin: true };
-        let status = if apply { r.apply(key, option, admin) } else { r.release(key, admin) }
-            .map_err(|e| Error::Feature(e.code().into()))?;
-        if !r.list(Scope::Chat).iter().any(|s| s.key == status.key) {
-            return Err(Error::Feature("NOT_A_CHAT_FEATURE".into()));
+    /// Set the currently supported E2E chat setting. Other chat keys remain
+    /// registry-visible but are not silently claimed as implemented.
+    pub fn set_chat_feature(
+        &mut self,
+        gid: &[u8],
+        key: &str,
+        apply: bool,
+        option: Option<String>,
+    ) -> Result<CommitOutcome, Error> {
+        if key != "chat.disappearing" {
+            return Err(Error::Feature("CHAT_FEATURE_NOT_IMPLEMENTED".into()));
         }
-        let mut s = self.group_settings(gid)?;
-        s.features.insert(
-            key.to_string(),
-            tree_core::group_settings::ChatSetting { applied: status.state == tree_core::features::State::Applied, option: status.option },
-        );
-        self.change_group_settings(gid, &s)
+        let seconds = if apply {
+            option
+                .as_deref()
+                .ok_or_else(|| Error::Feature("DISAPPEARING_OPTION_REQUIRED".into()))?
+                .parse::<u32>()
+                .map_err(|_| Error::Feature("INVALID_DISAPPEARING_OPTION".into()))?
+        } else {
+            0
+        };
+        let pending = self.with(gid, |g, c| g.set_disappearing_seconds(c, seconds))?;
+        self.submit_group_commit(gid, pending)
     }
 
 

@@ -861,8 +861,8 @@ impl Group {
         // a seal mismatch is eligible for the untrusted epoch peek below.
         let (epoch, body) = match self.open_envelope(me, bytes) {
             Ok(opened) => opened,
-            Err(ref err @ TreeError::Rejected(ref reason))
-                if reason == "envelope seal mismatch" =>
+            Err(err)
+                if matches!(&err, TreeError::Rejected(reason) if reason == "envelope seal mismatch") =>
             {
                 if bytes.len() == 1 + Self::TAG_LEN {
                     return Err(err);

@@ -232,15 +232,18 @@ impl Client<StoredProvider> {
     /// Stores application-owned state inside the encrypted SQLCipher metadata table.
     /// Keys are namespaced so application data cannot overwrite Tree identity records.
     pub fn set_app_data(&self, key: &str, value: Option<&[u8]>) -> Result<(), TreeError> {
-        if key.is_empty() || key.len() > 256 || key.chars().any(|c| !(c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-'))) {
+        if key.is_empty()
+            || key.len() > 256
+            || key
+                .chars()
+                .any(|c| !(c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-')))
+        {
             return Err(TreeError::Storage("invalid app-data key".into()));
         }
         let key = format!("app/{key}");
-        self.provider.atomically(|| {
-            match value {
-                Some(value) => self.provider.put_meta(&key, value),
-                None => self.provider.delete_meta(&key),
-            }
+        self.provider.atomically(|| match value {
+            Some(value) => self.provider.put_meta(&key, value),
+            None => self.provider.delete_meta(&key),
         })
     }
 
@@ -252,7 +255,11 @@ impl Client<StoredProvider> {
     }
 
     pub fn app_data_keys(&self, prefix: &str) -> Result<Vec<String>, TreeError> {
-        if prefix.len() > 256 || prefix.chars().any(|c| !(c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-'))) {
+        if prefix.len() > 256
+            || prefix
+                .chars()
+                .any(|c| !(c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-')))
+        {
             return Err(TreeError::Storage("invalid app-data prefix".into()));
         }
         let prefix = format!("app/{prefix}");

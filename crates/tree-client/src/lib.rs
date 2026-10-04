@@ -15,7 +15,10 @@ use thiserror::Error;
 
 use tree_core::{
     group::{Group, Incoming, MemberId, PendingCommit},
-    media::{decrypt_preview, encrypt_manifest, EncryptedChunk, MediaEnvelope, MediaKey, MediaLifecycle, MediaManifest, MediaViewEvent, SecureMediaBytes, PreviewMode, ViewPolicy},
+    media::{
+        decrypt_preview, encrypt_manifest, EncryptedChunk, MediaEnvelope, MediaKey, MediaLifecycle,
+        MediaManifest, MediaViewEvent, PreviewMode, SecureMediaBytes, ViewPolicy,
+    },
     storage::StoredProvider,
     Client, TreeError,
 };

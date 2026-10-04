@@ -122,6 +122,11 @@ fn check_photo(bytes: &[u8], mime: &str) -> Result<(), Error> {
     Ok(())
 }
 
+/// Where a received photo's bytes are cached: by blob id and content hash.
+fn photo_cache_key(b: &crate::payload::BlobRef) -> String {
+    format!("photocache/{}/{}", b.id, b.pt_sha256)
+}
+
 impl Session {
     fn new_photo(&self, bytes: &[u8], mime: &str) -> Result<OwnPhoto, Error> {
         check_photo(bytes, mime)?;
@@ -157,9 +162,14 @@ impl Session {
             return self.profile_photo();
         }
         let Some(r) = self.app_get::<Received>(&format!("photo/{}/{}", g(gid), member.to_hex()))? else { return Ok(None) };
-        let cache = format!("photocache/{}", r.blob.id);
+        // Cached by blob id and content hash, and checked on read (F-029):
+        // another reference with the same id never gets these bytes.
+        let cache = photo_cache_key(&r.blob);
         if let Some(b) = self.client.app_data(&cache)? {
-            return Ok(Some(Photo { bytes: b, mime: r.mime }));
+            if crate::payload::sha256_hex(&b) == r.blob.pt_sha256 {
+                return Ok(Some(Photo { bytes: b, mime: r.mime }));
+            }
+            self.client.set_app_data(&cache, None)?;
         }
         let b = self.download_blob(&r.blob, MAX_PHOTO_BYTES)?;
         self.client.set_app_data(&cache, Some(&b))?;
@@ -335,7 +345,8 @@ impl Session {
         let key = format!("photo/{}/{}", g(gid), from.to_hex());
         if let Some(old) = self.app_get::<Received>(&key)? {
             if photo.as_ref().is_none_or(|p| p.id != old.blob.id) {
-                self.client.set_app_data(&format!("photocache/{}", old.blob.id), None)?;
+                self.client.set_app_data(&photo_cache_key(&old.blob), None)?;
+                self.client.set_app_data(&format!("photocache/{}", old.blob.id), None)?; // the old form
             }
         }
         match photo {

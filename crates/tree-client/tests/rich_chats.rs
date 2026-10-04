@@ -431,6 +431,32 @@ fn storage_clean_deletes_old_media_only_while_applied() {
     assert!(bob.clean_storage().is_err());
 }
 
+/// F-029: the media cache is keyed by attachment id and content hash and
+/// checked on read: a reference with the same id but other content never
+/// gets the cached file, and a changed file on disk is fetched again.
+#[test]
+fn the_media_cache_is_bound_to_the_content() {
+    let env = Env::new("cachebind");
+    let mut alice = env.device("alice");
+    let mut bob = env.device("bob");
+    bob.confirm_contact(alice.account_id()).unwrap();
+    let g = alice.create_group().unwrap();
+    alice.invite(&g, bob.account_id()).unwrap();
+    bob.sync(0).unwrap();
+    alice.send_file(&g, b"the real photo", "photo.jpg", "image/jpeg", false).unwrap();
+    let ev = bob.sync(0).unwrap();
+    let f = ev.iter().find_map(|e| match e { Event::File { file, .. } => Some(file.clone()), _ => None }).unwrap();
+    let dir = env.dir.join("bob-media").display().to_string();
+    let path = bob.download_to_cache(&f, &dir).unwrap();
+    // Same id, other content claimed: not the cached file.
+    let other = tree_client::FileInfo { pt_sha256: "00".repeat(32), ..f.clone() };
+    assert!(bob.download_to_cache(&other, &dir).is_err(), "the cached file is not handed out for another hash");
+    // Changed on disk: fetched again and checked.
+    std::fs::write(&path, b"swapped on disk").unwrap();
+    let again = bob.download_to_cache(&f, &dir).unwrap();
+    assert_eq!(std::fs::read(&again).unwrap(), b"the real photo");
+}
+
 #[test]
 fn new_keys_are_in_the_registry() {
     use tree_core::features::{option_choices, Registry, Scope, State};

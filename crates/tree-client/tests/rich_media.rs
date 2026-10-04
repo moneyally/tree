@@ -51,6 +51,31 @@ fn png(tag: u8) -> Vec<u8> {
     v
 }
 
+/// F-029: a member who names a pack with a wrong key cannot break it for
+/// others: a message never replaces a reference that works, and of several
+/// references for one pack the one that opens it is used.
+#[test]
+fn a_wrong_pack_reference_does_not_break_the_pack() {
+    let env = Env::new("stickerref");
+    let (mut alice, mut bob, carol, g) = chat(&env, true);
+    let mut mallory = carol.unwrap();
+    let items = vec![NewSticker { name: "a".into(), emoji: "😀".into(), mime: "image/png".into(), bytes: png(1) }];
+    let pack = alice.create_sticker_pack("Pack 29", &items, false).unwrap();
+    let genuine = tree_client::stickers::parse_pack_link(&pack.link).unwrap();
+    let mut bogus = genuine.clone();
+    bogus.key = "A".repeat(43);
+    alice.send_sticker(&g, &pack.id, 0).unwrap();
+    mallory.sync(0).unwrap();
+    // mallory names the same pack id with a wrong key, after alice's sticker.
+    mallory.send_unchecked(&g, &Payload::Sticker { id: "bb01".into(), pack: bogus.clone(), index: 0, emoji: "😀".into() }).unwrap();
+    bob.sync(0).unwrap();
+    assert_eq!(bob.sticker_image(&pack.id, 0).unwrap(), png(1), "the reference that opens the pack is used");
+    // Once a reference worked, later wrong ones are not even kept.
+    mallory.send_unchecked(&g, &Payload::Sticker { id: "bb02".into(), pack: bogus, index: 0, emoji: "😀".into() }).unwrap();
+    bob.sync(0).unwrap();
+    assert_eq!(bob.sticker_image(&pack.id, 0).unwrap(), png(1));
+}
+
 /// Packs are opaque blobs on the server, shared by a link carrying the
 /// manifest's key; stickers and custom emoji reactions arrive and open
 /// with their keys; `chat.stickers` released stops them on both sides.

@@ -536,3 +536,22 @@ Issues found by testing Tree's own design. Each one has a regression test.
   still forward it to the removed device.
 - **Test:** `a_waiting_item_never_goes_to_a_removed_member` (fails before:
   the server stored a delivery for the removed device).
+
+## F-029: caches keyed by id only; a member could break another pack (fixed)
+
+- **Found:** 2026-10-04, security review of wave 2.
+- **What:** profile photos (`photocache/<id>`), sticker manifests and the
+  media cache (`media/<id>`) were keyed by blob or attachment id only, so a
+  later reference with the same id but another key or hash got the cached
+  bytes. The pack reference `stickerref/<id>` was overwritten by any sticker
+  message, so a member who named a pack with a wrong key broke it for the
+  receiver. A reference with another file-name extension left an orphaned
+  plaintext file the clean-up never deleted.
+- **Severity:** low.
+- **Fix:** caches are keyed by id and content hash and checked against the
+  hash on read (photos, manifests, sticker images, downloaded media; the
+  cached file name carries the hash too). A sticker message only adds a
+  candidate reference while none has worked; the one that opens the pack
+  becomes the pack's reference and is never replaced by a message.
+- **Test:** `a_wrong_pack_reference_does_not_break_the_pack`,
+  `the_media_cache_is_bound_to_the_content` (both fail before).

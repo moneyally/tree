@@ -277,7 +277,7 @@ padded sizes, as for any message).
 | Forwarding (`chat.forwarding`) | `forward(from, id, to)` sends a text, or a file reference (the same encrypted attachment, not view-once), as a new message with `fwd`, sent by the forwarding member; the original sender is not named. While the source chat released `chat.forwarding` the client refuses, and the apps hide forward, save and copy for its messages (`forwarding_allowed`). This binds honest apps only: a modified app, a screenshot or a camera cannot be prevented, and the destination cannot tell where a forwarded message came from |
 | Reminders | `remind_me(group, id, at)`, `reminders`, `cancel_reminder`, `due_reminders` (each due reminder once; the app shows a local notification). Device only (`remind/<id>`); the message text is read when the reminder fires, never copied |
 | Chat export (`chat.export`) | `export_chat` (plain text and JSON), `export_chat_to(group, prefix)` writes `<prefix>.txt` and `<prefix>.json`; any member may export while applied, refused while released. The files are not encrypted; franking records, keys and file contents are not exported. The setting is changed by the chat's admins, as every chat key (PROTOCOL.md 6.11) |
-| Storage clean-up (`user.storage_clean`) | `download_to_cache(file, dir)` opens a file into the app's media folder and records it (`media/<attachment id>`); while the setting is applied (option: duration 1 s to 365 days, default `90d`, the apps offer 30 days, 90 days, a year), every sync (at most once an hour) and `clean_storage` delete cached files downloaded longer ago, and their records. Message texts and file references stay (a file can be downloaded again while the server keeps the blob, 30 days); files the user saved elsewhere are never touched. Released (default): nothing is deleted |
+| Storage clean-up (`user.storage_clean`) | `download_to_cache(file, dir)` opens a file into the app's media folder and records it (`media/<attachment id>/<sha256>`, checked against the hash before it is handed out again, F-029); while the setting is applied (option: duration 1 s to 365 days, default `90d`, the apps offer 30 days, 90 days, a year), every sync (at most once an hour) and `clean_storage` delete cached files downloaded longer ago, and their records. Message texts and file references stay (a file can be downloaded again while the server keeps the blob, 30 days); files the user saved elsewhere are never touched. Released (default): nothing is deleted |
 
 ## 7. What the client stores
 
@@ -326,14 +326,14 @@ both are deleted when done and with the account.
 | `poll/<group hex>/<poll id>` | the votes counted on this device (member id -> option indexes) and whether the creator closed it; the poll itself is a history message of kind `poll` |
 | `sched/<id>` | a scheduled message: group, text, time, silent (until sent) |
 | `remind/<id>` | a reminder: group, message id, time |
-| `media/<attachment id>` | a downloaded file in the app's media folder: path, when, size (`user.storage_clean`) |
+| `media/<attachment id>/<sha256>` | a downloaded file in the app's media folder: path, content hash, when, size (`user.storage_clean`) |
 | `media_clean/last` | when the storage clean-up last ran |
-| `stickerpack/<manifest id>`, `stickermanifest/<id>`, `stickerref/<id>`, `stickerimg/<id>/<index>` | installed packs; manifests seen; pack references learned from messages; cached sticker images (8.1) |
+| `stickerpack/<manifest id>`, `stickermanifest/<id>/<sha256>`, `stickerref/<id>`, `stickercand/<id>`, `stickerimg/<id>/<index>` | installed packs; manifests seen (raw, checked against the hash on read); the reference that opened the pack (never replaced by a message); references named by messages while none has worked (at most 8); cached sticker images (checked against the item's hash) (8.1, F-029) |
 | `liveout/<group hex>/<id>` | a live location this device shares: end, last update, coordinates waiting for the 30 s interval (8.3) |
 | `location/min_interval` | only in tests: a shorter live-update interval |
 | `profile/photo` | the own profile photo: blob reference, type, upload time, the image (to upload it again) (8.6) |
 | `photoshared/<group hex>` | what the group was last sent: photo attachment id ("" = removed), per-chat or not, the members then |
-| `photo/<group hex>/<member hex>`, `photocache/<attachment id>` | a member's photo reference in the group; the fetched photo |
+| `photo/<group hex>/<member hex>`, `photocache/<attachment id>/<sha256>` | a member's photo reference in the group; the fetched photo (checked against the hash on read) |
 | `chatprofile/<group hex>` | the own name and photo for this chat only (8.7) |
 | table `tree_messages` | message history with franking records (SCHEMA.md 1.2); also `left` / `removed` lines about members who went (6.1); kinds `sticker`, `location`, `event` keep their state in `data` (8) |
 | table `tree_outbox` | messages being sent: sealed bytes, recipients, idempotency key, state (SCHEMA.md 1.2) |

@@ -188,6 +188,12 @@ pub struct PollDef {
     pub close_in: Option<i64>,
 }
 
+/// Lowercase hex SHA-256, as in `pt_sha256` fields.
+pub(crate) fn sha256_hex(b: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(b))
+}
+
 /// An encrypted blob on the server and how to open it (PROTOCOL.md 6.12):
 /// the same fields as a file reference, without name and type. Used for
 /// sticker images and manifests and for profile photos.

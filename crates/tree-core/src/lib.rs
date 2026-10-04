@@ -22,6 +22,7 @@ mod group_state;
 pub mod identity;
 pub mod message;
 pub mod message_state;
+pub mod media;
 pub mod provider;
 pub mod recovery;
 pub mod storage;

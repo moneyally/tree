@@ -2,7 +2,8 @@ use axum::http::{HeaderMap, Method, StatusCode};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use tree_core::media::{
-    decrypt_manifest, encrypt_manifest, EncryptedChunk, MediaEnvelope, MediaKey, MediaManifest, PreviewMode, ViewPolicy,
+    decrypt_manifest, encrypt_manifest, EncryptedChunk, MediaEnvelope, MediaKey, MediaManifest,
+    PreviewMode, ViewPolicy,
 };
 use tree_core::MessageId;
 
@@ -51,7 +52,10 @@ async fn encrypted_media_can_resume_finalize_and_download_without_plaintext() {
         "chunk_size": manifest.chunk_size,
         "chunk_count": manifest.chunk_count,
     });
-    let (status, value) = ts.api.call(&dev, Method::POST, "/v1/media", Some(body)).await;
+    let (status, value) = ts
+        .api
+        .call(&dev, Method::POST, "/v1/media", Some(body))
+        .await;
     assert_eq!(status, StatusCode::OK, "{value}");
     let media_id = value["media_id"].as_str().unwrap().to_string();
     let capability = value["capability"].as_str().unwrap().to_string();
@@ -111,7 +115,10 @@ async fn encrypted_media_can_resume_finalize_and_download_without_plaintext() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(value["ciphertext"].as_str().unwrap(), b64(&chunk.ciphertext));
+    assert_eq!(
+        value["ciphertext"].as_str().unwrap(),
+        b64(&chunk.ciphertext)
+    );
 
     let wrong = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
     let (status, _) = signed_with_media_cap(
@@ -142,10 +149,16 @@ async fn media_envelope_keeps_key_off_server_and_binds_it_to_message_epoch() {
         PreviewMode::Blurred,
     )
     .unwrap();
-    let envelope = MediaEnvelope::new("media123".into(), [8; 32], manifest.clone(), key.clone(), None)
-        .unwrap()
-        .encode()
-        .unwrap();
+    let envelope = MediaEnvelope::new(
+        "media123".into(),
+        [8; 32],
+        manifest.clone(),
+        key.clone(),
+        None,
+    )
+    .unwrap()
+    .encode()
+    .unwrap();
     let decoded = MediaEnvelope::decode(&envelope).unwrap();
     assert_eq!(decoded.manifest.epoch, 12);
     assert_eq!(decoded.file_key.as_bytes(), key.as_bytes());

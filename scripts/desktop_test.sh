@@ -18,7 +18,12 @@ TOKEN_SHA=$(printf '%s' "$TOKEN" | sha256sum | cut -d' ' -f1)
 ADMIN_TOKEN_SHA256="$TOKEN_SHA" DATABASE_URL="sqlite://$DIR/server.db" BIND_ADDR="127.0.0.1:$PORT" POW_BITS=8 RUST_LOG=warn SIGNUP_BURST=50 \
   ATTACHMENT_DIR="$DIR/att" "$BIN/tree-server" &
 SERVER=$!
-sleep 1
+# Wait for the server (up to 30 s; a busy machine starts it slowly).
+i=0
+until curl -s -o /dev/null "http://127.0.0.1:$PORT/"; do
+  i=$((i + 1)); [ "$i" -lt 60 ] || { echo "server did not start"; exit 1; }
+  sleep 0.5
+done
 curl -fsS -X POST -H "X-Tree-Admin: $TOKEN" "http://127.0.0.1:$PORT/v1/features/server.new_account_limits/release" >/dev/null
 # The bot platform starts released on a new server; the bot tests need it.
 curl -fsS -X POST -H "X-Tree-Admin: $TOKEN" "http://127.0.0.1:$PORT/v1/features/server.bot_platform/apply" >/dev/null

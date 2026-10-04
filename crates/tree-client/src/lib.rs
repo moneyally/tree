@@ -15,7 +15,7 @@ use thiserror::Error;
 
 use tree_core::{
     group::{Group, Incoming, MemberId, PendingCommit},
-    media::{decrypt_preview, EncryptedChunk, MediaEnvelope, MediaKey, MediaLifecycle, MediaManifest, MediaViewState, PreviewMode, ViewPolicy},
+    media::{decrypt_preview, EncryptedChunk, MediaEnvelope, MediaKey, MediaLifecycle, MediaManifest, PreviewMode, ViewPolicy},
     storage::StoredProvider,
     Client, TreeError,
 };
@@ -312,7 +312,7 @@ impl Session {
             )
         })?;
         let reply = self.api.send(&self.creds, &recipients, &body)?;
-        let id = reply.body["id"]
+        let _ = reply.body["id"]
             .as_str()
             .or_else(|| reply.body["message_id"].as_str())
             .ok_or_else(|| Error::Usage("server did not return a media message id".into()))?;

@@ -98,7 +98,7 @@ async fn serve(state: AppState, device_id: String, mut socket: WebSocket) {
                     Some(Ok(Message::Text(text))) => {
                         match serde_json::from_str::<ClientFrame>(&text) {
                             Ok(ClientFrame::Ack { ids }) => {
-                                match messages::ack_ids(&state, &device_id, &ids).await {
+                                match messages::ack_ids(&state, &device_id, &ids, None).await {
                                     Ok(_) => {
                                         for id in ids {
                                             sent.remove(&id);

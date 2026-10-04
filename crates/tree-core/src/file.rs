@@ -322,11 +322,7 @@ impl ShareReader<'_> {
     }
 
     fn string_u16(&mut self) -> Result<String, TreeError> {
-        let len = u16::from_be_bytes(
-            self.take(2)?
-                .try_into()
-                .expect("length checked"),
-        ) as usize;
+        let len = u16::from_be_bytes(self.take(2)?.try_into().expect("length checked")) as usize;
         String::from_utf8(self.take(len)?.to_vec())
             .map_err(|_| TreeError::Malformed("file share string is not UTF-8".into()))
     }

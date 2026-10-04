@@ -833,6 +833,27 @@ impl Group {
 
     // ----- receiving ---------------------------------------------------------
 
+    /// Extracts the MLS group id from a Tree envelope without authenticating it.
+    /// This is routing metadata only; callers must still pass the bytes through
+    /// Group::receive before treating them as trusted.
+    pub fn peek_group_id(bytes: &[u8]) -> Result<Vec<u8>, TreeError> {
+        if bytes.len() < 1 + Self::TAG_LEN {
+            return Err(TreeError::Malformed("bad envelope".into()));
+        }
+        let mut mls = &bytes[1 + Self::TAG_LEN..];
+        let input = MlsMessageIn::tls_deserialize(&mut mls)
+            .map_err(|e| TreeError::Malformed(format!("{e:?}")))?;
+        let protocol = input
+            .try_into_protocol_message()
+            .map_err(|_| TreeError::Malformed("not a group message".into()))?;
+        if protocol.wire_format() != WireFormat::PrivateMessage {
+            return Err(TreeError::Rejected(
+                "only private messages are accepted".into(),
+            ));
+        }
+        Ok(protocol.group_id().as_slice().to_vec())
+    }
+
     /// Reprocesses future-epoch envelopes after their epoch becomes available.
     ///
     /// Envelopes that are still ahead of the current epoch remain queued.

@@ -91,7 +91,9 @@ mod tests {
         assert_eq!(n, safety_number(&b, &a));
         assert_eq!(n, safety_number(&[id(2), id(1), id(1)], &b));
         assert_eq!(n.len(), 60 + 11);
-        assert!(n.split(' ').all(|g| g.len() == 5 && g.bytes().all(|c| c.is_ascii_digit())));
+        assert!(n
+            .split(' ')
+            .all(|g| g.len() == 5 && g.bytes().all(|c| c.is_ascii_digit())));
     }
 
     #[test]

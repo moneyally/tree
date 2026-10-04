@@ -67,8 +67,11 @@ pub struct Point {
 
 impl Point {
     pub fn validate(self) -> Result<(), TreeError> {
-        if !self.x.is_finite() || !self.y.is_finite()
-            || !(0.0..=1.0).contains(&self.x) || !(0.0..=1.0).contains(&self.y) {
+        if !self.x.is_finite()
+            || !self.y.is_finite()
+            || !(0.0..=1.0).contains(&self.x)
+            || !(0.0..=1.0).contains(&self.y)
+        {
             return Err(TreeError::Usage("editor point is not finite".into()));
         }
         Ok(())
@@ -93,10 +96,14 @@ pub struct CropRect {
 
 impl CropRect {
     pub fn validate(self) -> Result<(), TreeError> {
-        if !self.x.is_finite() || !self.y.is_finite()
-            || !self.width.is_finite() || !self.height.is_finite()
-            || self.width <= 0.0 || self.height <= 0.0
-            || self.x < 0.0 || self.y < 0.0
+        if !self.x.is_finite()
+            || !self.y.is_finite()
+            || !self.width.is_finite()
+            || !self.height.is_finite()
+            || self.width <= 0.0
+            || self.height <= 0.0
+            || self.x < 0.0
+            || self.y < 0.0
         {
             return Err(TreeError::Usage("invalid editor crop rectangle".into()));
         }
@@ -152,7 +159,9 @@ impl ImageAdjustments {
             || !(-1.0..=1.0).contains(&self.shadows)
             || !(0.0..=2.0).contains(&self.sharpness)
         {
-            return Err(TreeError::Usage("image adjustment is outside allowed range".into()));
+            return Err(TreeError::Usage(
+                "image adjustment is outside allowed range".into(),
+            ));
         }
         Ok(())
     }
@@ -175,11 +184,15 @@ pub struct TextLayer {
 
 impl TextLayer {
     pub fn validate(&self) -> Result<(), TreeError> {
-        if self.text.is_empty() || self.text.len() > 4096
-            || self.scale <= 0.0 || !self.scale.is_finite()
+        if self.text.is_empty()
+            || self.text.len() > 4096
+            || self.scale <= 0.0
+            || !self.scale.is_finite()
             || !self.rotation_deg.is_finite()
-            || self.font_size <= 0.0 || !self.font_size.is_finite()
-            || !self.opacity.is_finite() || !(0.0..=1.0).contains(&self.opacity)
+            || self.font_size <= 0.0
+            || !self.font_size.is_finite()
+            || !self.opacity.is_finite()
+            || !(0.0..=1.0).contains(&self.opacity)
         {
             return Err(TreeError::Usage("invalid editor text layer".into()));
         }
@@ -199,9 +212,12 @@ pub struct DrawStroke {
 impl DrawStroke {
     pub fn validate(&self) -> Result<(), TreeError> {
         self.brush.validate()?;
-        if self.points.is_empty() || self.points.len() > 4096
-            || self.width <= 0.0 || !self.width.is_finite()
-            || !self.opacity.is_finite() || !(0.0..=1.0).contains(&self.opacity)
+        if self.points.is_empty()
+            || self.points.len() > 4096
+            || self.width <= 0.0
+            || !self.width.is_finite()
+            || !self.opacity.is_finite()
+            || !(0.0..=1.0).contains(&self.opacity)
         {
             return Err(TreeError::Usage("invalid editor drawing stroke".into()));
         }
@@ -241,7 +257,9 @@ pub struct MediaEditRecipe {
 impl MediaEditRecipe {
     pub fn identity(width: u32, height: u32) -> Result<Self, TreeError> {
         if width == 0 || height == 0 {
-            return Err(TreeError::Usage("editor source dimensions are invalid".into()));
+            return Err(TreeError::Usage(
+                "editor source dimensions are invalid".into(),
+            ));
         }
         Ok(Self {
             source_width: width,
@@ -258,7 +276,8 @@ impl MediaEditRecipe {
     }
 
     pub fn validate(&self) -> Result<(), TreeError> {
-        if self.source_width == 0 || self.source_height == 0
+        if self.source_width == 0
+            || self.source_height == 0
             || self.filters.len() > MAX_FILTERS
             || self.text_layers.len() > MAX_TEXT_LAYERS
             || self.strokes.len() > MAX_DRAW_STROKES
@@ -284,7 +303,9 @@ impl MediaEditRecipe {
     }
 
     pub fn output_dimensions(&self) -> (u32, u32) {
-        let (w, h) = self.crop.map(|c| (c.width.round() as u32, c.height.round() as u32))
+        let (w, h) = self
+            .crop
+            .map(|c| (c.width.round() as u32, c.height.round() as u32))
             .unwrap_or((self.source_width, self.source_height));
         match self.rotation {
             Rotation::Deg90 | Rotation::Deg270 => (h, w),
@@ -322,7 +343,12 @@ mod tests {
     fn editor_supports_rotation_crop_adjustments_text_and_drawing() {
         let mut recipe = MediaEditRecipe::identity(1920, 1080).unwrap();
         recipe.rotation = Rotation::Deg90;
-        recipe.crop = Some(CropRect { x: 100.0, y: 50.0, width: 800.0, height: 600.0 });
+        recipe.crop = Some(CropRect {
+            x: 100.0,
+            y: 50.0,
+            width: 800.0,
+            height: 600.0,
+        });
         recipe.adjustments.exposure = 1.25;
         recipe.adjustments.saturation = 1.4;
         recipe.text_layers.push(TextLayer {

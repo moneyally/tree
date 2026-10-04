@@ -851,7 +851,7 @@ impl Group {
             if *epoch < self.epoch() {
                 return Err(TreeError::Rejected("past epoch".into()));
             }
-            return Ok(Incoming::OwnEcho);
+            return Ok(Incoming::NoOp);
         }
         let now = unix_now();
 

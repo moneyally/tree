@@ -120,10 +120,7 @@ impl MessageEvent {
         let mut material = Vec::with_capacity(128);
         material.extend_from_slice(b"TreeMutation/v1");
         material.extend_from_slice(&self.seq().to_be_bytes());
-        let target = self
-            .target()
-            .map(|id| *id.as_bytes())
-            .unwrap_or([0u8; 16]);
+        let target = self.target().map(|id| *id.as_bytes()).unwrap_or([0u8; 16]);
         material.extend_from_slice(&target);
         material.push(self.kind() as u8);
         match self {

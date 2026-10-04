@@ -106,6 +106,7 @@ pub struct MediaManifest {
 }
 
 impl MediaManifest {
+    #[allow(clippy::too_many_arguments)]
     pub fn generate(
         message_id: MessageId,
         group_id: &[u8],
@@ -276,7 +277,7 @@ impl MediaManifest {
         let manifest = self.commitment()?;
         let mut h = Sha256::new();
         h.update(b"tree-media-key-commit-v1");
-        h.update(&manifest);
+        h.update(manifest);
         h.update(key.as_bytes());
         Ok(h.finalize().into())
     }

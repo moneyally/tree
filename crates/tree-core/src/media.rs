@@ -346,8 +346,7 @@ impl EncryptedChunk {
 
 pub fn encrypt_manifest(key: &MediaKey, manifest: &MediaManifest) -> Result<Vec<u8>, TreeError> {
     let manifest_bytes = manifest.encode()?;
-    let commitment = manifest.commitment()?;
-    let manifest_key = derive_manifest_key(key, &commitment)?;
+    let manifest_key = derive_manifest_key_raw(key)?;
     let mut nonce = [0u8; NONCE_LEN];
     getrandom::fill(&mut nonce)
         .map_err(|e| TreeError::FileCrypto(format!("OS randomness unavailable: {e}")))?;
@@ -358,7 +357,7 @@ pub fn encrypt_manifest(key: &MediaKey, manifest: &MediaManifest) -> Result<Vec<
             Nonce::from_slice(&nonce),
             Payload {
                 msg: &manifest_bytes,
-                aad: &commitment,
+                aad: b"tree-media-manifest-v1",
             },
         )
         .map_err(|_| TreeError::FileCrypto("manifest encryption failed".into()))?;
@@ -376,28 +375,16 @@ pub fn decrypt_manifest(key: &MediaKey, manifest_blob: &[u8]) -> Result<MediaMan
         .try_into()
         .expect("length checked");
     let ciphertext = &manifest_blob[NONCE_LEN..];
-    let mut last_error = None;
-    for candidate in [ciphertext] {
-        let _ = candidate;
-        // The commitment is authenticated inside the plaintext, so decrypt
-        // first with a key derived from the file key and a stable domain key.
-        let manifest_key = derive_manifest_key_raw(key)?;
-        let cipher = Aes256Gcm::new_from_slice(manifest_key.as_bytes())
-            .map_err(|_| TreeError::FileCrypto("invalid manifest key".into()))?;
-        match cipher.decrypt(Nonce::from_slice(&nonce), ciphertext) {
-            Ok(plain) => return MediaManifest::decode(&plain),
-            Err(_) => last_error = Some(TreeError::FileCrypto("manifest authentication failed".into())),
-        }
-    }
-    Err(last_error.unwrap_or_else(|| TreeError::FileCrypto("manifest authentication failed".into())))
-}
-
-fn derive_manifest_key(key: &MediaKey, commitment: &[u8; 32]) -> Result<MediaKey, TreeError> {
-    let hk = Hkdf::<Sha256>::new(Some(b"tree-media-manifest-salt-v1"), key.as_bytes());
-    let mut out = [0u8; KEY_LEN];
-    hk.expand(commitment, &mut out)
-        .map_err(|_| TreeError::FileCrypto("manifest key derivation failed".into()))?;
-    MediaKey::from_bytes(&out)
+    let manifest_key = derive_manifest_key_raw(key)?;
+    let cipher = Aes256Gcm::new_from_slice(manifest_key.as_bytes())
+        .map_err(|_| TreeError::FileCrypto("invalid manifest key".into()))?;
+    let plain = cipher
+        .decrypt(
+            Nonce::from_slice(&nonce),
+            Payload { msg: ciphertext, aad: b"tree-media-manifest-v1" },
+        )
+        .map_err(|_| TreeError::FileCrypto("manifest authentication failed".into()))?;
+    MediaManifest::decode(&plain)
 }
 
 fn derive_manifest_key_raw(key: &MediaKey) -> Result<MediaKey, TreeError> {

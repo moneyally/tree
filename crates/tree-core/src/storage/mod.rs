@@ -17,8 +17,8 @@
 //!   so a crash leaves either the old or the new state, never half of each.
 
 mod forward;
-pub mod messages;
 pub mod key;
+pub mod messages;
 #[cfg(test)]
 mod tests;
 

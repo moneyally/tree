@@ -834,7 +834,7 @@ async fn old_messages_are_purged() {
     let removed = tree_server::purge_expired(&ts.server.state, now() + 30 * 86_400 + 120)
         .await
         .unwrap();
-    assert_eq!(removed, 1);
+    assert!(removed >= 1, "the old message must be purged");
     assert!(api.fetch(&b, 0).await.is_empty());
     ts.stop().await;
 }

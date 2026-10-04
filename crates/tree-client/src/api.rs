@@ -35,6 +35,8 @@ pub struct MediaChunk {
 }
 
 #[derive(Debug)]
+pub type InboxPage = (Vec<(String, Vec<u8>)>, i64);
+
 pub struct Reply {
     pub status: StatusCode,
     pub body: Value,
@@ -176,7 +178,7 @@ impl Api {
         &self,
         c: &Creds,
         wait: u64,
-    ) -> Result<(Vec<(String, Vec<u8>)>, i64), ClientError> {
+    ) -> Result<InboxPage, ClientError> {
         let path = if wait == 0 {
             "/v1/messages".to_string()
         } else {

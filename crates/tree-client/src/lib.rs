@@ -628,7 +628,7 @@ impl Session {
     /// durably handled. Future-epoch messages remain unacknowledged until the
     /// corresponding commit arrives.
     pub fn sync(&self, wait: u64) -> Result<Vec<SyncEvent>, Error> {
-        let messages = self.api.fetch(&self.creds, wait)?;
+        let (messages, cursor) = self.api.fetch_with_cursor(&self.creds, wait)?;
         let mut events = Vec::new();
         let mut ack = Vec::new();
         let mut held: Vec<(String, Vec<u8>)> = Vec::new();
@@ -736,6 +736,14 @@ impl Session {
         }
         if !retry_ack.is_empty() {
             self.api.ack(&self.creds, &retry_ack)?;
+            ack.extend(retry_ack);
+        }
+
+        // Advance the server cursor only after every fetched entry through
+        // this cursor has been durably handled. A still-held future-epoch
+        // entry intentionally prevents cursor advancement.
+        if held.is_empty() {
+            self.api.ack_with_cursor(&self.creds, &ack, Some(cursor))?;
         }
 
         Ok(events)

@@ -181,6 +181,7 @@ fn outbox_is_durable_and_restart_recoverable() {
     assert_eq!(due[0].attempts, 1);
 
     // A retry is not immediately eligible until its backoff deadline.
+    assert!(c.mark_outbox_sending(local_id, 200).unwrap());
     c.mark_outbox_retry(local_id, "NETWORK", 205).unwrap();
     assert!(c.due_outbox(204, 10).unwrap().is_empty());
     assert_eq!(c.due_outbox(205, 10).unwrap().len(), 1);

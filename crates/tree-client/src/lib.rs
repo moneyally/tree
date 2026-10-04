@@ -560,9 +560,12 @@ impl Session {
         let (message_id, body) = self.with_group(gid, |group| {
             group.send_message(&self.client, text.as_bytes())
         })?;
-        let reply = self
-            .api
-            .send_with_idempotency(&self.creds, &recipients, &body, Some(message_id.as_bytes()))?;
+        let reply = self.api.send_with_idempotency(
+            &self.creds,
+            &recipients,
+            &body,
+            Some(message_id.as_bytes()),
+        )?;
         let id = reply.body["id"]
             .as_str()
             .or_else(|| reply.body["message_id"].as_str())

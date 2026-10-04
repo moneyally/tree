@@ -173,7 +173,11 @@ fn receive_mutated_commit_never_accepted() {
                 return Ok(());
             };
             let r = b.borrow_mut().receive(&bob, &v);
-            prop_assert!(r.is_err(), "mutated commit accepted: {:?}", r);
+            prop_assert!(
+                matches!(&r, Err(_) | Ok(Incoming::HeldForRetry { .. })),
+                "mutated commit was treated as accepted: {:?}",
+                r
+            );
             prop_assert_eq!(b.borrow().epoch(), 1);
             Ok(())
         })

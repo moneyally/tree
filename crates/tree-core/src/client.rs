@@ -179,7 +179,8 @@ impl Client<StoredProvider> {
         error_code: &str,
         next_retry_at: i64,
     ) -> Result<(), TreeError> {
-        self.provider.mark_outbox_retry(local_id, error_code, next_retry_at)
+        self.provider
+            .mark_outbox_retry(local_id, error_code, next_retry_at)
     }
 
     pub fn mark_outbox_failed(

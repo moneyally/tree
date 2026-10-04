@@ -173,11 +173,7 @@ impl Api {
         Ok(self.fetch_with_cursor(c, wait)?.0)
     }
 
-    pub fn fetch_with_cursor(
-        &self,
-        c: &Creds,
-        wait: u64,
-    ) -> Result<InboxPage, ClientError> {
+    pub fn fetch_with_cursor(&self, c: &Creds, wait: u64) -> Result<InboxPage, ClientError> {
         let path = if wait == 0 {
             "/v1/messages".to_string()
         } else {

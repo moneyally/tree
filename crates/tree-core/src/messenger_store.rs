@@ -104,8 +104,8 @@ impl crate::storage::StoredProvider {
                 body,
                 ..
             } => {
-                let expires_at = (*ttl_secs != 0)
-                    .then_some(sent_at.saturating_add(*ttl_secs as i64));
+                let expires_at =
+                    (*ttl_secs != 0).then_some(sent_at.saturating_add(*ttl_secs as i64));
                 self.connection()
                     .execute(
                         "INSERT OR IGNORE INTO tree_messages \
@@ -159,11 +159,7 @@ impl crate::storage::StoredProvider {
         Ok(())
     }
 
-    fn mark_message_deleted(
-        &self,
-        group_id: &[u8],
-        id: &MessageId,
-    ) -> Result<(), TreeError> {
+    fn mark_message_deleted(&self, group_id: &[u8], id: &MessageId) -> Result<(), TreeError> {
         self.connection()
             .execute(
                 "UPDATE tree_messages SET deleted=1 WHERE group_id=?1 AND message_id=?2",
@@ -226,9 +222,9 @@ impl crate::storage::StoredProvider {
                         group_id: group,
                         message_id: MessageId(parse_id(message, "message_id")?),
                         sender: parse_id(sender, "sender_member_id")?,
-                        sequence: sequence.try_into().map_err(|_| {
-                            TreeError::Storage("negative message sequence".into())
-                        })?,
+                        sequence: sequence
+                            .try_into()
+                            .map_err(|_| TreeError::Storage("negative message sequence".into()))?,
                         created_at,
                         edited_at,
                         expires_at,

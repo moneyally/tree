@@ -570,3 +570,15 @@ Issues found by testing Tree's own design. Each one has a regression test.
   own, so counts can differ between devices (documented).
 - **Test:** `a_person_with_two_devices_votes_once` (alice's device counted
   3 voters before).
+
+## F-033: the `user.username` switch did nothing (fixed)
+
+- **Found:** 2026-10-04, security review of wave 2.
+- **What:** `user.username` was in the registry (released by default) but
+  never read: a name could be registered while it showed released, and
+  releasing it kept the name on the server.
+- **Severity:** low (a switch that did not do what it said).
+- **Fix:** the switch is whether the account has a @username: choosing one
+  applies it, releasing it releases the name on the server and the device
+  (and its link), applying it without a name is refused.
+- **Test:** `username_switch_releases_the_name`.

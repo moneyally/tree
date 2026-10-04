@@ -1161,6 +1161,11 @@ changes only once the server agreed). A lookup of a hidden name gets the same
 still gets `409 USERNAME_TAKEN` (the name is reserved, the account is not
 revealed). Non-ASCII names are not supported in v1.
 
+`user.username` (user scope, released by default) is whether the account
+has a @username (F-033): choosing a name applies it; releasing it releases
+the name on the server (`/v1/usernames/release`, which also drops the
+username link) and on the device; applying it without a name is refused.
+
 **Username links and QR codes** (`user.username_link`, user scope,
 released by default; `crates/tree-client/src/links.rs`). Applying it makes a
 16-byte random token and the link `tree://u/<base64url token>`; the QR code
@@ -1173,7 +1178,9 @@ stays. Releasing the setting deletes the link; releasing the @username
 deletes it too (and releases the setting on the device). The link does not
 spell the name, so a reset link cannot be traced back by guessing names. A
 device that opens or scans a link adds the account as a contact the user
-chose. What the server learns: that the account has a link, and which
+chose (it has no pinned device until the server names one in a key-package
+claim or the safety number is verified: 5.4, F-021). What the server
+learns: that the account has a link, and which
 accounts look one up (as for name lookups, 10 rate tokens each).
 
 ### 8.5 Reports with message franking, account suspension

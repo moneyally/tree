@@ -270,7 +270,17 @@ impl Session {
         preview_mode: PreviewMode,
         preview_plaintext: Option<&[u8]>,
     ) -> Result<SentMedia, Error> {
-        self.send_media_with_caption(gid, plaintext, media_type, filename, mime, policy, preview_mode, preview_plaintext, "")
+        self.send_media_with_caption(
+            gid,
+            plaintext,
+            media_type,
+            filename,
+            mime,
+            policy,
+            preview_mode,
+            preview_plaintext,
+            "",
+        )
     }
 
     pub fn send_media_with_caption(

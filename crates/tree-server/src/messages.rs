@@ -443,7 +443,7 @@ pub async fn ack_ids(
     for id in ids {
         check_id(id, "message id")?;
     }
-    if ids.is_empty() {
+    if ids.is_empty() && cursor.is_none() {
         return Ok(0);
     }
 

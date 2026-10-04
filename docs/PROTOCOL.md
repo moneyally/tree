@@ -1632,10 +1632,17 @@ exist.
 Rules: only signed requests of registered devices are relayed, each costs
 rate tokens; a search is 1 to 100 characters and returns at most 50 results;
 only URLs the provider itself returned are fetched, through opaque ids kept
-in memory for an hour; https only, no credentials in URLs, no IP literals
-or localhost, no redirects, a 10 s timeout, answers only `image/*` or
-`video/*` (tiles: `image/*`) of at most `RELAY_MAX_BYTES` (8 MiB). Nothing
-is stored: answers are fetched and passed on.
+in memory for an hour (at most 1,000 per device, whose own oldest go first,
+and 50,000 in all, oldest first: F-032); https only, no credentials in URLs,
+no IP literals or localhost, no redirects, no proxy, a 10 s timeout, answers
+only `image/*` or `video/*` (tiles: `image/*`) of at most `RELAY_MAX_BYTES`
+(8 MiB). Host names are resolved by the relay itself and only public
+addresses are used, and the connection goes to exactly those (F-027):
+loopback, private, link-local (cloud metadata), carrier-grade NAT,
+unique-local, multicast, documentation and reserved ranges are refused,
+also inside IPv4-mapped, IPv4-compatible, NAT64 and 6to4 IPv6 addresses, so
+a provider result naming an internal host, or DNS rebinding, reaches
+nothing inside. Nothing is stored: answers are fetched and passed on.
 
 The provider contract (an operator runs an adapter for whatever service it
 uses): `GET <GIF_PROVIDER_URL>?q=<words>&limit=<n>` with `Accept:

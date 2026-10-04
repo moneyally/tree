@@ -112,7 +112,7 @@ impl AppState {
             waiters: Waiters::default(),
             franking: tokio::sync::OnceCell::new(),
             push,
-            relay: relay::Relay::new(),
+            relay: relay::Relay::new(cfg.relay_allow_http),
             request_tags: messages::RequestTagKeys::default(),
             db,
             cfg,

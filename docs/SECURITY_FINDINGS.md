@@ -475,3 +475,32 @@ Issues found by testing Tree's own design. Each one has a regression test.
 - **Test:** `sizes_holdings_and_disk_are_bounded`,
   `attachments::tests::valid_sizes_are_exactly_the_formats`,
   `size_limit_and_daily_quota`.
+
+## F-027: relay server-side request forgery through host names (fixed)
+
+- **Found:** 2026-10-04, security review of wave 2.
+- **What:** the GIF and map relays refused IP literals and `localhost` but
+  fetched any other host name the provider returned, whatever it resolved
+  to: a name pointing at 10/8, 169.254.169.254, ::1 or fc00::/7 (or one
+  rebinding between check and connection) was fetched, and image or video
+  answers were passed back to the device.
+- **Severity:** low to medium (needs a malicious or compromised provider, or
+  one returning user-supplied URLs).
+- **Fix:** the relay's HTTP client resolves names with its own resolver that
+  keeps only public addresses (also judging IPv4 inside IPv4-mapped,
+  compatible, NAT64 and 6to4 IPv6) and connects to exactly those, with no
+  proxy.
+- **Test:** `relay::tests::a_name_resolving_inside_is_refused` (a name
+  resolving to 127.0.0.1 is refused at connection time),
+  `relay::tests::only_public_addresses`.
+
+## F-032: one device could flush every relay media id (fixed)
+
+- **Found:** 2026-10-04, security review of wave 2.
+- **What:** when 50,000 media ids existed, the relay cleared the whole map,
+  so one device searching at its rate limit could repeatedly invalidate
+  every other user's GIF ids.
+- **Severity:** low (denial of service for GIFs).
+- **Fix:** at most 1,000 ids per device (its own oldest go first), and
+  beyond 50,000 in all the oldest go one by one.
+- **Test:** `relay::tests::one_device_cannot_flush_everyone_elses_media_ids`.

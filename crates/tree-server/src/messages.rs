@@ -12,6 +12,7 @@ use axum::extract::rejection::QueryRejection;
 use axum::extract::{Query, State};
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use sqlx::Row;
 use tokio::time::Instant;
 
@@ -27,6 +28,8 @@ pub const MAX_ACK_IDS: usize = 1000;
 pub struct SendReq {
     pub recipients: Vec<String>,
     pub body: String,
+    /// Stable client-generated key for crash-safe retry. Base64, exactly 16 bytes.
+    pub idempotency_key: Option<String>,
 }
 json_body!(SendReq, |cfg| cfg.max_message_bytes.div_ceil(3) * 4
     + cfg.max_recipients * (ID_LEN + 4)
@@ -48,7 +51,11 @@ pub async fn send(
     req: Signed<SendReq>,
 ) -> ApiResult<Json<SendResp>> {
     let cfg = &state.cfg;
-    let SendReq { recipients, body } = req.body;
+    let SendReq {
+        recipients,
+        body,
+        idempotency_key,
+    } = req.body;
     if recipients.is_empty() {
         return Err(ApiError::bad_request("recipients is empty"));
     }
@@ -66,11 +73,22 @@ pub async fn send(
             unique.push(r);
         }
     }
+    unique.sort();
     if b64_exceeds(&body, cfg.max_message_bytes) {
         return Err(ApiError::too_large("message body too large"));
     }
     let bytes = unb64(&body, "body")?;
     drop(body);
+    let idempotency_key = idempotency_key
+        .map(|value| unb64(&value, "idempotency_key"))
+        .transpose()?;
+    if let Some(key) = &idempotency_key {
+        if key.len() != 16 {
+            return Err(ApiError::bad_request(
+                "idempotency_key must decode to exactly 16 bytes",
+            ));
+        }
+    }
     if bytes.is_empty() {
         return Err(ApiError::bad_request("message body is empty"));
     }
@@ -99,11 +117,47 @@ pub async fn send(
     state.rate_device(&req.device.device_id, (unique.len() / 100) as f64)?;
     let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
 
+    if let Some(key) = &idempotency_key {
+        if let Some(row) = sqlx::query(
+            "SELECT request_hash, response_json FROM message_idempotency
+             WHERE sender_device_id = ?1 AND idempotency_key = ?2",
+        )
+        .bind(sender)
+        .bind(key)
+        .fetch_optional(&mut *tx)
+        .await?
+        {
+            let stored_hash: Vec<u8> = row.try_get("request_hash")?;
+            if stored_hash != request_hash {
+                return Err(ApiError::conflict(
+                    "IDEMPOTENCY_KEY_REUSE",
+                    "idempotency key was already used for a different request",
+                ));
+            }
+            let response_json: String = row.try_get("response_json")?;
+            let response: SendResp =
+                serde_json::from_str(&response_json).map_err(|_| ApiError::internal())?;
+            return Ok(Json(response));
+        }
+    }
+
     // The server cannot decrypt the MLS message, but it can enforce that the
     // authenticated sender and every recipient belong to the same current
     // server-side group roster. This blocks cross-group mailbox injection.
     let group_id = header.group_id.to_vec();
     let sender = &req.device.device_id;
+    let request_hash = {
+        let mut h = Sha256::new();
+        h.update(b"TreeSend/v1");
+        h.update(&group_id);
+        for recipient in &unique {
+            h.update((recipient.len() as u32).to_be_bytes());
+            h.update(recipient.as_bytes());
+        }
+        h.update((bytes.len() as u64).to_be_bytes());
+        h.update(&bytes);
+        h.finalize().to_vec()
+    };
     let sender_member =
         sqlx::query("SELECT 1 FROM group_devices WHERE group_id = ? AND device_id = ?")
             .bind(&group_id)
@@ -142,16 +196,32 @@ pub async fn send(
     }
 
     let d = deliver(&mut tx, cfg, &bytes, unique).await?;
+    let response = SendResp {
+        delivered: d.delivered.len(),
+        unknown_devices: d.unknown_devices,
+        full_devices: d.full_devices,
+    };
+    if let Some(key) = &idempotency_key {
+        let response_json = serde_json::to_string(&response).map_err(|_| ApiError::internal())?;
+        sqlx::query(
+            "INSERT INTO message_idempotency
+             (sender_device_id,idempotency_key,request_hash,response_json,created_at)
+             VALUES (?1,?2,?3,?4,?)",
+        )
+        .bind(sender)
+        .bind(key)
+        .bind(&request_hash)
+        .bind(response_json)
+        .bind(now_secs())
+        .execute(&mut *tx)
+        .await?;
+    }
     tx.commit().await?;
 
     for id in &d.delivered {
         state.waiters.notify(id);
     }
-    Ok(Json(SendResp {
-        delivered: d.delivered.len(),
-        unknown_devices: d.unknown_devices,
-        full_devices: d.full_devices,
-    }))
+    Ok(Json(response))
 }
 
 /// Outcome of putting one body into several mailboxes.

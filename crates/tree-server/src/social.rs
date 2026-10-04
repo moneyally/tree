@@ -233,17 +233,18 @@ pub async fn accept_message_request(
     req: Signed<NoBody>,
 ) -> ApiResult<Json<MessageRequest>> {
     check_id(&requester, "requester_account_id")?;
-    if is_blocked_pair(&state, &requester, &req.device.account_id).await? {
-        return Err(ApiError::forbidden(
-            "BLOCKED",
-            "message request is blocked by account policy",
-        ));
-    }
     let updated = now_secs();
     let result = sqlx::query(
         "UPDATE message_requests
          SET state = 'accepted', updated_at = ?
-         WHERE requester_account_id = ? AND target_account_id = ? AND state = 'pending'",
+         WHERE requester_account_id = ? AND target_account_id = ? AND state = 'pending'
+           AND NOT EXISTS (
+             SELECT 1 FROM blocks
+             WHERE (blocker_account_id = requester_account_id
+                    AND blocked_account_id = target_account_id)
+                OR (blocker_account_id = target_account_id
+                    AND blocked_account_id = requester_account_id)
+           )",
     )
     .bind(updated)
     .bind(&requester)

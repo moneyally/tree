@@ -458,6 +458,12 @@ impl Api {
         Ok((v["tag"].as_str().unwrap_or_default().to_string(), v["minute"].as_i64().unwrap_or(0)))
     }
 
+    /// A public-space request (`/v1/public/...`, PROTOCOL.md 8.15): the
+    /// answer's JSON, or the server's error code.
+    pub fn public(&self, c: &Creds, method: Method, path: &str, body: Option<&Value>) -> Result<Value, Error> {
+        self.call(c, method, path, body)?.ok()
+    }
+
     /// Files a report (PROTOCOL.md 8.5).
     pub fn report(&self, c: &Creds, req: &Value) -> Result<Value, Error> {
         self.call(c, Method::POST, "/v1/reports", Some(req))?.ok()

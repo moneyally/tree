@@ -676,6 +676,15 @@ pub fn standard_features() -> Vec<Feature> {
         feat("chat.join_approval", Chat, Released, 3),
         feat("chat.slow_mode", Chat, Released, 3),
         feat("chat.restrict", Chat, Applied, 3),
+        // Public spaces and channels (Wave 4, PROTOCOL.md 8.15, APP_PROTOCOL.md 10):
+        // a public group or channel in the server's directory and search
+        // (public spaces only: a private group can never be listed); in a
+        // channel, subscribers may comment on posts; the posting admin's
+        // name is shown. The channel keys apply to public channels (server)
+        // and to private, end-to-end channels (group settings).
+        feat("chat.public_listing", Chat, Released, 3),
+        feat("channel.comments", Chat, Released, 3),
+        feat("channel.signatures", Chat, Released, 3),
         // user
         feat("user.read_receipts", User, Applied, 1),
         feat("user.typing", User, Applied, 1),
@@ -724,6 +733,8 @@ pub fn standard_features() -> Vec<Feature> {
         feat("server.report_limits", Server, Applied, 1),
         feat("server.bot_platform", Server, Applied, 2),
         feat("server.calls", Server, Applied, 3),
+        // Public groups and channels (not end-to-end; plaintext on the server).
+        feat("server.public_spaces", Server, Applied, 3),
         // Relays the operator may offer (off until applied and configured):
         // GIF search and map tiles, fetched by the server so the provider
         // never sees the user's address (PROTOCOL.md 8.12).

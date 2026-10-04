@@ -14,6 +14,7 @@
 //! * [`usernames`] — @usernames and their links, stored as hashes only
 //! * [`attachments`] — encrypted attachments (padded ciphertext, uploaded in resumable parts)
 //! * [`reports`] — reports with message franking, account suspension
+//! * [`public`] — public groups and channels: plaintext, a separate data path (not end-to-end)
 //! * [`features`] — operator flags with apply/release
 //! * [`relay`] — GIF search and map tiles fetched for devices (off by default)
 //!
@@ -38,6 +39,7 @@ pub mod keypackages;
 pub mod limits;
 pub mod links;
 pub mod messages;
+pub mod public;
 pub mod push;
 pub mod recovery;
 pub mod relay;
@@ -92,6 +94,8 @@ pub struct Inner {
     pub request_tags: messages::RequestTagKeys,
     /// One writer per upload at a time (see [`attachments::UploadLocks`]).
     pub upload_locks: attachments::UploadLocks,
+    /// Public spaces with new posts, for their subscribers' wake-ups.
+    pub public_wakes: public::PublicWakes,
 }
 
 impl Deref for AppState {
@@ -117,6 +121,7 @@ impl AppState {
             relay: relay::Relay::new(cfg.relay_allow_http),
             request_tags: messages::RequestTagKeys::default(),
             upload_locks: attachments::UploadLocks::default(),
+            public_wakes: public::PublicWakes::default(),
             db,
             cfg,
         }))
@@ -270,6 +275,21 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/reports", post(reports::report).get(reports::list))
         .route("/v1/reports/{id}/resolve", post(reports::resolve))
         .route("/v1/accounts/{id}/suspend/{action}", post(reports::suspend))
+        .route("/v1/public/spaces", post(public::create))
+        .route("/v1/public/spaces/{id}", get(public::get).delete(public::delete_space))
+        .route("/v1/public/spaces/{id}/profile", post(public::profile))
+        .route("/v1/public/spaces/{id}/features/{key}/{action}", post(public::feature))
+        .route("/v1/public/spaces/{id}/join", post(public::join))
+        .route("/v1/public/spaces/{id}/leave", post(public::leave))
+        .route("/v1/public/spaces/{id}/notify/{action}", post(public::notify))
+        .route("/v1/public/spaces/{id}/admins/{account}/{action}", post(public::admin))
+        .route("/v1/public/spaces/{id}/bans/{account}/{action}", post(public::ban))
+        .route("/v1/public/spaces/{id}/posts", post(public::post).get(public::posts))
+        .route("/v1/public/posts/{post}", put(public::edit).delete(public::delete_post))
+        .route("/v1/public/handles/{handle}", get(public::by_handle))
+        .route("/v1/public/directory", get(public::directory))
+        .route("/v1/public/subscriptions", get(public::subscriptions))
+        .route("/v1/public/reports", post(public::report))
         .route("/v1/relay", get(relay::status))
         .route("/v1/relay/gif/search", post(relay::gif_search))
         .route("/v1/relay/gif/media/{id}", get(relay::gif_media))
@@ -349,7 +369,8 @@ pub async fn purge_expired(state: &AppState, now: i64) -> Result<u64, sqlx::Erro
     let links = links::purge(&state.db, now).await?;
     let reports = reports::purge(&state.db, now.div_euclid(86400)).await?;
     let keys = messages::purge_idempotency(&state.db, now).await?;
-    Ok(expired + orphans + files + uploads + invites + links + reports + keys)
+    let tombstones = public::purge(&state.db, cutoff).await?;
+    Ok(expired + orphans + files + uploads + invites + links + reports + keys + tombstones)
 }
 
 /// A running server.
@@ -374,6 +395,7 @@ pub async fn start(cfg: Config) -> Result<Server, BoxError> {
     let mut background = Vec::new();
     if push_on {
         background.push(push::spawn(state.clone(), push_rx));
+        background.push(public::spawn_wakes(state.clone()));
     }
     {
         let state = state.clone();

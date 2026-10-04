@@ -24,5 +24,8 @@ rules at submission time.
 | Screenshots of protected chats | done (Android) | `FLAG_SECURE` for `chat.screenshot_block`; iOS: with the iOS app |
 | Signed release builds | missing | signing keys are the owner's; never in git |
 | iOS build | missing | needs macOS and a developer account |
+| Public groups and channels (Wave 4): user-generated public content | built: reports of public posts into the operator queue (the server holds the text), deletion by authors and admins, bans, slow mode, suspension of accounts, the operator can switch the whole feature off (`server.public_spaces`) | moderation duties for public content (response times, notice-and-takedown, keeping or handing over deleted content, illegal content reporting duties in each country, age limits for public spaces): **변호사 확인 필요** |
+| Public spaces are not end-to-end encrypted | "Public" badge on every public object, warning before creating and posting, the display name is published with posts | how to describe this in the privacy policy and store data forms (plaintext public posts, published names, subscriptions): **변호사 확인 필요** |
+| Directory and search of public spaces | only spaces whose admins applied `chat.public_listing` | whether the directory needs operator review or age gating: **변호사 확인 필요** |
 
 Submission itself (accounts, payments, forms) is the owner's.

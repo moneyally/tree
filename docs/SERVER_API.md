@@ -600,6 +600,59 @@ Header `X-Tree-Admin`; optional body `{ "resolution": "reason" }`. Idempotent.
 `200` → `{ "account_id": "...", "state": "applied" }`. While applied, every
 signed request of the account gets `403 SUSPENDED`.
 
+## Public spaces (PROTOCOL.md 8.15) — NOT end-to-end encrypted
+
+Public groups and channels: plaintext on the server, readable by anyone
+signed in. A separate data path (own tables, no mailboxes, no MLS). Every
+endpoint is signed and refused with `403 LOCKED_BY_SERVER` while the
+operator flag `server.public_spaces` is released. Every space and post in
+an answer carries `"is_public": true`.
+
+A space as answered:
+
+```json
+{ "id": "...", "is_public": true, "kind": "channel", "handle": "tree_news", "name": "Tree news",
+  "description": "", "avatar": null, "members": 2,
+  "features": { "chat.public_listing": false, "channel.comments": true, "channel.signatures": false, "chat.slow_mode": null },
+  "role": "member", "notify": false, "banned": false, "last_rev": 41,
+  "admins": ["..."], "bans": ["..."] }
+```
+
+`role` is the caller's (`owner`, `admin`, `member` or null); `admins` and
+`bans` only for admins. A post:
+
+```json
+{ "id": "...", "space": "...", "is_public": true, "seq": 17, "rev": 40, "reply_to": null,
+  "text": "...", "attachment": null, "created_at": 1790834880, "edited_at": null,
+  "deleted": false, "mine": false, "author": "<account>", "author_name": "Alice", "comments": 3 }
+```
+
+In a channel `author` and `author_name` of a post (not of a comment) are
+null unless `channel.signatures` is applied or the caller is an admin;
+`comments` only on channel posts; a deleted post has no `text`.
+
+| Endpoint | Who | Body / query → answer |
+| --- | --- | --- |
+| `POST /v1/public/spaces` | any account not under anti-spam limits (`LIMITED`) | `{ kind: "group"\|"channel", name (1-64), handle, description? (≤ 1000), avatar? (≤ 512 bytes, opaque) }`, unknown fields refused → `201` space. `HANDLE_TAKEN`, `LIMIT_EXCEEDED` (10 owned). 21 rate tokens |
+| `GET /v1/public/spaces/{id}` | anyone | → space |
+| `DELETE /v1/public/spaces/{id}` | owner (`NOT_OWNER`) | → `{ id, deleted: true }`; posts, members and bans go with it |
+| `GET /v1/public/handles/{handle}` | anyone | → space, listed or not; `404` |
+| `GET /v1/public/directory?q=&limit=` | anyone | → `{ spaces }`: listed spaces whose handle starts with or name contains `q`, largest first (≤ 200). 5 rate tokens |
+| `GET /v1/public/subscriptions` | anyone | → `{ spaces }` the caller's account is in |
+| `POST /v1/public/spaces/{id}/profile` | admins | `{ name?, description?, avatar? ("" removes) }` → space |
+| `POST /v1/public/spaces/{id}/features/{key}/apply\|release` | admins (`NOT_ADMIN`) | optional `{ option }` (only `chat.slow_mode`: `10`-`3600` s, `30s`, `5m`, `1h`; default 30 s) → space. Keys `chat.public_listing`, `channel.comments`, `channel.signatures` (channels only), `chat.slow_mode`. `INVALID_OPTION`, `UNKNOWN_FEATURE` |
+| `POST /v1/public/spaces/{id}/join` | not banned (`BANNED`) | → space; idempotent; at most 1,000 per account. 2 rate tokens |
+| `POST /v1/public/spaces/{id}/leave` | members; not the owner (`OWNER_CANNOT_LEAVE`) | → space |
+| `POST /v1/public/spaces/{id}/notify/apply\|release` | members (`NOT_MEMBER`) | → space: content-free wake-ups for new posts, at most once per `PUBLIC_PUSH_INTERVAL_SECS` per space |
+| `POST /v1/public/spaces/{id}/admins/{account}/apply\|release` | admins | → space. Only subscribers (`NOT_MEMBER`); the owner's role never changes (`OWNER`); at most 50 admins |
+| `POST /v1/public/spaces/{id}/bans/{account}/apply\|release` | admins | → space. A ban unsubscribes; admins cannot be banned (`ADMIN`) |
+| `POST /v1/public/spaces/{id}/posts` | members; in a channel admins, members comment while `channel.comments` is applied | `{ id (16 bytes base64url, chosen by the client), text (1-4096 characters), reply_to?, attachment?, author_name? (≤ 64) }` → `201` post; a retry with the same id and content → `200` with `"replayed": true`; other content → `409 IDEMPOTENCY_KEY_REUSE`. `NOT_MEMBER`, `NOT_ADMIN`, `BANNED`, `LOCKED_BY_CHAT` (comments released), `429 SLOW_MODE` (`Retry-After`). 3 rate tokens |
+| `GET /v1/public/spaces/{id}/posts?before=&limit=&reply_to=` | anyone | → `{ posts }` newest first by `seq`, not deleted; in a channel posts only unless `reply_to` names one (then its comments) |
+| `GET /v1/public/spaces/{id}/posts?after_rev=&limit=` | anyone | → `{ posts }` changed after `rev`, oldest change first, including deleted ones (tombstones) and comments |
+| `PUT /v1/public/posts/{post}` | the author (`NOT_AUTHOR`), not banned | `{ text }` → post |
+| `DELETE /v1/public/posts/{post}` | the author or an admin of the space | → `{ id, deleted: true, rev }`; text, attachment and name are erased at once |
+| `POST /v1/public/reports` | anyone but the author | `{ post, reason (≤ 500) }` → `201 { id, verified: true }`; into the report queue with the stored text, `public_post` and `public_space`; 20 per account per day, 10 rate tokens |
+
 ## Operator feature flags
 
 Every flag has apply and release. Both are idempotent and return the current state.
@@ -652,6 +705,7 @@ Errors: `UNAUTHORIZED`, `UNKNOWN_FEATURE`.
 | push | one endpoint URL per device, day set; wake-ups are not logged |
 | device links | link id, account, opening device, new device's request key, state, times; offer, reveal and sealed account data (opaque) until acknowledged, cancelled or expired; the confirmed transcript hash and both signatures; rows purged 1 hour after expiry |
 | invite links | hash of the secret, owner account and device, expiry, use limit and count; until 7 days after expiry. Join requests: link hash, requesting account, time; until the owner's device handles them. Never the group |
+| **public spaces (not end-to-end)** | in **plaintext**: kind, @handle, name, description, avatar reference, owner, settings, creation day; subscribers (account, role, notifications wanted, time of the last post); bans; posts and comments (text, attachment reference, author account, the name the author published, reply target, creation and edit times). Until deleted by the author, an admin or the owner, or the account is deleted; a deleted post's text is erased at once, its tombstone purged after the mailbox TTL |
 
 Logs contain method, route template, status and latency only.
 
@@ -681,6 +735,7 @@ Logs contain method, route template, status and latency only.
 | `TRUST_FORWARDED_FOR` | `false` (set `true` only behind a proxy that overwrites `X-Forwarded-For`) |
 | `PUSH_ALLOWED_HOSTS` | empty = push off; comma-separated gateway host names (e.g. a self-hosted UnifiedPush server) |
 | `PUSH_INTERVAL_SECS` | `5` (at most one wake-up per device this often) |
+| `PUBLIC_PUSH_INTERVAL_SECS` | `60` (subscribers of a public space are woken at most once per space this often) |
 | `PUSH_ALLOW_HTTP` | `false` (tests only) |
 | `GIF_PROVIDER_URL` | unset = no GIF relay (no default provider) |
 | `GIF_PROVIDER_KEY` | unset; sent to the provider as a bearer token; environment only, never in git |

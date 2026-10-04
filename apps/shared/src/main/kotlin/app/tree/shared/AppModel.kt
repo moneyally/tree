@@ -45,6 +45,8 @@ data class Chat(
      * while user.stranger_labels is released.
      */
     val labels: List<String> = emptyList(),
+    /** A private channel (end-to-end; only admins post). */
+    val channel: Boolean = false,
 )
 
 /**
@@ -104,6 +106,10 @@ data class UiState(
     val rich: RichUi = RichUi(),
     /** Topics, roles, admin log, join requests, moderation, communities (Groups.kt). */
     val groups: GroupsUi = GroupsUi(),
+    /** Public groups and channels: NOT end-to-end encrypted (PublicSpaces.kt). */
+    val pub: PublicUi = PublicUi(),
+    /** The open chat as a private channel (PublicSpaces.kt). */
+    val channel: ChannelUi = ChannelUi(),
     val notice: String? = null,
     val error: String? = null,
 )
@@ -130,6 +136,9 @@ class AppModel(
     /** Where files that download by themselves (`user.auto_download`) go; set by the platform. */
     var downloadDir: java.io.File? = null
 
+
+    /** When the public spaces were last synced (PublicSpaces.kt). */
+    internal var lastPublicSync = 0L
 
     /** Stickers, GIFs, locations, events, video notes, photos, per-chat profiles. */
     val rich = RichChats(this)
@@ -235,6 +244,7 @@ class AppModel(
         // A contact's file on the right network: fetched now (user.auto_download).
         for (e in events) if (e is TreeEvent.File && e.autoDownload) autoDownload(e.file)
         pumpUploads()
+        syncPublic()
         refresh()
         checkReminders()
     }
@@ -349,7 +359,7 @@ class AppModel(
                 } ?: emptyList()
                 Chat(
                     g, info.name ?: names.joinToString(", ").ifEmpty { g.take(8) }, info.status, info.requestFrom,
-                    c.unread.toInt(), c.pinned, c.archived, c.muted, c.mutedUntil, c.markedUnread, c.draft, labels,
+                    c.unread.toInt(), c.pinned, c.archived, c.muted, c.mutedUntil, c.markedUnread, c.draft, labels, info.channel,
                 )
             }
         } ?: return
@@ -380,6 +390,8 @@ class AppModel(
         loadRich()
         rich.refresh(open, messages)
         loadGroups()
+        loadChannel()
+        loadPublic()
     }
 
     suspend fun openChat(group: String?) {

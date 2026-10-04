@@ -280,6 +280,11 @@ impl Session {
         if !is_speech(p) || self.is_self_group(gid)? {
             return Ok(false);
         }
+        // Private channels: only admins post (`channel.rs`).
+        let me = self.member_id();
+        if let Some((code, _)) = crate::channel::refusal(&self.group_settings(gid)?, &me, p) {
+            return Err(Error::Feature(code.into()));
+        }
         if self.restricted_until(gid)?.is_some() {
             return Err(Error::Feature("RESTRICTED".into()));
         }
@@ -297,13 +302,19 @@ impl Session {
     }
 
     /// The receiving side's gate, before a payload from `from` is used:
-    /// restricted members and messages that break slow mode are dropped
+    /// posts in a private channel from non-admins, restricted members and messages that break slow mode are dropped
     /// (admins get [`Event::SlowModeHidden`]). True: go on.
     pub(crate) fn gate(&mut self, gid: &[u8], from: &MemberId, p: &Payload, events: &mut Vec<Event>) -> Result<bool, Error> {
         if !is_speech(p) {
             return Ok(true);
         }
         let s = self.group_settings(gid)?;
+        // Private channels: posts from members who are not admins, and
+        // comments while `channel.comments` is released, are dropped.
+        if let Some((_, why)) = crate::channel::refusal(&s, from, p) {
+            events.push(Event::Dropped { reason: why.into() });
+            return Ok(false);
+        }
         if s.restricted_until(from, now()).is_some() {
             events.push(Event::Dropped { reason: "from a restricted member (chat.restrict)".into() });
             return Ok(false);
@@ -444,7 +455,7 @@ mod tests {
     fn speech_kinds() {
         assert!(is_speech(&Payload::Delete { id: "x".into() }));
         assert!(!is_speech(&Payload::Leave { quiet: false }));
-        assert!(counts_for_slow_mode(&Payload::Text { id: "1".into(), text: "x".into(), fmt: false, mentions: vec![], all: false, preview: None, silent: false, fwd: false, topic: None }));
+        assert!(counts_for_slow_mode(&Payload::Text { id: "1".into(), text: "x".into(), fmt: false, mentions: vec![], all: false, preview: None, silent: false, fwd: false, topic: None, re: None }));
         assert!(!counts_for_slow_mode(&Payload::Delete { id: "x".into() }));
     }
 }

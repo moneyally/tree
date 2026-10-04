@@ -797,6 +797,41 @@ group context; topics, the admin log, join requests and history bundles
 are application messages or device data; slow mode reads only the arrival
 minute the mailbox already returned.
 
+### 6.11.2 Wave 4: private channels
+
+A private channel is an ordinary MLS group (end-to-end encrypted like
+every group) whose settings carry `"channel": true`. Only admins post;
+members read and, while `channel.comments` is applied, comment.
+
+| Item | Rule (checked by every receiver, `GroupSettings::check`, `Group::receive`) |
+| --- | --- |
+| `channel` | set in the first settings (`Client::create_channel`) and fixed: rule 6 below |
+| Size | at most 1,000 members (MLS leaves, i.e. devices; `MAX_CHANNEL_MEMBERS`) after any commit; the adding device refuses before building the commit |
+| `channel.*` keys | allowed in the settings of a channel only |
+| `chat.public_listing` | never applied in any group's settings: a private group or channel is never listed publicly |
+
+6. A commit that changes the `channel` flag is refused (judged against the
+   settings before the commit), so a group never becomes a channel and a
+   channel never stops being one.
+
+What members may send in a channel (APP_PROTOCOL.md 10.2): comments (a
+`text` with `re` naming a post, while `channel.comments` is applied),
+reactions, votes and event answers, edits and deletions of their own
+comments, and the group's plumbing (names, rosters, receipts, leaving).
+Everything else from a member who is not an admin is dropped by every
+receiving device, judged by the MLS-authenticated sender; the sending
+device refuses it first (`NOT_ADMIN`, `LOCKED_BY_CHAT`). A comment must
+name a post the receiver holds (not a comment).
+
+`channel.signatures` is a display rule: released, the apps show the
+channel's name on posts instead of the posting admin's. Every member's
+device still learns which admin device sent a post (MLS authenticates the
+sender); a modified app can show it.
+
+The server learns nothing new: the flag and the keys are inside the group
+context. A channel is a group to the server (same mailboxes, same commit
+rules).
+
 ### 6.12 Attachments
 
 Each file is encrypted on the sender's device with its own secret, padded to
@@ -1810,6 +1845,83 @@ writer wins per key by the writer's timestamp. Locked settings stay
 locked: every entry passes through the feature registry. The server sees
 one more small group with the account's devices in it.
 
+### 8.15 Public spaces: public groups and channels (not end-to-end)
+
+**Not end-to-end encrypted.** Public groups (any number of members, every
+member posts) and public channels (admins post, subscribers read and may
+comment) live on the server in plaintext, behind the operator flag
+`server.public_spaces` (released: every `/v1/public/...` request is
+refused with `403 LOCKED_BY_SERVER`). The apps show a "Public" badge on
+every public object (`is_public: true` in every server answer and every
+client and FFI object) and say before creating, posting or commenting that
+the server and anyone can read it. Code: `crates/tree-server/src/public.rs`,
+`crates/tree-client/src/public.rs`; API in [SERVER_API.md](SERVER_API.md).
+
+**A separate path.** Public spaces have their own tables
+(`0015_public_spaces.sql`) and endpoints (`/v1/public/...`). Nothing in
+them refers to MLS groups, mailboxes, deliveries or commits, nothing
+from them goes into a mailbox, and no request names a private group: the
+create request refuses unknown fields. A private group can never be
+turned into a public one (`chat.private_to_public` is `AlwaysOff`), and a
+private group's settings never carry `chat.public_listing` applied
+(6.11.2). Posting in a public space is a new act of publishing, never a
+copy of private history.
+
+**What the server sees and stores, in plaintext:** the space (kind,
+@handle, name, description, avatar reference, owner account, settings),
+subscriptions (account, role, whether it wants wake-ups, the time of its
+last post for slow mode), bans, and every post and comment (text,
+attachment reference, author account, the display name the author
+published with it, reply target, creation and edit times). Deleted posts
+lose text, attachment and name at once; the tombstone (id, author,
+times) is deleted 30 days later (`MESSAGE_TTL_SECS`). Anyone signed in may
+read a space's posts; an account's display name becomes public when it
+posts (apps say so). Reads are not logged per account, but the server sees
+every request's device, as for everything else (11).
+
+**Rules the server enforces** (it is the only place they can be enforced,
+since it holds the content):
+
+| Rule | Code |
+| --- | --- |
+| Public group: members post; channel: admins post | `NOT_MEMBER`, `NOT_ADMIN` |
+| Comments in a channel only while `channel.comments` is applied; a comment answers a post, not a comment | `LOCKED_BY_CHAT`, `400` |
+| Banned accounts cannot join, post or edit; a ban unsubscribes | `BANNED` |
+| Slow mode (`chat.slow_mode`, 10 s to 1 h): one post per interval for non-admins | `429 SLOW_MODE` with `Retry-After` |
+| Only the author edits; the author or an admin deletes | `NOT_AUTHOR`, `NOT_ADMIN` |
+| Admins add and drop admins; the owner's role never changes; admins cannot be banned | `OWNER`, `ADMIN` |
+| @handle: 5 to 32 of `a-z`, `0-9`, `_`, starting with a letter, unique among public spaces | `HANDLE_TAKEN` |
+| Accounts under anti-spam limits (8.9) cannot create spaces; at most 10 owned, 1,000 joined, 50 admins | `LIMITED`, `LIMIT_EXCEEDED` |
+| Rate: creating costs 21 tokens, a post 3, a directory search 5, a join 2 (times the account's factor, 8.9) | `429 RATE_LIMITED` |
+| Directory and search only list spaces with `chat.public_listing` applied; an exact @handle finds any space | — |
+| Post ids are chosen by the client: a retry with the same id and content is stored once (`"replayed": true`); the same id with other content is `409 IDEMPOTENCY_KEY_REUSE` | — |
+
+Settings are feature keys with apply and release
+(`POST /v1/public/spaces/{id}/features/{key}/apply|release`):
+`chat.public_listing`, `channel.comments`, `channel.signatures`
+(channels: the posting admin's account and name are shown with posts;
+released, only the channel's admins see who posted) and `chat.slow_mode`.
+
+**Cursors.** Each post has `seq` (creation order) and `rev` (grows with
+every change). A client pages newest-first by `seq` and keeps a cache up to
+date with "everything after `rev` N", which also brings edits and
+deletions. The client caches subscribed spaces in its encrypted profile
+(at most 1,000 posts per space) and counts unread posts there.
+
+**Wake-ups.** A subscriber who applied notifications for a space gets the
+content-free `wake` of 8.8 on each of its devices with a push endpoint, at
+most once per `PUBLIC_PUSH_INTERVAL_SECS` (default 60) per space; posts in
+between are covered by the next wake-up. The author is not woken. The
+gateway learns only that the device was woken; the server already knows
+the subscription.
+
+**Reports.** `POST /v1/public/reports {post, reason}` goes into the same
+operator queue and the same daily limit as reports of private messages
+(8.5). The server holds the post, so the report names it and stores its
+text; no franking is needed, and such a report counts as verified for the
+anti-spam limits (8.9). Moderation duties and the handling of illegal
+public content: **변호사 확인 필요** (STORE_CHECKLIST.md).
+
 ## 9. Security claims
 
 These are **claims with stated assumptions and reductions**, written so that
@@ -2185,6 +2297,8 @@ the server cannot learn it from what it sees or stores.
 | GIF searches (if the operator offers the relay) | **not protected** from the server | the search words and fetched media per device, live only (8.12); the provider sees neither the user's address nor the device | a relay outside the Tree server (later) |
 | Map views (if the operator offers the tile relay) | **not protected** from the server | which tiles a device fetched, live only (8.12) | — |
 | Stickers, profile photos, locations, events | protected | opaque blobs (6.12) or ciphertext only; blob sizes and fetch times | — |
+| Private channels (6.11.2) | protected | as any group: the channel flag, `channel.*` keys and comments are inside MLS | — |
+| Public groups and channels (8.15) | **not protected, by design** | everything in plaintext: names, @handles, descriptions, posts, comments, authors and their published names, subscribers, roles, bans, read requests per device | — (labelled "Public" in every app) |
 
 ---
 

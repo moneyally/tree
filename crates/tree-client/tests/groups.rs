@@ -28,7 +28,7 @@ fn dropped(ev: &[Event], why: &str) -> bool {
 }
 
 fn text(id: &str, t: &str, topic: Option<&str>) -> Payload {
-    Payload::Text { id: id.into(), text: t.into(), fmt: false, mentions: vec![], all: false, preview: None, silent: false, fwd: false, topic: topic.map(str::to_string) }
+    Payload::Text { id: id.into(), text: t.into(), fmt: false, mentions: vec![], all: false, preview: None, silent: false, fwd: false, topic: topic.map(str::to_string), re: None }
 }
 
 fn fresh_id() -> String {

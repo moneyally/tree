@@ -88,6 +88,9 @@ pub struct Config {
     pub push_allow_http: bool,
     /// `PUSH_INTERVAL_SECS`: at most one wake-up per device this often.
     pub push_interval_secs: u64,
+    /// `PUBLIC_PUSH_INTERVAL_SECS`: subscribers of a public space are woken
+    /// at most once per space this often (default 60).
+    pub public_push_interval_secs: u64,
     /// `GIF_PROVIDER_URL`: the GIF search endpoint the relay asks
     /// (PROTOCOL.md 8.12). Unset = no GIF relay (there is no default
     /// provider).
@@ -155,6 +158,7 @@ impl Default for Config {
             push_allowed_hosts: Vec::new(),
             push_allow_http: false,
             push_interval_secs: 5,
+            public_push_interval_secs: 60,
             gif_provider_url: None,
             gif_provider_key: None,
             map_tile_url: None,
@@ -254,6 +258,7 @@ impl Config {
                 .collect(),
             push_allow_http: env_parse("PUSH_ALLOW_HTTP", d.push_allow_http)?,
             push_interval_secs: env_parse("PUSH_INTERVAL_SECS", d.push_interval_secs)?,
+            public_push_interval_secs: env_parse("PUBLIC_PUSH_INTERVAL_SECS", d.public_push_interval_secs)?,
             gif_provider_url: env_opt("GIF_PROVIDER_URL"),
             gif_provider_key: env_opt("GIF_PROVIDER_KEY").map(Secret),
             map_tile_url: env_opt("MAP_TILE_URL"),
@@ -295,6 +300,9 @@ impl Config {
         }
         if self.push_interval_secs == 0 {
             return Err(ConfigError("PUSH_INTERVAL_SECS must be positive".into()));
+        }
+        if self.public_push_interval_secs == 0 {
+            return Err(ConfigError("PUBLIC_PUSH_INTERVAL_SECS must be positive".into()));
         }
         if self.purge_interval_secs == 0 {
             return Err(ConfigError("PURGE_INTERVAL_SECS must be positive".into()));
@@ -372,6 +380,7 @@ mod tests {
             |c| c.signup_burst = 0.5,
             |c| c.purge_interval_secs = 0,
             |c| c.push_interval_secs = 0,
+            |c| c.public_push_interval_secs = 0,
             |c| c.relay_max_bytes = 0,
         ];
         for (i, f) in bad.into_iter().enumerate() {

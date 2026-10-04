@@ -168,7 +168,8 @@ here.
 SQLite through `sqlx` today (the design targets PostgreSQL at scale; the SQL
 is kept portable). The server stores only what it needs to forward
 ciphertext: no sender, no IP address, no plaintext. Creation dates at day
-granularity, message arrival at minute granularity.
+granularity, message arrival at minute granularity. **Exception:** public
+spaces (2.12) are plaintext by design, in their own tables.
 
 ```sql
 CREATE TABLE accounts (id TEXT PRIMARY KEY, created_day INTEGER NOT NULL);
@@ -420,3 +421,60 @@ attachment lifetime (`MESSAGE_TTL_SECS` plus a day): they bound what an
 account holds (`MAX_LIVE_BYTES_PER_ACCOUNT`, F-026), so the account and the
 bytes it started per day stay that long.
 Numbers `0012` and `0013` are reserved for other branches.
+
+### 2.12 Public spaces (migration `0015_public_spaces.sql`, PROTOCOL.md 8.15)
+
+**Plaintext, not end-to-end encrypted.** Public groups and channels in
+their own tables; nothing here refers to mailboxes, deliveries or MLS
+groups.
+
+```sql
+CREATE TABLE public_spaces (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ('group', 'channel')),
+    handle TEXT NOT NULL UNIQUE,            -- normalised @handle
+    name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
+    avatar TEXT,                            -- opaque reference
+    owner_account TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    listed INTEGER NOT NULL DEFAULT 0,      -- chat.public_listing
+    comments INTEGER NOT NULL DEFAULT 0,    -- channel.comments
+    signatures INTEGER NOT NULL DEFAULT 0,  -- channel.signatures
+    slow_mode INTEGER NOT NULL DEFAULT 0,   -- chat.slow_mode, seconds (0: off)
+    created_day INTEGER NOT NULL
+);
+CREATE TABLE public_members (
+    space_id TEXT REFERENCES public_spaces(id) ON DELETE CASCADE,
+    account_id TEXT REFERENCES accounts(id) ON DELETE CASCADE,
+    role TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'member')),
+    notify INTEGER NOT NULL DEFAULT 0,      -- wants wake-ups for this space
+    last_post_at INTEGER NOT NULL DEFAULT 0,-- slow mode
+    PRIMARY KEY (space_id, account_id)
+);
+CREATE TABLE public_bans (space_id, account_id, PRIMARY KEY (space_id, account_id));
+CREATE TABLE public_posts (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,  -- creation order (pages)
+    id TEXT NOT NULL UNIQUE,                -- chosen by the client (idempotent retry)
+    space_id TEXT NOT NULL REFERENCES public_spaces(id) ON DELETE CASCADE,
+    author_account TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    author_name TEXT,                       -- the name the author published
+    reply_to TEXT,                          -- comment / reply: the post it answers
+    text TEXT NOT NULL, attachment TEXT,
+    created_at INTEGER NOT NULL, edited_at INTEGER,
+    deleted INTEGER NOT NULL DEFAULT 0,
+    rev INTEGER NOT NULL                    -- grows with every change (sync cursor)
+);
+```
+
+Indexes: `public_spaces(owner_account)`, `public_spaces(listed, handle)`,
+`public_members(account_id)`, `public_members(space_id, notify)`,
+`public_posts(space_id, seq)`, `public_posts(space_id, rev)`,
+`public_posts(reply_to)`.
+
+Retention: until the author, an admin or the owner deletes (a deleted
+post's text, attachment and name are erased at once; the tombstone goes
+after `MESSAGE_TTL_SECS`), or the account (owner: the whole space) is
+deleted. Reports of public posts go into `reports` (2.4) with the post's
+text.
+
+On the device, subscribed spaces are cached in the encrypted profile as app
+data `public/<space id>` and `public/list` (APP_PROTOCOL.md 10.1).

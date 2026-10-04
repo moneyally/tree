@@ -38,6 +38,10 @@ pub enum Payload {
         /// The topic (thread) it belongs to (`chat.topics`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         topic: Option<String>,
+        /// A reply to message `re` of the same chat; in a private channel a
+        /// comment on the admins' post `re` (`channel.comments`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        re: Option<String>,
     },
     /// The sender replaces the text of its own message `id` (chat.edit).
     Edit { id: String, text: String },
@@ -467,7 +471,7 @@ mod tests {
 
     #[test]
     fn round_trip_and_format() {
-        let t = Payload::Text { id: "01".into(), text: "안녕".into(), fmt: false, mentions: vec![], all: false, preview: None, silent: false, fwd: false, topic: None };
+        let t = Payload::Text { id: "01".into(), text: "안녕".into(), fmt: false, mentions: vec![], all: false, preview: None, silent: false, fwd: false, topic: None, re: None };
         assert_eq!(String::from_utf8(t.encode()).unwrap(), r#"{"t":"text","id":"01","text":"안녕"}"#);
         for p in [
             Payload::Edit { id: "01".into(), text: "x".into() },
@@ -497,7 +501,7 @@ mod tests {
         let q = Payload::Leave { quiet: true };
         assert_eq!(q.encode(), br#"{"t":"leave","quiet":true}"#.to_vec());
         assert_eq!(Payload::decode(&q.encode()), Some(q));
-        let s = Payload::Text { id: "02".into(), text: "shh".into(), fmt: false, mentions: vec![], all: false, preview: None, silent: true, fwd: false, topic: None };
+        let s = Payload::Text { id: "02".into(), text: "shh".into(), fmt: false, mentions: vec![], all: false, preview: None, silent: true, fwd: false, topic: None, re: None };
         assert_eq!(String::from_utf8(s.encode()).unwrap(), r#"{"t":"text","id":"02","text":"shh","silent":true}"#);
         assert_eq!(Payload::decode(&s.encode()), Some(s));
         let r = Payload::RemoveDevice { members: vec!["ab".into()] };
@@ -554,7 +558,7 @@ mod group_tests {
     /// when unused, so older apps read texts and files unchanged.
     #[test]
     fn wave3_payloads() {
-        let t = Payload::Text { id: "01".into(), text: "hi".into(), fmt: false, mentions: vec![], all: false, preview: None, silent: false, fwd: false, topic: Some("t1".into()) };
+        let t = Payload::Text { id: "01".into(), text: "hi".into(), fmt: false, mentions: vec![], all: false, preview: None, silent: false, fwd: false, topic: Some("t1".into()), re: None };
         assert_eq!(String::from_utf8(t.encode()).unwrap(), r#"{"t":"text","id":"01","text":"hi","topic":"t1"}"#);
         let all = [
             t,
@@ -605,7 +609,7 @@ mod rich_tests {
             assert_eq!(Payload::decode(&p.encode()), Some(p.clone()));
             assert!(!matches!(p, Payload::Vote { .. } | Payload::Pin { .. } | Payload::PollClose { .. }) || !p.is_franked_kind());
         }
-        let f = Payload::Text { id: "03".into(), text: "hi".into(), fmt: false, mentions: vec![], all: false, preview: None, silent: false, fwd: true, topic: None };
+        let f = Payload::Text { id: "03".into(), text: "hi".into(), fmt: false, mentions: vec![], all: false, preview: None, silent: false, fwd: true, topic: None, re: None };
         assert_eq!(String::from_utf8(f.encode()).unwrap(), r#"{"t":"text","id":"03","text":"hi","fwd":true}"#);
         assert_eq!(Payload::decode(&f.encode()), Some(f));
         // A file reference without `fwd` (older apps) reads as not forwarded.

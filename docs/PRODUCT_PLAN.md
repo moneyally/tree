@@ -142,13 +142,27 @@ restrict action, admin log, welcome text, history-sharing switch with its
 notice, slow-mode choices, join requests, community sidebar); Android
 shares the model (no screens for these yet).
 
-## Wave 4 — public groups and channels (not end-to-end, labelled)
+## Wave 4 — public groups and channels (not end-to-end, labelled) — built (branch `claude/channels`)
 
 Public groups (10,000+ members), channels (one-way broadcast), channel
 comments, author signatures, public listing, private channels up to 1,000
 subscribers end-to-end. Public spaces are a separate data path on the
 server and are never mixed with private groups (a private group cannot be
 turned public).
+
+Built: server `public.rs` (create with a unique @handle, join / leave,
+posts and comments, newest-first pages and a change cursor, edit / delete,
+admins, bans, slow mode, directory and search while `chat.public_listing`
+is applied, reports into the existing queue, wake-ups at most once a
+minute per space for subscribers who asked; all behind
+`server.public_spaces`), client `public.rs` (cache in the encrypted
+profile, unread counts, `is_public` on every object) and `channel.rs`
+(private channels: the `channel` flag fixed at creation, only admins post,
+comments with `channel.comments`, `channel.signatures`, at most 1,000
+members), FFI, desktop screens with the "Public" badge
+(PROTOCOL.md 6.11.2, 8.15; APP_PROTOCOL.md 10). Not yet: Android screens
+(the shared model compiles), avatars uploaded from the apps (the API takes
+a reference), attachments in public posts from the apps.
 
 ## Wave 5 — bot platform (design stage 2)
 

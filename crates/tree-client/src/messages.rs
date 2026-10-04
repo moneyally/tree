@@ -53,6 +53,9 @@ pub struct TextOptions {
     pub silent: bool,
     /// The topic to send it in (`chat.topics`).
     pub topic: Option<String>,
+    /// The message this answers; in a private channel, the post a comment
+    /// is on (`channel.comments`, `channel.rs`).
+    pub reply_to: Option<String>,
 }
 
 pub(crate) fn now() -> i64 {
@@ -113,10 +116,13 @@ impl Session {
     /// where they changed nothing), for a group settings screen. Permanent
     /// locks (`chat.e2e`) carry their reason and always their locked value.
     pub fn chat_features(&mut self, gid: &[u8]) -> Result<Vec<tree_core::features::Status>, Error> {
-        let set = self.group_settings(gid)?.features;
+        let gs = self.group_settings(gid)?;
+        let set = gs.features;
         Ok(Registry::standard()
             .list(tree_core::features::Scope::Chat)
             .into_iter()
+            // Public listing is for public spaces only; channel keys for channels.
+            .filter(|st| crate::channel::private_key_fits(st.key, gs.channel).is_ok())
             .map(|mut st| {
                 if let (None, Some(s)) = (&st.locked_by, set.get(st.key)) {
                     st.state = if s.applied { State::Applied } else { State::Released };
@@ -194,6 +200,7 @@ impl Session {
             return Err(Self::locked_by_chat());
         }
         self.check_send_topic(gid, o.topic.as_deref())?;
+        self.check_send_reply(gid, o.reply_to.as_deref())?;
         let fmt = o.formatted && self.chat_allows(gid, "chat.formatting")?;
         let preview = match &o.preview {
             Some(p) if !p.is_valid() => return Err(Error::Usage("link preview too long or not a web link".into())),
@@ -202,8 +209,8 @@ impl Session {
         };
         let id = new_id();
         let mentions = o.mentions.iter().map(|m| m.to_hex()).collect();
-        let data = text_data_in(fmt, preview.as_ref(), o.silent, o.topic.as_deref());
-        let p = Payload::Text { id: id.clone(), text: text.to_string(), fmt, mentions, all: o.all, preview, silent: o.silent, fwd: false, topic: o.topic.clone() };
+        let data = crate::channel::with_re(text_data_in(fmt, preview.as_ref(), o.silent, o.topic.as_deref()), o.reply_to.as_deref());
+        let p = Payload::Text { id: id.clone(), text: text.to_string(), fmt, mentions, all: o.all, preview, silent: o.silent, fwd: false, topic: o.topic.clone(), re: o.reply_to.clone() };
         // Stored in the history with the outbox item, before it goes out.
         self.queue_payload(gid, &p, Some(&id), |s| s.store(gid, &id, &me, "text", Some(text.to_string()), data, None).map(|_| ()))?;
         self.set_draft(gid, "")?;
@@ -336,7 +343,7 @@ impl Session {
         let request = matches!(self.group_status(gid)?, GroupStatus::Request { .. });
         let name = self.names(gid)?.get(&from.to_hex()).cloned();
         match p {
-            Payload::Text { id, text, fmt, mentions, all, preview, silent, fwd, topic } => {
+            Payload::Text { id, text, fmt, mentions, all, preview, silent, fwd, topic, re } => {
                 let topic = match self.receive_topic(gid, &from, topic)? {
                     Ok(t) => t,
                     Err(why) => {
@@ -355,7 +362,14 @@ impl Session {
                 let me = self.member_id().to_hex();
                 let all = all && self.may_mention_all(gid, &from)?;
                 let mentions_me = all || mentions.iter().take(MAX_MENTIONS).any(|m| *m == me);
-                let data = crate::forward::with_fwd(text_data_in(formatted, preview.as_ref(), silent, topic.as_deref()), fwd);
+                let re = match self.receive_reply(gid, &from, re)? {
+                    Ok(r) => r,
+                    Err(why) => {
+                        refuse(events, why);
+                        return Ok(());
+                    }
+                };
+                let data = crate::channel::with_re(crate::forward::with_fwd(text_data_in(formatted, preview.as_ref(), silent, topic.as_deref()), fwd), re.as_deref());
                 if !self.store(gid, &id, &from, "text", Some(text.clone()), data, franking)? {
                     refuse(events, "duplicate message id");
                     return Ok(());

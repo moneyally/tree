@@ -570,4 +570,117 @@ class AppModelTest {
         assertTrue(carol.state.value.groups.communities.single().chats.single().joined)
         alice.stop(); bob.stop(); carol.stop()
     }
+
+    /**
+     * Wave 4, public spaces (not end-to-end): every object is marked public
+     * and the badge text exists in both languages; directory search by
+     * @handle, subscribe, unread counts, channel posts by admins only,
+     * comments and signatures applied and released.
+     */
+    @Test
+    fun publicChannelWithBadgeCommentsAndSignatures() = runBlocking {
+        val alice = AppModel(this, Dispatchers.IO)
+        val bob = AppModel(this, Dispatchers.IO)
+        assertTrue(alice.createAccount("$dir/pub-alice.db", "alice pass", "alice", url, 8u))
+        assertTrue(bob.createAccount("$dir/pub-bob.db", "bob pass", "bob", url, 8u))
+        Strings.lang = Lang.KO
+        assertEquals("공개", publicBadge())
+        Strings.lang = Lang.EN
+        assertEquals("Public", publicBadge())
+
+        val id = assertNotNull(alice.createPublic("channel", "Tree news", "tree_news_app", "hello"))
+        val mine = assertNotNull(alice.state.value.pub.open)
+        assertTrue(mine.isPublic && mine.role == "owner")
+        assertTrue(publicTitle(mine).startsWith("[Public]"))
+        // Not listed: found by exact @handle only.
+        bob.searchPublic("@tree_news_app")
+        assertEquals(listOf(id), bob.state.value.pub.found.map { it.id })
+        assertTrue(bob.state.value.pub.found.all { it.isPublic })
+        assertTrue(bob.joinPublic(id))
+        assertEquals(listOf(id), bob.state.value.pub.spaces.map { it.id })
+
+        // Only admins post in a channel.
+        assertTrue(!bob.postPublic("a member's post"))
+        assertTrue(bob.state.value.error!!.contains("NOT_ADMIN"))
+        bob.clearMessages()
+        assertTrue(alice.postPublic("first news"))
+        bob.openPublic(null)
+        bob.syncPublic(force = true)
+        assertEquals(1u, bob.state.value.pub.spaces.single().unread)
+        bob.openPublic(id)
+        val post = bob.state.value.pub.posts.single()
+        assertTrue(post.isPublic && post.author == null, "signatures released: the channel is shown")
+        assertEquals("Tree news", publicAuthor(post, bob.state.value.pub.open))
+        assertEquals(0u, bob.state.value.pub.spaces.single().unread, "opening reads it")
+
+        // Comments: released, applied, released.
+        assertTrue(!bob.postPublic("nice", post.id))
+        bob.clearMessages()
+        assertTrue(alice.setPublicFeature("channel.comments", true))
+        bob.openPublic(id)
+        assertTrue(bob.postPublic("nice", post.id))
+        bob.loadPublicComments(post.id)
+        assertEquals(listOf("nice"), bob.state.value.pub.comments[post.id]!!.map { it.text })
+        assertTrue(alice.setPublicFeature("channel.comments", false))
+        assertTrue(!bob.postPublic("again", post.id))
+        bob.clearMessages()
+
+        // Signatures applied: bob sees alice's name; released: the channel again.
+        assertTrue(alice.setPublicFeature("channel.signatures", true))
+        bob.openPublic(id)
+        assertEquals("alice", publicAuthor(bob.state.value.pub.posts.single(), bob.state.value.pub.open))
+        assertTrue(alice.setPublicFeature("channel.signatures", false))
+        bob.openPublic(id)
+        assertEquals("Tree news", publicAuthor(bob.state.value.pub.posts.single(), bob.state.value.pub.open))
+        // Listing applied: in the directory; notifications on and off.
+        assertTrue(alice.setPublicFeature("chat.public_listing", true))
+        bob.searchPublic("Tree")
+        assertTrue(bob.state.value.pub.found.any { it.id == id })
+        assertTrue(bob.setPublicNotify(true) && bob.state.value.pub.open!!.notify)
+        assertTrue(bob.setPublicNotify(false) && !bob.state.value.pub.open!!.notify)
+        assertTrue(bob.leavePublic(id))
+        assertTrue(bob.state.value.pub.spaces.isEmpty())
+        alice.stop(); bob.stop()
+    }
+
+    /** Wave 4, private channels (end-to-end): only admins post; comments while applied. */
+    @Test
+    fun privateChannelOnlyAdminsPost() = runBlocking {
+        val alice = AppModel(this, Dispatchers.IO)
+        val bob = AppModel(this, Dispatchers.IO)
+        assertTrue(alice.createAccount("$dir/chan-alice.db", "alice pass", "alice", url, 8u))
+        assertTrue(bob.createAccount("$dir/chan-bob.db", "bob pass", "bob", url, 8u))
+        val ch = assertNotNull(alice.createChannel("비밀 채널"))
+        assertTrue(alice.state.value.channel.isChannel && alice.state.value.channel.mayPost)
+        assertTrue(alice.state.value.chats.single { it.id == ch }.channel)
+        assertTrue(alice.invite(ch, bob.state.value.account))
+        bob.syncNow()
+        bob.accept(ch)
+        bob.openChat(ch)
+        assertTrue(bob.state.value.channel.isChannel && !bob.state.value.channel.mayPost)
+        assertTrue(!bob.send(ch, "member post"))
+        assertEquals("NOT_ADMIN", bob.state.value.error)
+        bob.clearMessages()
+        assertTrue(alice.send(ch, "공지"))
+        bob.syncNow()
+        val post = bob.state.value.messages.single { it.text == "공지" }
+        assertTrue(!bob.commentOn(ch, post.id, "댓글"))
+        bob.clearMessages()
+        assertTrue(alice.setChatFeature(ch, "channel.comments", true))
+        bob.syncNow()
+        assertTrue(bob.state.value.channel.mayComment)
+        assertTrue(bob.commentOn(ch, post.id, "댓글"))
+        alice.syncNow()
+        assertEquals(listOf("댓글"), alice.state.value.channel.comments[post.id]!!.map { it.text })
+        assertEquals(post.id, alice.state.value.messages.single { it.text == "댓글" }.replyTo)
+        // Signatures: released by default, applied, released.
+        assertTrue(!bob.state.value.channel.signatures)
+        assertTrue(alice.setChatFeature(ch, "channel.signatures", true))
+        bob.syncNow()
+        assertTrue(bob.state.value.channel.signatures)
+        assertTrue(alice.setChatFeature(ch, "channel.signatures", false))
+        bob.syncNow()
+        assertTrue(!bob.state.value.channel.signatures)
+        alice.stop(); bob.stop()
+    }
 }

@@ -92,7 +92,7 @@ impl Session {
                 let was_fmt = serde_json::from_slice::<serde_json::Value>(m.data.as_deref().unwrap_or(b"{}")).is_ok_and(|v| v["fmt"] == true);
                 let fmt = was_fmt && self.chat_on(to, "chat.formatting")?;
                 let new = new_id();
-                let p = Payload::Text { id: new.clone(), text: text.clone(), fmt, mentions: vec![], all: false, preview: None, silent: false, fwd: true, topic: None };
+                let p = Payload::Text { id: new.clone(), text: text.clone(), fmt, mentions: vec![], all: false, preview: None, silent: false, fwd: true, topic: None, re: None };
                 let data = with_fwd(text_data(fmt, None, false), true);
                 self.queue_payload(to, &p, Some(&new), |s| s.store(to, &new, &me, "text", Some(text), data, None).map(|_| ()))?;
                 Ok(new)

@@ -13,9 +13,11 @@ uniffi::setup_scaffolding!();
 
 mod device;
 mod groups;
+mod public;
 mod rich;
 mod rich_media;
 pub use groups::*;
+pub use public::*;
 pub use rich_media::*;
 pub use device::*;
 
@@ -420,6 +422,9 @@ pub struct Message {
     /// The sharer's account, only if this device has the sharer pinned for
     /// it (never a roster label alone, F-021/F-022).
     pub shared_by_account: Option<String>,
+    /// The message this answers; in a private channel the post this
+    /// comment is on (`channel.comments`).
+    pub reply_to: Option<String>,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -437,6 +442,7 @@ impl From<tree_client::StoredMessage> for Message {
             .map(Attachment::from);
         Message {
             topic: tree_client::topics::message_topic(&m),
+            reply_to: tree_client::channel::message_re(&m),
             shared_by: None,
             shared_by_account: None,
             forwarded: tree_client::forward::is_forwarded(&m),
@@ -565,6 +571,8 @@ pub struct GroupInfo {
     /// `accepted`, `request` or `declined`.
     pub status: String,
     pub request_from: Option<String>,
+    /// A private channel: only admins post (end-to-end encrypted).
+    pub channel: bool,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -812,6 +820,7 @@ impl TreeSession {
             features: st.features.iter().map(|(k, v)| ChatFeature { key: k.clone(), applied: v.applied, option: v.option.clone() }).collect(),
             status: status.into(),
             request_from,
+            channel: st.channel,
         })
     }
 
@@ -952,6 +961,7 @@ impl TreeSession {
             all,
             preview: preview.map(|p| tree_client::payload::LinkPreview { url: p.url, title: p.title, description: p.description }),
             topic: None,
+            reply_to: None,
         };
         Ok(self.s().send_text_with(&unhex(&group, "group")?, &text, &o)?)
     }

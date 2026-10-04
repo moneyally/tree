@@ -15,7 +15,7 @@ One JSON object per application message, UTF-8, field `t` names the type:
 
 | `t` | Fields | Meaning | Who may send |
 | --- | --- | --- | --- |
-| `text` | `id` (16 random bytes, hex), `text`; optional `fmt` (true: Tree markup, 1.1), `mentions` (member ids, at most 50), `all` (@all), `preview` (`url`, `title`, `description`: made by the sender's app, which fetched the page; receivers never fetch it; shown only while the receiver's `user.link_preview` is applied), `silent` (true: silent send, receivers' apps do not notify, 6.1), `fwd` (true: forwarded from another chat, 6.2; the original sender is not named), `topic` (a topic id, 9.1) | a chat message | any member not restricted (9.9), within slow mode (9.8); `fmt` only while `chat.formatting` is applied; `all` as `chat.mention_all` allows; `topic` while `chat.topics` is applied and the topic is open (or the sender manages topics) |
+| `text` | `id` (16 random bytes, hex), `text`; optional `fmt` (true: Tree markup, 1.1), `mentions` (member ids, at most 50), `all` (@all), `preview` (`url`, `title`, `description`: made by the sender's app, which fetched the page; receivers never fetch it; shown only while the receiver's `user.link_preview` is applied), `silent` (true: silent send, receivers' apps do not notify, 6.1), `fwd` (true: forwarded from another chat, 6.2; the original sender is not named), `topic` (a topic id, 9.1), `re` (the id of the message it answers; in a private channel the post it comments on, 10.2) | a chat message | any member not restricted (9.9), within slow mode (9.8); `fmt` only while `chat.formatting` is applied; `all` as `chat.mention_all` allows; `topic` while `chat.topics` is applied and the topic is open (or the sender manages topics); in a private channel only admins, or with `re` naming a post a comment while `channel.comments` is applied (10.2) |
 | `edit` | `id`, `text` | replaces the text of the sender's own message `id` | its sender, if `chat.edit` is applied, within the window |
 | `delete` | `id` | deletes message `id` for everyone | its sender, if `chat.delete_for_all` is applied, within the window; or, for another member's message, an admin or a member whose role has `delete` (9.2), at any age |
 | `react` | `id`, `emoji` (1 to 8 characters), `remove` (optional), `sticker` (optional: `pack` (blob reference of the pack manifest), `index`; a custom emoji, 8.1) | adds or takes back a reaction | any member, if `chat.reactions` is applied; `sticker` counts only while `chat.stickers` is applied (otherwise the plain `emoji`) |
@@ -709,3 +709,59 @@ admin cannot be removed by anyone else (only admins remove, and no device
 removes itself), so leaving is the only way the last admin goes. Released:
 nobody is named; the group keeps the departed device as its only admin and
 its leaf stays, since nobody else may remove it.
+
+## 10. Public spaces and channels (Wave 4)
+
+### 10.1 Public groups and channels (not end-to-end)
+
+Public groups and channels are **not** MLS groups and nothing of them
+travels inside MLS: they are a separate, plaintext API on the server
+(PROTOCOL.md 8.15, `crates/tree-client/src/public.rs`). Every object the
+client and the FFI hand to an app carries `is_public: true`; apps show a
+"Public" badge wherever public content appears (list, header, posts,
+composer, search results) and say before creating or posting that the
+server and anyone can read it and that the user's display name is
+published with each post.
+
+The client keeps subscribed spaces in the encrypted profile (app data
+`public/<space id>`: the space as last seen, at most 1,000 posts by
+`seq`, the change cursor `rev`, the last read `seq`; `public/list`: the
+subscribed ids). `public_sync` fetches the newest page the first time (in
+a channel with the comments of those posts) and afterwards every change
+after the cursor, so edits and deletions reach the cache. Answers to the
+device's own actions (a post, an edit) are kept but never move the cursor.
+When `channel.signatures` or the device's role changes, the kept posts are
+refetched (the author fields differ). Unread: posts after the last read
+`seq`, not deleted, not the device's own; in a channel comments do not
+count. Leaving deletes the kept copy. A post id is chosen by the client
+(16 random bytes), so a post retried after a network failure is stored
+once.
+
+Space settings, applied and released by the space's admins on the server:
+`chat.public_listing`, `channel.comments`, `channel.signatures`,
+`chat.slow_mode` (duration option, 10 s to 1 h). Notifications per space
+(`public_set_notify`) ask the server for content-free wake-ups.
+
+### 10.2 Private channels (end-to-end)
+
+A private channel is an MLS group with the `channel` flag (PROTOCOL.md
+6.11.2), created with `create_channel`; at most 1,000 members.
+
+| Key | Default | Effect |
+| --- | --- | --- |
+| `channel.comments` | released | members may comment on posts: a `text` with `re` naming a post (not a comment) this device holds; released, comments are refused by the sender and dropped by every receiver |
+| `channel.signatures` | released | the apps show the posting admin's name on posts; released, the channel's name (`author_shown`). Commenters are always shown |
+
+Who may send what (every receiver checks, judged by the MLS-authenticated
+sender; the sending device refuses first):
+
+| From | Allowed |
+| --- | --- |
+| an admin | everything a group member may send |
+| another member | comments (above); `react`, `vote`, `rsvp`; `edit` and `delete` of its own messages (only comments can be its own); `pin` and `join_chat` under their own rules; plumbing (`profile`, `profile_photo`, `roster`, `leave`, `remove_device`, `read`, `typing`, `seen`) |
+
+Everything else from a member who is not an admin is dropped with "only
+admins post in a channel". `chat.public_listing` can never be applied to a
+private group or channel (`PUBLIC_SPACES_ONLY`), and `channel.*` keys only
+to a channel (`CHANNELS_ONLY`); the apps' settings screens leave them out
+accordingly.

@@ -36,6 +36,10 @@ pub const MAX_RESTRICTED: usize = 50;
 pub const MAX_COMMUNITY_CHATS: usize = 50;
 /// Longest chat name in a community list, in characters.
 pub const MAX_COMMUNITY_NAME: usize = 64;
+/// Members (devices, MLS leaves) of a private channel at most: a private
+/// channel stays end-to-end encrypted, and its size is bounded so that
+/// commits and welcomes stay within the server's limits (BENCHMARKS.md).
+pub const MAX_CHANNEL_MEMBERS: usize = 1000;
 
 /// What a role may allow besides what every member may do. Admins may do
 /// all of it.
@@ -109,6 +113,11 @@ pub struct GroupSettings {
     /// Set on a community root group.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub community: Option<Community>,
+    /// A private channel (Wave 4, PROTOCOL.md 6.11.2): only admins post;
+    /// members comment while `channel.comments` is applied. Set when the
+    /// group is created and never changed afterwards.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub channel: bool,
 }
 
 /// A valid role id.
@@ -159,8 +168,19 @@ impl GroupSettings {
         if self.name.as_ref().is_some_and(|n| n.chars().count() > 128) {
             return Err(TreeError::Group("group name longer than 128 characters".into()));
         }
-        if self.features.keys().any(|k| !k.starts_with("chat.")) {
-            return Err(TreeError::Group("only chat.* features belong in group settings".into()));
+        if self.features.keys().any(|k| !k.starts_with("chat.") && !k.starts_with("channel.")) {
+            return Err(TreeError::Group("only chat.* and channel.* features belong in group settings".into()));
+        }
+        if !self.channel && self.features.keys().any(|k| k.starts_with("channel.")) {
+            return Err(TreeError::Group("channel.* features belong to channels".into()));
+        }
+        // A private group is never listed in the public directory: public
+        // spaces are a separate thing on the server (chat.private_to_public).
+        if self.features.get("chat.public_listing").is_some_and(|s| s.applied) {
+            return Err(TreeError::Group("a private group is never listed publicly".into()));
+        }
+        if self.channel && members.len() > MAX_CHANNEL_MEMBERS {
+            return Err(TreeError::Group(format!("a private channel has at most {MAX_CHANNEL_MEMBERS} members")));
         }
         for (k, s) in &self.features {
             // A permanent lock (chat.e2e, chat.private_to_public) is not a
@@ -262,6 +282,18 @@ impl GroupSettings {
 
     pub fn is_admin(&self, m: &MemberId) -> bool {
         self.admins.contains(m)
+    }
+
+    /// May `m` post in this group? Everyone, except in a channel, where
+    /// only admins post (members comment, [`GroupSettings::may_comment`]).
+    pub fn may_post(&self, m: &MemberId) -> bool {
+        !self.channel || self.is_admin(m)
+    }
+
+    /// May `m` comment on a post here: in a channel while
+    /// `channel.comments` is applied (admins too).
+    pub fn may_comment(&self, _m: &MemberId) -> bool {
+        self.channel && self.feature_on("channel.comments")
     }
 
     /// Whether the chat-scope feature `key` is applied here (its default
@@ -456,6 +488,38 @@ mod tests {
         assert!(gone.member_roles.is_empty());
         // A base encoding has none of the new fields (older readers).
         assert!(!String::from_utf8(base.encode().unwrap()).unwrap().contains("roles"));
+    }
+
+    #[test]
+    fn channels() {
+        let base = GroupSettings { admins: vec![id(1)], channel: true, ..Default::default() };
+        assert!(base.check(&[id(1), id(2)]).is_ok());
+        assert!(base.may_post(&id(1)) && !base.may_post(&id(2)), "only admins post");
+        assert!(!base.may_comment(&id(2)), "comments released by default");
+        let mut c = base.clone();
+        c.features.insert("channel.comments".into(), ChatSetting { applied: true, option: None });
+        assert!(c.check(&[id(1)]).is_ok() && c.may_comment(&id(2)));
+        // channel.* keys only in channels; never listed publicly.
+        let mut g = c.clone();
+        g.channel = false;
+        assert!(g.check(&[id(1)]).is_err(), "channel key in a group");
+        assert!(GroupSettings { admins: vec![id(1)], ..Default::default() }.may_post(&id(2)), "groups: everyone");
+        let mut listed = base.clone();
+        listed.features.insert("chat.public_listing".into(), ChatSetting { applied: true, option: None });
+        assert!(listed.check(&[id(1)]).is_err(), "a private group is never listed");
+        listed.features.insert("chat.public_listing".into(), ChatSetting { applied: false, option: None });
+        assert!(listed.check(&[id(1)]).is_ok());
+        // At most 1,000 members.
+        let many: Vec<MemberId> = (0..MAX_CHANNEL_MEMBERS as u32).map(|i| { let mut b = [0u8; 32]; b[..4].copy_from_slice(&i.to_be_bytes()); b[31] = 1; MemberId(b) }).collect();
+        let mut big = base.clone();
+        big.admins = vec![many[0]];
+        assert!(big.check(&many).is_ok());
+        let mut more = many.clone();
+        more.push(id(9));
+        assert!(big.check(&more).is_err());
+        // Round trip; groups encode without the flag.
+        assert_eq!(GroupSettings::decode(&c.encode().unwrap()).unwrap(), c);
+        assert!(!String::from_utf8(GroupSettings { admins: vec![id(1)], ..Default::default() }.encode().unwrap()).unwrap().contains("channel"));
     }
 
     #[test]

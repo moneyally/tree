@@ -290,7 +290,17 @@ impl<P: TreeProvider> Client<P> {
 
     /// Starts a new conversation with only this device in it, as its admin.
     pub fn create_group(&self) -> Result<Group, TreeError> {
-        let settings = GroupSettings { admins: vec![self.member_id()], ..Default::default() };
+        self.create_group_with(false)
+    }
+
+    /// Starts a private channel (PROTOCOL.md 6.11.2): an end-to-end group
+    /// in which only admins post. The flag is fixed for the group's life.
+    pub fn create_channel(&self) -> Result<Group, TreeError> {
+        self.create_group_with(true)
+    }
+
+    fn create_group_with(&self, channel: bool) -> Result<Group, TreeError> {
+        let settings = GroupSettings { admins: vec![self.member_id()], channel, ..Default::default() };
         let config = MlsGroupCreateConfig::builder()
             .ciphersuite(self.ciphersuite)
             .capabilities(Self::capabilities())

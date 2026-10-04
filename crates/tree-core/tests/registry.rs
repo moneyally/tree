@@ -106,7 +106,8 @@ fn standard_feature_table() {
         // The key prefix names the scope.
         let prefix = f.key.split('.').next().unwrap();
         let ok = match f.scope {
-            Scope::Chat => prefix == "chat",
+            // Channel settings (Wave 4) are chat scope too: set by admins.
+            Scope::Chat => prefix == "chat" || prefix == "channel",
             Scope::User => prefix == "user" || prefix == "points",
             Scope::Server => prefix == "server",
             Scope::Bot => prefix == "bot",

@@ -230,6 +230,9 @@ impl Group {
             return Err(TreeError::NotAdmin);
         }
         new.check_own(&self.members())?;
+        if new.channel != self.settings().channel {
+            return Err(TreeError::Group("a group cannot become a channel or stop being one".into()));
+        }
         let ext = Self::settings_extensions(new)?;
         self.begin_commit(me, |mls| {
             let (commit, _, _) =
@@ -265,8 +268,15 @@ impl Group {
         if key_packages.is_empty() {
             return Err(TreeError::Group("nothing to add".into()));
         }
-        if !self.settings().may_add(&me.member_id()) {
+        let settings = self.settings();
+        if !settings.may_add(&me.member_id()) {
             return Err(TreeError::NotAdmin);
+        }
+        if settings.channel && self.member_list().len() + key_packages.len() > crate::group_settings::MAX_CHANNEL_MEMBERS {
+            return Err(TreeError::Group(format!(
+                "a private channel has at most {} members",
+                crate::group_settings::MAX_CHANNEL_MEMBERS
+            )));
         }
         let kps = key_packages
             .iter()
@@ -547,6 +557,10 @@ impl Group {
                 };
                 let after = settings_of(staged.group_context().extensions())?;
                 after.check(&new_members).map_err(|e| TreeError::Rejected(format!("settings after this commit: {e}")))?;
+                // Rule 6 (PROTOCOL.md 6.11.2): the channel flag is fixed at creation.
+                if after.channel != before.channel {
+                    return Err(TreeError::Rejected("a group cannot become a channel or stop being one".into()));
+                }
                 let settings_changed = changes_settings;
                 let removed_leaves: Vec<LeafNodeIndex> =
                     staged.remove_proposals().map(|p| p.remove_proposal().removed()).collect();

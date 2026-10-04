@@ -8,6 +8,7 @@
 
 pub mod admin_log;
 pub mod api;
+pub mod channel;
 pub mod chat_events;
 pub mod device;
 pub mod community;
@@ -27,6 +28,7 @@ pub mod payload;
 pub mod pins;
 pub mod polls;
 pub mod profile;
+pub mod public;
 pub mod refresh;
 pub mod relay;
 pub mod requests;
@@ -59,6 +61,7 @@ pub use api::{Api, Creds};
 pub use link::{LinkStatus, NewDevice};
 pub use media::{Downloader, MediaMeta, SendOptions, Source, Transfer, TransferState, Transfers};
 pub use messages::TextOptions;
+pub use public::{PublicPost, PublicSpace};
 pub use tree_core::features::Network;
 pub use outbox::OutboxEntry;
 pub use tree_core::storage::outbox::OutboxState;
@@ -1073,6 +1076,8 @@ impl Session {
     /// (checked against the registry: permanent locks, server locks).
     pub fn set_chat_feature(&mut self, gid: &[u8], key: &str, apply: bool, option: Option<String>) -> Result<CommitOutcome, Error> {
         use tree_core::features::{Caller, Plan, Registry, Scope};
+        let channel = self.group_settings(gid)?.channel;
+        channel::private_key_fits(key, channel)?;
         let mut r = Registry::standard();
         let admin = Caller { plan: Plan::Free, is_admin: true };
         let status = if apply { r.apply(key, option, admin) } else { r.release(key, admin) }

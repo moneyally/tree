@@ -179,13 +179,15 @@ private fun Main(model: AppModel, state: UiState) {
     var tab by remember { mutableStateOf(0) }
     Column(Modifier.fillMaxSize()) {
         TabRow(selectedTabIndex = tab) {
-            listOf("chats", "requests", "settings").forEachIndexed { i, k ->
+            listOf("chats", "requests", "public_spaces", "settings").forEachIndexed { i, k ->
                 Tab(selected = tab == i, onClick = { tab = i }, text = { Text(Strings.t(k)) })
             }
         }
         when (tab) {
             0 -> Chats(model, state, requests = false)
             1 -> Chats(model, state, requests = true)
+            // Public groups and channels: not end-to-end, badged (PublicView.kt).
+            2 -> PublicScreen(model, state)
             else -> Settings(model, state)
         }
     }
@@ -199,6 +201,7 @@ private fun Chats(model: AppModel, state: UiState, requests: Boolean) {
         Column(Modifier.width(260.dp).fillMaxHeight().padding(8.dp)) {
             if (!requests) {
                 Button(onClick = { scope.launch { model.newChat() } }) { Text(Strings.t("new_group")) }
+                NewChannel(model)
                 JoinLink(model)
                 SearchBox(model)
                 CommunitySidebar(model, state)
@@ -261,7 +264,7 @@ private fun ChatRow(model: AppModel, c: Chat, requests: Boolean) {
                 "(${c.unread})".takeIf { c.unread > 0 },
                 "•".takeIf { c.markedUnread && c.unread == 0 },
             ).joinToString(" ")
-            Text(c.title + if (marks.isEmpty()) "" else "  $marks")
+            Text((if (c.channel) "[${Strings.t("channel_badge")}] " else "") + c.title + if (marks.isEmpty()) "" else "  $marks")
             muteNote(c)?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
             c.draft?.let { Text("${Strings.t("draft")}: ${it.take(30)}", style = MaterialTheme.typography.bodySmall) }
             if (requests) labelText(c)?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
@@ -381,7 +384,9 @@ private fun ChatView(model: AppModel, state: UiState, chat: Chat) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             ChatPhoto(model, chat, 36)
             Text(" " + chat.title, style = MaterialTheme.typography.titleLarge)
+            if (chat.channel) Text("  [${Strings.t("channel_badge")}]", style = MaterialTheme.typography.labelLarge)
         }
+        if (chat.channel) Text(Strings.t("channel_note"), style = MaterialTheme.typography.bodySmall)
         // Who this person is to the user (user.stranger_labels), and the mute.
         labelText(chat)?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
         muteNote(chat)?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
@@ -416,7 +421,8 @@ private fun ChatView(model: AppModel, state: UiState, chat: Chat) {
                 style = MaterialTheme.typography.bodySmall)
         }
         LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
-            items(shownMessages(state), key = { it.id }) { m ->
+            // A private channel lists its posts; comments go under them.
+            items(shownMessages(state).filter { !state.channel.isChannel || it.replyTo == null }, key = { it.id }) { m ->
                 val body = when {
                     m.kind == "left" || m.kind == "removed" -> "${m.who ?: m.sender.take(6)} ${Strings.t(m.kind)}"
                     m.kind == "welcome" -> "${Strings.t("welcome_notice")}: ${m.text ?: ""}"
@@ -427,7 +433,9 @@ private fun ChatView(model: AppModel, state: UiState, chat: Chat) {
                 }
                 Column {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    val who = state.names[m.sender]?.ifEmpty { Strings.t("me") } ?: m.sender.take(6)
+                    // channel.signatures released: a post shows the channel, not the admin.
+                    val who = if (state.channel.isChannel && !state.channel.signatures) chat.title
+                        else state.names[m.sender]?.ifEmpty { Strings.t("me") } ?: m.sender.take(6)
                     val read = if (m.id in state.readMine) "  ✓ " + Strings.t("read") else ""
                     if (isRich(state, m)) Box(Modifier.weight(1f)) { RichMessage(model, state, chat, m, who) }
                     else Text("$who: $body$read", Modifier.weight(1f).padding(4.dp))
@@ -453,6 +461,7 @@ private fun ChatView(model: AppModel, state: UiState, chat: Chat) {
                     MessageMenu(model, state, chat.id, m)
                 }
                 if (m.kind == "poll") PollWidget(model, state, chat.id, m)
+                if (state.channel.isChannel && m.kind == "text") ChannelComments(model, state, chat, m)
                 }
             }
         }
@@ -463,7 +472,9 @@ private fun ChatView(model: AppModel, state: UiState, chat: Chat) {
                 scope.launch { model.sendMedia(chat.id, jpeg, sendName, "image/jpeg", AppModel.picture(w, h, thumb)) }
             }, onCancel = { editing = null })
         }
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        if (state.channel.isChannel && !state.channel.mayPost) {
+            Text(Strings.t("channel_admins_only"), style = MaterialTheme.typography.bodySmall)
+        } else Row(verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = {
                 val d = java.awt.FileDialog(null as java.awt.Frame?, Strings.t("attach"), java.awt.FileDialog.LOAD)
                 d.isVisible = true

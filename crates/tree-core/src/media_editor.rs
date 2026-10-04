@@ -286,6 +286,7 @@ mod tests {
             italic: false,
         });
         recipe.strokes.push(DrawStroke {
+            brush: BrushSettings::default(),
             points: vec![Point { x: 0.1, y: 0.1 }, Point { x: 0.2, y: 0.2 }],
             color_rgba: [255, 0, 0, 255],
             width: 12.0,

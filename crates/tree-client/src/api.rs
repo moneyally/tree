@@ -185,7 +185,7 @@ impl Api {
     ) -> Result<MediaUploadInfo, ClientError> {
         let body = json!({
             "manifest": b64(manifest),
-            "key_commitment": hex::encode(key_commitment),
+            "key_commitment": b64(key_commitment),
             "plaintext_size": plaintext_size,
             "chunk_size": chunk_size,
             "chunk_count": chunk_count,

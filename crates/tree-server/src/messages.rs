@@ -324,13 +324,27 @@ pub async fn load(
     device_id: &str,
     requested_cursor: Option<i64>,
 ) -> ApiResult<FetchResp> {
+    let stored_cursor: i64 =
+        sqlx::query("SELECT cursor FROM message_cursors WHERE device_id = ?")
+            .bind(device_id)
+            .fetch_optional(&state.db)
+            .await?
+            .map(|r| r.try_get("cursor"))
+            .transpose()?
+            .unwrap_or(0);
+    let cursor = requested_cursor.unwrap_or(stored_cursor);
+    if cursor < stored_cursor {
+        return Err(ApiError::conflict(
+            "CURSOR_ROLLBACK",
+            "message cursor cannot move backwards",
+        ));
+    }
     let limit = state.cfg.fetch_limit as i64;
     let rows = sqlx::query(
-        "SELECT d.id AS id, b.body AS body, b.received_at AS received_at \
-         FROM deliveries d JOIN blobs b ON b.id = d.blob_id \
-         WHERE d.device_id = ? ORDER BY d.seq LIMIT ?",
+        "SELECT d.id AS id, d.seq AS seq, b.body AS body, b.received_at AS received_at          FROM deliveries d JOIN blobs b ON b.id = d.blob_id          WHERE d.device_id = ? AND d.seq > ? ORDER BY d.seq LIMIT ?",
     )
     .bind(device_id)
+    .bind(cursor)
     .bind(limit + 1)
     .fetch_all(&state.db)
     .await?;

@@ -83,7 +83,11 @@ fn conversation_survives_restarts() {
     let (bob, mut b) = restart(bob, b, &pb, "bob pass");
     says(b.receive(&bob, &m).unwrap(), &alice, "in flight");
     let (bob, mut b) = restart(bob, b, &pb, "bob pass");
-    assert!(b.receive(&bob, &m).is_err(), "replay accepted after restart");
+    assert_eq!(
+        b.receive(&bob, &m).unwrap(),
+        Incoming::NoOp,
+        "replay must not produce a second visible message after restart"
+    );
 
     // Charlie publishes a key package, restarts, and can still join with it:
     // its private part was stored.

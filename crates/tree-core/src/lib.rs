@@ -68,5 +68,4 @@ pub type DefaultProvider = openmls_rust_crypto::OpenMlsRustCrypto;
 /// Supports the X-Wing hybrid suite under the `pq` feature.
 pub type LibcruxProvider = openmls_libcrux_crypto::Provider;
 
-pub mod attachment;
 pub mod safety;

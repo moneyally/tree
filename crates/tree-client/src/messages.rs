@@ -18,7 +18,7 @@
 //! | `chat.formatting` | applied | formatting markup is shown; released: shown as plain text |
 //! | `chat.mention_all` | applied, option `admins` (default) or `all` | who may @all; otherwise the @all is ignored |
 //! | `chat.screenshot_block` | released | the apps block screenshots of the chat (also per user) |
-//! | `chat.gifs`, `chat.video_notes` | applied | files flagged as a GIF / a video note allowed (`gifs.rs`, `video_notes.rs`) |
+//! | `chat.gifs`, `chat.video_notes` | applied | files flagged as a GIF / a video note allowed (`relay.rs`, `rich.rs`) |
 //!
 //! Windows are measured with this device's own clock from when it received
 //! (or sent) the original, never from a time the sender claims.

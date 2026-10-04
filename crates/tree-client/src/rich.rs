@@ -29,6 +29,20 @@ pub const MAX_VIDEO_NOTE_MS: u64 = 60_000;
 /// Longest message id taken from another device.
 pub(crate) const MAX_ID: usize = 64;
 
+/// The payloads this module routes (`on_rich`).
+pub(crate) fn is_rich(p: &Payload) -> bool {
+    matches!(
+        p,
+        Payload::Sticker { .. }
+            | Payload::Location(_)
+            | Payload::LiveLocation { .. }
+            | Payload::ChatEvent(_)
+            | Payload::EventEdit { .. }
+            | Payload::Rsvp { .. }
+            | Payload::ProfilePhoto { .. }
+    )
+}
+
 impl Session {
     /// A JSON value kept on this device (`None` if absent or unreadable).
     pub(crate) fn app_get<T: DeserializeOwned>(&self, key: &str) -> Result<Option<T>, Error> {

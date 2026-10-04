@@ -1108,7 +1108,12 @@ impl Session {
         };
         match payload {
             Some(
-                p @ (Payload::Sticker { .. }
+                p @ (Payload::Text { .. }
+                | Payload::Edit { .. }
+                | Payload::Delete { .. }
+                | Payload::React { .. }
+                | Payload::File(_)
+                | Payload::Sticker { .. }
                 | Payload::Location(_)
                 | Payload::LiveLocation { .. }
                 | Payload::ChatEvent(_)
@@ -1122,16 +1127,11 @@ impl Session {
                         return Ok(());
                     }
                 }
-                self.on_rich(gid, from, p, franking, events)?;
-            }
-            Some(p @ (Payload::Text { .. } | Payload::Edit { .. } | Payload::Delete { .. } | Payload::React { .. } | Payload::File(_))) => {
-                if let Some(a) = self.map(&accounts_key(gid))?.get(&from.to_hex()) {
-                    if self.is_blocked(a)? {
-                        events.push(Event::Dropped { reason: "from a blocked account".into() });
-                        return Ok(());
-                    }
+                if rich::is_rich(&p) {
+                    self.on_rich(gid, from, p, franking, events)?;
+                } else {
+                    self.on_message(gid, from, p, franking, events)?;
                 }
-                self.on_message(gid, from, p, franking, events)?;
             }
             Some(Payload::Roster { devices, names, accounts, link }) => {
                 // Only entries for current members are taken; names only as

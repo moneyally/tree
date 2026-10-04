@@ -134,10 +134,7 @@ fn receive_mutated_message_never_accepted() {
             }
             let r = b.borrow_mut().receive(&bob, &v);
             prop_assert!(
-                matches!(
-                    &r,
-                    Err(_) | Ok(Incoming::HeldForRetry { .. }) | Ok(Incoming::NoOp) | Ok(Incoming::OwnEcho)
-                ),
+                matches!(&r, Err(_) | Ok(Incoming::HeldForRetry { .. })),
                 "mutated message was treated as accepted: {:?}",
                 r
             );
@@ -202,10 +199,7 @@ fn insider_sealed_mutated_mls_never_accepted() {
             let sealed = m.borrow_mut().seal(&v);
             let r = b.borrow_mut().receive(&bob, &sealed);
             prop_assert!(
-                matches!(
-                    &r,
-                    Err(_) | Ok(Incoming::HeldForRetry { .. }) | Ok(Incoming::NoOp) | Ok(Incoming::OwnEcho)
-                ),
+                matches!(&r, Err(_) | Ok(Incoming::HeldForRetry { .. })),
                 "mutated MLS was treated as accepted: {:?}",
                 r
             );

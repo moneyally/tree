@@ -13,7 +13,7 @@ use sqlx::Row;
 
 use crate::auth::Signed;
 use crate::error::{ApiError, ApiResult};
-use crate::util::{b64, b64_exceeds, new_id, now_secs, unb64};
+use crate::util::{b64, new_id, now_secs, unb64};
 use crate::{json_body, AppState};
 
 const CAP_BYTES: usize = 32;
@@ -30,7 +30,7 @@ pub struct InitReq {
     pub chunk_count: u32,
 }
 
-json_body!(InitReq, |cfg| MAX_MANIFEST * 2 + 512);
+json_body!(InitReq, |_cfg| MAX_MANIFEST * 2 + 512);
 
 #[derive(Serialize)]
 pub struct InitResp {

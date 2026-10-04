@@ -13,8 +13,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.tree_ffi.Attachment
 import uniffi.tree_ffi.Feature
+import uniffi.tree_ffi.MediaOptions
 import uniffi.tree_ffi.Member
 import uniffi.tree_ffi.Message
+import uniffi.tree_ffi.NetworkKind
+import uniffi.tree_ffi.Transfer
 import uniffi.tree_ffi.TreeEvent
 import uniffi.tree_ffi.TreeException
 import uniffi.tree_ffi.TreeSession
@@ -54,6 +57,10 @@ data class UiState(
     val screenshotBlocked: Boolean = false,
     /** Files received in this session: message id -> reference. */
     val files: Map<String, Attachment> = emptyMap(),
+    /** Uploads and downloads in progress: message id -> progress. */
+    val transfers: Map<String, Transfer> = emptyMap(),
+    /** Files already on this device (auto-downloaded or saved): message id -> path. */
+    val downloaded: Map<String, String> = emptyMap(),
     /** Own messages still in the outbox and not failed: sync sends them. */
     val sending: Boolean = false,
     val notice: String? = null,
@@ -76,6 +83,9 @@ class AppModel(
         private set
     private var profilePath: String? = null
     private var loop: Job? = null
+
+    /** Where files that download by themselves (`user.auto_download`) go; set by the platform. */
+    var downloadDir: java.io.File? = null
 
 
     private suspend fun <T> call(block: (TreeSession) -> T): T? {
@@ -166,6 +176,57 @@ class AppModel(
     suspend fun syncNow() {
         val events = call { it.sync(0u) } ?: return
         for (e in events) onEvent(e)
+        // A contact's file on the right network: fetched now (user.auto_download).
+        for (e in events) if (e is TreeEvent.File && e.autoDownload) autoDownload(e.file)
+        pumpUploads()
+        refresh()
+    }
+
+    /** The app reports the network the device is on (decides auto-download). */
+    suspend fun setNetwork(kind: NetworkKind) {
+        call { it.setNetwork(kind) }
+    }
+
+    private suspend fun autoDownload(f: Attachment) {
+        val dir = downloadDir ?: return
+        withContext(io) { dir.mkdirs() }
+        val dest = java.io.File(dir, "${f.msgId.take(16)}-${safeName(f.name)}")
+        if (call { it.downloadTo(f, dest.path) } != null) {
+            _state.update { it.copy(downloaded = it.downloaded + (f.msgId to dest.path)) }
+        }
+    }
+
+    /** Uploads progress (read without waiting for the session). */
+    fun updateTransfers() {
+        val s = session ?: return
+        _state.update { it.copy(transfers = s.transfers().associateBy { t -> t.messageId }) }
+    }
+
+    /**
+     * Keeps a long upload going: the session uploads one slice per call and
+     * is free for other calls in between. Stops when nothing moves (offline:
+     * the outbox retries later).
+     */
+    suspend fun pumpUploads() {
+        while (call { it.uploading() } == true) {
+            val before = session?.transfers()?.sumOf { it.done.toLong() } ?: 0L
+            val events = call { it.sendPending() } ?: break
+            for (e in events) onEvent(e)
+            updateTransfers()
+            val after = session?.transfers()?.sumOf { it.done.toLong() } ?: 0L
+            if (after == before) break
+        }
+        updateTransfers()
+    }
+
+    suspend fun pauseTransfer(msgId: String) {
+        call { it.pauseTransfer(msgId) }
+        updateTransfers()
+    }
+
+    suspend fun resumeTransfer(msgId: String) {
+        call { it.resumeTransfer(msgId) }
+        pumpUploads()
         refresh()
     }
 
@@ -279,28 +340,47 @@ class AppModel(
     suspend fun setChatFeature(group: String, key: String, on: Boolean, option: String? = null): Boolean =
         (call { it.setChatFeature(group, key, on, option) }?.accepted == true).also { refresh() }
 
-    suspend fun sendFile(group: String, file: java.io.File): Boolean {
-        val bytes = withContext(io) { file.readBytes() }
+    /** Sends a file as it is (read from disk while it is encrypted; up to 2 GiB). */
+    suspend fun sendFile(group: String, file: java.io.File, options: MediaOptions = plainFile()): Boolean {
         val mime = withContext(io) { java.nio.file.Files.probeContentType(file.toPath()) } ?: "application/octet-stream"
-        return sendBytes(group, bytes, file.name, mime)
+        val ok = call { it.sendFilePath(group, file.path, file.name, mime, options) } != null
+        pumpUploads()
+        refresh()
+        return ok
+    }
+
+    /** Sends file contents with what the app knows (picture size, preview picture...). */
+    suspend fun sendMedia(group: String, bytes: ByteArray, name: String, mime: String, options: MediaOptions = plainFile()): Boolean {
+        val ok = call { it.sendMedia(group, bytes, name, mime, options) } != null
+        pumpUploads()
+        refresh()
+        return ok
     }
 
     /** For platforms that hand over file contents (Android content URIs). */
-    suspend fun sendBytes(group: String, bytes: ByteArray, name: String, mime: String): Boolean =
-        (call { it.sendFile(group, bytes, name, mime, false) } != null).also { refresh() }
+    suspend fun sendBytes(group: String, bytes: ByteArray, name: String, mime: String): Boolean = sendMedia(group, bytes, name, mime)
 
-    /** Decrypted contents of a received file, for platforms that write via streams. */
+    /** The reference of a file message (received, or sent by this device). */
+    fun fileOf(msgId: String): Attachment? =
+        _state.value.files[msgId] ?: _state.value.messages.firstOrNull { it.id == msgId }?.file
+
+    /** Decrypted contents of a file, for platforms that write via streams. */
     suspend fun fileBytes(msgId: String): ByteArray? {
-        val f = _state.value.files[msgId] ?: return null
+        val f = fileOf(msgId)?.takeIf { it.id.isNotEmpty() } ?: return null
         return call { it.download(f) }
     }
 
-    /** Downloads, checks and decrypts a received file into `dest`. */
+    /** Save as: downloads, checks and decrypts a file into `dest` (or copies it if already here). */
     suspend fun saveFile(msgId: String, dest: java.io.File): Boolean {
-        val f = _state.value.files[msgId] ?: return false
-        val bytes = call { it.download(f) } ?: return false
-        withContext(io) { dest.writeBytes(bytes) }
-        return true
+        _state.value.downloaded[msgId]?.let { have ->
+            withContext(io) { java.io.File(have).copyTo(dest, overwrite = true) }
+            return true
+        }
+        val f = fileOf(msgId)?.takeIf { it.id.isNotEmpty() } ?: return false
+        val ok = call { it.downloadTo(f, dest.path) } != null
+        if (ok) _state.update { it.copy(downloaded = it.downloaded + (msgId to dest.path)) }
+        updateTransfers()
+        return ok
     }
 
     suspend fun loadFeatures() {
@@ -308,8 +388,8 @@ class AppModel(
         _state.update { it.copy(features = f) }
     }
 
-    suspend fun setFeature(key: String, on: Boolean) {
-        call { if (on) it.applyFeature(key, null) else it.releaseFeature(key) }
+    suspend fun setFeature(key: String, on: Boolean, option: String? = null) {
+        call { if (on) it.applyFeature(key, option) else it.releaseFeature(key) }
         loadFeatures()
     }
 
@@ -322,4 +402,17 @@ class AppModel(
     suspend fun setUsername(name: String): String? = call { it.setUsername(name, true) }
 
     fun clearMessages() = _state.update { it.copy(error = null, notice = null) }
+
+    companion object {
+        /** A file without details. */
+        fun plainFile() = MediaOptions(viewOnce = false, voice = false, width = null, height = null, durationMs = null, thumbnail = null)
+
+        /** A picture with its size and preview. */
+        fun picture(width: Int, height: Int, thumbnail: ByteArray?) =
+            MediaOptions(viewOnce = false, voice = false, width = width.toUInt(), height = height.toUInt(), durationMs = null, thumbnail = thumbnail)
+
+        /** A received file name made safe for this device's disk (no folders, no hidden files). */
+        fun safeName(name: String): String =
+            name.replace(Regex("[^\\p{L}\\p{N}._ -]"), "_").trimStart('.', ' ').take(100).ifEmpty { "file" }
+    }
 }

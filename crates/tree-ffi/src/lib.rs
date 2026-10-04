@@ -293,6 +293,9 @@ pub struct Message {
     /// `failed` (offer retry / cancel), `sent`; empty for received messages
     /// and old ones.
     pub status: String,
+    /// A file message's reference (name, size, preview picture...); none
+    /// for other kinds and for a view-once file already opened.
+    pub file: Option<Attachment>,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -303,7 +306,12 @@ pub struct Reaction {
 
 impl From<tree_client::StoredMessage> for Message {
     fn from(m: tree_client::StoredMessage) -> Self {
+        let file = (m.kind == "file")
+            .then(|| m.data.as_deref().and_then(|d| serde_json::from_slice::<FileInfo>(d).ok()))
+            .flatten()
+            .map(Attachment::from);
         Message {
+            file,
             id: m.id,
             sender: m.sender,
             received_at: m.received_at,

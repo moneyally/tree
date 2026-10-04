@@ -1,6 +1,8 @@
 package app.tree.android
 
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -15,6 +17,7 @@ import app.tree.shared.AppModel
 import app.tree.shared.Lang
 import app.tree.shared.Strings
 import kotlinx.coroutines.launch
+import uniffi.tree_ffi.NetworkKind
 
 class MainActivity : ComponentActivity() {
     private var pendingLink: String? = null
@@ -39,12 +42,26 @@ class MainActivity : ComponentActivity() {
             }
             LaunchedEffect(state.signedIn) {
                 if (state.signedIn) {
+                    model.downloadDir = cacheDir.resolve("downloads")
+                    model.setNetwork(networkKind())
                     model.loadFeatures()
                     pendingLink?.let { link -> scope.launch { model.joinLink(link) }; pendingLink = null }
                 }
             }
             TreeApp(model, profile)
         }
+    }
+
+    /** Unmetered (Wi-Fi, wired) or metered (mobile) for user.auto_download. */
+    private fun networkKind(): NetworkKind {
+        val cm = getSystemService(ConnectivityManager::class.java) ?: return NetworkKind.NONE
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return NetworkKind.NONE
+        return if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)) NetworkKind.WIFI else NetworkKind.MOBILE
+    }
+
+    override fun onResume() {
+        super.onResume()
+        model?.let { m -> lifecycleScope.launch { m.setNetwork(networkKind()) } }
     }
 
     // App lock: leaving the app closes the profile when user.app_lock is on.

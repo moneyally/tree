@@ -284,7 +284,7 @@ fn upload_resumes_after_interruption_and_restart() {
     assert!(f.id.is_empty(), "not uploaded yet");
     assert!(alice.uploading().unwrap());
     let t = alice.transfers().get(&f.msg_id).unwrap();
-    assert_eq!((t.upload, t.total, t.state), (true, total, TransferState::Queued));
+    assert_eq!((t.upload, t.done, t.total, t.state), (true, 5 * PART as u64, total, TransferState::Queued));
     assert_eq!(proxy.parts(), 5);
     assert_eq!(state_of(&alice, &g, &f.msg_id), Some(OutboxState::Queued));
     assert_eq!(media_out(&env, "alice").len(), 1, "the blob waits on disk");

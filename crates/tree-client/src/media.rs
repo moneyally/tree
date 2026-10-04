@@ -478,6 +478,7 @@ impl Session {
                     status = s;
                     sent += len as u64;
                     *progressed = true;
+                    show(&self.media.transfers, status.received, TransferState::Running);
                 }
                 // Another attempt moved it on meanwhile: ask where it is.
                 Err(Error::Server { status: 409, .. }) if conflicts < 3 => {

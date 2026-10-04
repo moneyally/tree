@@ -855,41 +855,44 @@ impl Group {
         }
         let now = unix_now();
 
-        // Read only enough of the MLS message to learn its epoch. No MLS
-        // state is touched until the Tree envelope seal is verified.
-        //
-        // At the exact version+tag boundary there is no MLS body to inspect,
-        // so verify the seal first. Otherwise a malformed empty body would
-        // leak a deserialization error instead of the envelope-auth failure.
-        let announced = if bytes.len() == 1 + Self::TAG_LEN {
-            let (epoch, _) = self.open_envelope(me, bytes)?;
-            return Err(TreeError::Malformed(format!(
-                "bad envelope MLS body at epoch {epoch}"
-            )));
-        } else {
-            peek_epoch(bytes, self.mls.group_id().as_slice())?
+        // Authenticate the outer envelope before trusting any MLS header.
+        // Current and retained past keys are the only keys available here. A
+        // genuine future-epoch envelope cannot be authenticated yet, so only
+        // a seal mismatch is eligible for the untrusted epoch peek below.
+        let (epoch, body) = match self.open_envelope(me, bytes) {
+            Ok(opened) => opened,
+            Err(err @ TreeError::Rejected(reason))
+                if reason == "envelope seal mismatch" =>
+            {
+                if bytes.len() == 1 + Self::TAG_LEN {
+                    return Err(err);
+                }
+                let announced = peek_epoch(bytes, self.mls.group_id().as_slice())?;
+                if announced <= self.epoch() {
+                    return Err(err);
+                }
+                self.atomic(me, |this| {
+                    this.state.prune_future(now);
+                    if !this
+                        .state
+                        .future
+                        .iter()
+                        .any(|p| bool::from(sha256(&p.bytes).ct_eq(&hash)))
+                    {
+                        this.state.future.push(PendingEnvelope {
+                            epoch: announced,
+                            received_at: now,
+                            bytes: bytes.to_vec(),
+                        });
+                        this.state.prune_future(now);
+                        this.save(me)?;
+                    }
+                    Ok(Incoming::HeldForRetry { epoch: announced })
+                })?
+            }
+            Err(err) => return Err(err),
         };
         self.atomic(me, |this| {
-            this.state.prune_future(now);
-            if announced > this.epoch() {
-                if !this
-                    .state
-                    .future
-                    .iter()
-                    .any(|p| bool::from(sha256(&p.bytes).ct_eq(&hash)))
-                {
-                    this.state.future.push(PendingEnvelope {
-                        epoch: announced,
-                        received_at: now,
-                        bytes: bytes.to_vec(),
-                    });
-                    this.state.prune_future(now);
-                    this.save(me)?;
-                }
-                return Ok(Incoming::HeldForRetry { epoch: announced });
-            }
-
-            let (epoch, body) = this.open_envelope(me, bytes)?;
             let msg = MlsMessageIn::tls_deserialize_exact(body)
                 .map_err(|e| TreeError::Malformed(format!("{e:?}")))?;
             let protocol = msg

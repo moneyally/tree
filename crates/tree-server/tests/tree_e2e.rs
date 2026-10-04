@@ -63,7 +63,10 @@ async fn real_clients_chat_through_server_and_removed_device_is_locked_out() {
     // server copy before exercising normal application-message delivery.
     let welcome_msgs = api.fetch(&bob_net, 0).await;
     assert_eq!(welcome_msgs.len(), 1);
-    assert_eq!(unb64(welcome_msgs[0]["body"].as_str().unwrap()), pending.welcome.as_ref().unwrap().as_slice());
+    assert_eq!(
+        unb64(welcome_msgs[0]["body"].as_str().unwrap()),
+        pending.welcome.as_ref().unwrap().as_slice()
+    );
     let welcome_id = welcome_msgs[0]["id"].as_str().unwrap();
     let (st, _) = api.ack(&bob_net, &[welcome_id]).await;
     assert_eq!(st, StatusCode::OK);
@@ -84,17 +87,18 @@ async fn real_clients_chat_through_server_and_removed_device_is_locked_out() {
         Incoming::Message { body, .. } => assert_eq!(body, plaintext),
         other => panic!("expected message, got {other:?}"),
     }
-    let id = queued[0]["id"].as_str().unwrap();
-    let (st, _) = api.ack(&bob_net, &[id]).await;
-    assert_eq!(st, StatusCode::OK);
-
     // The server blob never contains the plaintext as a contiguous byte
     // sequence. This is a regression guard for accidental server decryption.
+    // Check it before ACK because ACK garbage-collects an unshared blob.
     let stored: Vec<u8> = sqlx::query_scalar("SELECT body FROM blobs ORDER BY id DESC LIMIT 1")
         .fetch_one(&ts.server.state.db)
         .await
         .unwrap();
     assert!(!stored.windows(plaintext.len()).any(|w| w == plaintext));
+
+    let id = queued[0]["id"].as_str().unwrap();
+    let (st, _) = api.ack(&bob_net, &[id]).await;
+    assert_eq!(st, StatusCode::OK);
 
     // Charlie is added. Bob receives the commit, then Charlie joins from the
     // welcome. This exercises real multi-member MLS traffic.

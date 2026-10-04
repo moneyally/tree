@@ -837,6 +837,17 @@ impl Group {
                 .map_err(group_err)?;
             let envelope = this.seal(me, &out.to_bytes().map_err(group_err)?)?;
             update(this)?;
+            let group_id = this.mls.group_id().as_slice().to_vec();
+            let sender = me.member_id();
+            me.provider.store_message_event(&group_id, event, sender.as_bytes())?;
+            me.provider.enqueue_outbox(
+                event.mutation_id().0,
+                &group_id,
+                event.target(),
+                event.kind() as u8,
+                &envelope,
+                unix_now(),
+            )?;
             this.save(me)?;
             Ok(envelope)
         })
@@ -1077,6 +1088,13 @@ impl Group {
                 if body.starts_with(crate::message::MESSAGE_MAGIC) {
                     let event = MessageEvent::decode(&body)?;
                     let events = self.apply_message_event(from, event)?;
+                    for (event_from, event) in &events {
+                        me.provider.store_message_event(
+                            self.mls.group_id().as_slice(),
+                            event,
+                            event_from.as_bytes(),
+                        )?;
+                    }
                     self.mark_processed(epoch, hash);
                     self.state.future.retain(|p| sha256(&p.bytes) != hash);
                     self.save(me)?;

@@ -523,7 +523,7 @@ fn admin_settings_are_authenticated_and_sequence_ordered() {
     );
     assert_eq!(
         other_group.receive(other_client, &first).unwrap(),
-        Incoming::OwnEcho
+        Incoming::NoOp
     );
     assert_eq!(other_group.title().as_deref(), Some("Second"));
 

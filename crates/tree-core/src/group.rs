@@ -842,12 +842,15 @@ impl Group {
         {
             return Ok(Incoming::OwnEcho);
         }
-        if self
+        if let Some((epoch, _)) = self
             .state
             .processed
             .iter()
-            .any(|(_, h)| bool::from(h.ct_eq(&hash)))
+            .find(|(_, h)| bool::from(h.ct_eq(&hash)))
         {
+            if *epoch < self.epoch() {
+                return Err(TreeError::Rejected("past epoch".into()));
+            }
             return Ok(Incoming::OwnEcho);
         }
         let now = unix_now();

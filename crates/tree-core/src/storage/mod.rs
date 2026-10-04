@@ -343,6 +343,14 @@ impl StoredProvider {
             .map_err(storage_err)
     }
 
+    pub(crate) fn delete_meta(&self, key: &str) -> Result<(), TreeError> {
+        self.storage
+            .conn
+            .execute("DELETE FROM tree_meta WHERE key = ?1", params![key])
+            .map(|_| ())
+            .map_err(storage_err)
+    }
+
     pub(crate) fn meta(&self, key: &str) -> Result<Vec<u8>, TreeError> {
         self.storage
             .conn

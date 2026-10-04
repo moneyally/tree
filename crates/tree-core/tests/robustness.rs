@@ -388,6 +388,9 @@ impl Model {
             return Err(FeatureError::PlanRequired);
         }
         if f.lock == Lock::None {
+            // Options with a declared format are checked (and defaulted) by
+            // `check_option`, tested on its own in `features.rs`.
+            let option = if apply { tree_core::features::check_option(f.key, option)? } else { None };
             let v = if apply { (State::Applied, option) } else { (State::Released, None) };
             self.state.insert((f.scope, f.key), v);
         }

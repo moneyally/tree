@@ -25,7 +25,7 @@ One JSON object per application message, UTF-8, field `t` names the type:
 | `read` | `ids` (at most 100 message ids) | the sender read these messages | any member, while its `user.read_receipts` is applied; shown only while the receiver's is applied too |
 | `typing` | `on` | the sender started or stopped typing; never stored | any member, both sides `user.typing` |
 | `seen` | — | the sender's app is open; the receiver records its own time | any member, both sides `user.last_seen` (released by default) |
-| `file` | `msg_id`, `view_once` (optional), `voice` and `duration_ms` (optional, voice message), `id`, `key` (base64), `nonce` (base64, 7 bytes), `size`, `ct_sha256`, `pt_sha256` (hex), `name`, `mime` | an encrypted attachment (PROTOCOL.md 6.12) | any member, if `chat.media` is applied (and `chat.view_once` for view-once, `chat.voice` for voice) |
+| `file` | `msg_id`, `view_once` (optional), `voice` (optional), `duration_ms` (optional: voice, video), `id`, `key` (base64, the 32-byte file secret), `size` (plaintext bytes), `pt_sha256` (hex), `name` (at most 255 characters), `mime` (at most 127), `v` (format, 2), `width` and `height` (optional, pixels), `thumb` (optional, base64 JPEG or PNG preview made by the sender, at most 32 KiB) | an encrypted attachment (PROTOCOL.md 6.12); a reference that does not fit is dropped | any member, if `chat.media` is applied (and `chat.view_once` for view-once, `chat.voice` for voice) |
 | `franked` | `p` (the inner `text`, `edit` or `file` payload as a JSON string), `k` (base64), `tag` (base64), `m` (minute) | how every `text`, `edit` and `file` is sent: the inner payload with its franking (PROTOCOL.md 8.5); the receiver keeps `p`, `k`, `tag`, `m` to be able to report it | any member |
 
 ```json
@@ -171,6 +171,12 @@ In the same encrypted database as the core (`tree_app` table, SCHEMA.md):
 | `feature/<key>` | the user's setting: applied or released, option |
 | `profile/username` | the own @username |
 | `file/<attachment id>` | a received `file` reference and its group (deleted after a view-once download) |
+| `upload/<outbox local id>` | an upload in progress: group, message id, blob size, server upload id, done, paused (PROTOCOL.md 6.12, 6.13) |
+
+Next to the profile, `<profile>.media/out/<local id>.blob` holds a file's
+ciphertext until it is uploaded, and `<profile>.media/in/<attachment id>.part`
+the ciphertext of a download in progress. Neither holds a key or plaintext;
+both are deleted when done and with the account.
 | `screenshot/<group hex>` | this user's own screenshot block for the chat |
 | `reads/<group hex>` | JSON message id -> member ids that sent a read receipt |
 | `unread/<group hex>` | messages received since the user last read the chat |

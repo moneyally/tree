@@ -55,8 +55,13 @@ the owner holds).
    the encrypted message; images, video, voice notes, files; view-once;
    auto-download per network type (`user.auto_download`); padding of sizes
    to buckets so the server learns less.
+   Status: **built** (branch `claude/media`; PROTOCOL.md 6.12 and 6.13,
+   SERVER_API.md attachments, migration `0014`).
 6. **Media editor.** Crop, rotate, draw, text, blur (faces and regions) on
    the device before sending; the original never leaves the device.
+   Status: **built** (branch `claude/media`; `apps/shared/.../media`, desktop
+   editor screen; export without metadata). Automatic face finding is not
+   in: the user marks the regions.
 7. **Notifications.** Push wake-up only (no content through the gateway);
    the app fetches and shows a local notification, with or without the
    text per `user.notification_content`.

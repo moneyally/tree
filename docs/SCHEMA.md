@@ -263,7 +263,34 @@ CREATE TABLE attachments (id TEXT PRIMARY KEY, size INTEGER NOT NULL, created_at
 ```
 
 The ciphertext itself is a file named by the id in `ATTACHMENT_DIR`. Deleted
-with the row after the mailbox TTL.
+with the row after the mailbox TTL. `size` is the padded blob size
+(PROTOCOL.md 6.12).
+
+### 2.9 Uploads (migration `0014_uploads.sql`, PROTOCOL.md 6.12)
+
+```sql
+CREATE TABLE uploads (
+    id         TEXT PRIMARY KEY,               -- becomes the attachment id
+    device_id  TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    size       INTEGER NOT NULL,               -- declared blob size
+    received   INTEGER NOT NULL DEFAULT 0,     -- parts received, in order
+    created_at INTEGER NOT NULL                -- minute
+);
+CREATE INDEX uploads_created ON uploads(created_at);
+CREATE TABLE upload_quota (
+    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    day        INTEGER NOT NULL,
+    bytes      INTEGER NOT NULL,
+    PRIMARY KEY (account_id, day)
+);
+```
+
+Parts are written to `.<id>.part` in `ATTACHMENT_DIR` at `index ·
+UPLOAD_CHUNK_BYTES`. With the last part the file is renamed to `<id>`, the
+`uploads` row deleted and an `attachments` row made (no uploader). The purge
+deletes uploads older than 24 hours with their partial files, partial files
+whose upload row is gone (device deleted), and quota rows of past days.
+Numbers `0012` and `0013` are reserved for other branches.
 
 ### 2.4 Reports (migration `0005_reports.sql`, PROTOCOL.md 8.5)
 

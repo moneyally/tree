@@ -735,7 +735,8 @@ impl Session {
                 }
             }
         }
-        if !retry_ack.is_empty() {
+        let retry_completed = !retry_ack.is_empty();
+        if retry_completed {
             self.api.ack(&self.creds, &retry_ack)?;
             ack.extend(retry_ack);
         }
@@ -745,7 +746,7 @@ impl Session {
         // entry intentionally prevents cursor advancement.
         if !had_held {
             self.api.ack_with_cursor(&self.creds, &ack, Some(cursor))?;
-        } else if !retry_ack.is_empty() {
+        } else if retry_completed {
             self.api.ack_with_cursor(&self.creds, &ack, Some(cursor))?;
         }
 

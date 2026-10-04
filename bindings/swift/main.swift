@@ -13,7 +13,7 @@ func check(_ ok: Bool, _ what: String) {
 do {
     let alice = try TreeSession.create(path: "\(dir)/alice.db", passphrase: "alice pass", name: "alice", server: url, powBits: 12)
     let bob = try TreeSession.create(path: "\(dir)/bob.db", passphrase: "bob pass", name: "bob", server: url, powBits: 12)
-    try bob.addContact(account: alice.accountId())
+    _ = try bob.confirmContact(account: alice.accountId())
 
     let g = try alice.createGroup()
     check(try alice.invite(group: g, accountOrUsername: bob.accountId()).accepted, "invite")

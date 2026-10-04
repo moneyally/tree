@@ -344,3 +344,49 @@ Issues found by testing Tree's own design. Each one has a regression test.
   reordering), `link::tests::key_packages_are_checked_one_by_one`,
   `a_reordered_repeated_or_substituted_key_package_list_is_refused`
   (through a real server), `formal/device_link_kp_uncommitted.pv`.
+
+## F-021: a contact with no pinned device vouched for any device (fixed)
+
+- **Found:** 2026-10-04, security review of wave 2.
+- **What:** `Contact::vouches_for` was true for every device when no device
+  was pinned for the contact. A contact added by hand or by username link has
+  none, so a stranger who put that account next to its own device in a group
+  roster skipped message requests and `user.group_add`, and its device was
+  pinned as the contact's first device without a warning (the residual
+  first-use gap of F-018, made easy to reach by username links).
+- **Severity:** high (consent and identity: a stranger is shown as a contact).
+- **Fix:** roster claims never pin and never count as the contact. A device
+  is pinned only when the server names it in a key-package claim this device
+  made (invite, or the new `confirm_contact`), when it comes with a
+  confirmed device link, or when the user verifies a safety number covering
+  it; roster-claimed devices are recorded as unconfirmed (in the safety
+  number, warned about for a known account). `vouches_for` is false for an
+  empty contact; the roster handler, `decide_request`, auto-download and
+  photo visibility all go through it. Accepting a request does not pin.
+  Consequence: a contact added by hand or by link, until the server names its
+  devices or the safety number is verified, adds the user to chats as a
+  request.
+- **Test:** `requests::tests::a_contact_without_pinned_devices_vouches_for_nobody`
+  (fails before: the stranger's group was accepted), `tests::pinning_rules`.
+
+## F-022: roster account labels from any member were trusted (fixed)
+
+- **Found:** 2026-10-04, security review of wave 2.
+- **What:** every roster overwrote the receiver's member-to-account map
+  for every member. A blocked member relabelled its device as a fresh
+  account and its messages passed the block; any member labelled its device
+  with the receiver's own account and was then treated as one of the
+  receiver's devices (its files downloaded by themselves, a "contacts only"
+  profile photo was sent to its chats); a member could move another member
+  to its own account.
+- **Severity:** medium.
+- **Fix:** a label is taken only for a current member other than this
+  device, never for this device's own account unless the member is in
+  `own/members` (from a confirmed device link), only as the member's first
+  label, and from the sender for itself or for others only if the sender is
+  trusted (own device or pinned). Blocking also matches by member id: a
+  device ever seen for a blocked account stays blocked. Auto-download and
+  photo visibility use `own/members` and `vouches_for`, never a label.
+- **Test:** `requests::tests::relabelling_does_not_escape_a_block`,
+  `requests::tests::claiming_the_receivers_own_account_gets_nothing` (both
+  fail before the fix).

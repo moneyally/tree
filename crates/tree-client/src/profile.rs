@@ -35,7 +35,7 @@ use tree_core::MemberId;
 
 use crate::messages::now;
 use crate::payload::{BlobRef, Payload};
-use crate::{accounts_key, Error, Event, GroupStatus, Session};
+use crate::{Error, Event, GroupStatus, Session};
 
 /// Largest photo.
 pub const MAX_PHOTO_BYTES: u64 = 2 * 1024 * 1024;
@@ -223,7 +223,7 @@ impl Session {
     }
 
     /// May the main photo go to this group under the visibility setting?
-    fn photo_allowed(&mut self, gid: &[u8]) -> Result<bool, Error> {
+    pub(crate) fn photo_allowed(&mut self, gid: &[u8]) -> Result<bool, Error> {
         let st = self.feature(VISIBILITY)?;
         if st.state != tree_core::features::State::Applied {
             return Ok(false);
@@ -231,19 +231,17 @@ impl Session {
         match st.option.as_deref().unwrap_or("chats") {
             "chats" => Ok(true),
             "contacts" => {
-                let me = self.member_id();
-                let accounts = self.map(&accounts_key(gid))?;
                 for m in self.group(gid)?.members() {
-                    if m == me {
-                        continue;
-                    }
-                    let Some(a) = accounts.get(&m.to_hex()) else { return Ok(false) };
-                    if a == self.account_id() {
-                        continue; // another device of this account
-                    }
-                    match self.contact(a)? {
-                        Some(c) if c.accepted && !c.blocked && c.vouches_for(&m.to_hex()) => {}
-                        _ => return Ok(false),
+                    // This device and its own linked devices (own/members,
+                    // never a roster label naming this account: F-022), or
+                    // a device pinned for an accepted, unblocked contact.
+                    match self.vouched_account(gid, &m)? {
+                        Some(a) if a == self.account_id() => {}
+                        Some(a) => match self.contact(&a)? {
+                            Some(c) if c.accepted && !c.blocked => {}
+                            _ => return Ok(false),
+                        },
+                        None => return Ok(false),
                     }
                 }
                 Ok(true)

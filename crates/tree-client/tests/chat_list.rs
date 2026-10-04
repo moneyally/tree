@@ -18,7 +18,7 @@ fn now() -> i64 {
 fn pair(env: &Env) -> (Session, Session, Vec<u8>) {
     let mut alice = env.device("alice");
     let mut bob = env.device("bob");
-    bob.add_contact(alice.account_id()).unwrap();
+    bob.confirm_contact(alice.account_id()).unwrap();
     let g = alice.create_group().unwrap();
     alice.invite(&g, bob.account_id()).unwrap();
     bob.sync(0).unwrap();
@@ -240,7 +240,7 @@ fn quiet_leave() {
     let mut people: Vec<Session> = ["bob", "carol", "dave", "erin"].iter().map(|n| env.device(n)).collect();
     let g = alice.create_group().unwrap();
     for p in &people {
-        p.add_contact(alice.account_id()).unwrap();
+        p.confirm_contact(alice.account_id()).unwrap();
     }
     for i in 0..people.len() {
         let acc = people[i].account_id().to_string();

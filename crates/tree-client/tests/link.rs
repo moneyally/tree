@@ -32,8 +32,8 @@ fn link_id(link: &str) -> String {
 fn setup(env: &Env) -> (Session, Session, Vec<u8>) {
     let mut alice = env.device("alice");
     let mut bob = env.device("bob");
-    alice.add_contact(bob.account_id()).unwrap();
-    bob.add_contact(alice.account_id()).unwrap();
+    alice.confirm_contact(bob.account_id()).unwrap();
+    bob.confirm_contact(alice.account_id()).unwrap();
     let g = alice.create_group().unwrap();
     alice.invite(&g, bob.account_id()).unwrap();
     bob.sync(0).unwrap();

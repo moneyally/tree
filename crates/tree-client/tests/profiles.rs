@@ -30,10 +30,10 @@ fn profile_photos_follow_visibility_and_removal() {
     let mut carol = env.device("carol");
     // g: alice invited bob (her contact). g2: bob's chat with alice and dave
     // (dave is a stranger to alice).
-    bob.add_contact(alice.account_id()).unwrap();
-    alice.add_contact(bob.account_id()).unwrap();
-    dave.add_contact(bob.account_id()).unwrap();
-    carol.add_contact(alice.account_id()).unwrap();
+    bob.confirm_contact(alice.account_id()).unwrap();
+    alice.confirm_contact(bob.account_id()).unwrap();
+    dave.confirm_contact(bob.account_id()).unwrap();
+    carol.confirm_contact(alice.account_id()).unwrap();
     let g = alice.create_group().unwrap();
     alice.invite(&g, bob.account_id()).unwrap();
     bob.sync(0).unwrap();
@@ -118,7 +118,7 @@ fn per_chat_profiles() {
     let env = Env::new("perchat");
     let mut alice = env.device("alice");
     let mut bob = env.device("bob");
-    bob.add_contact(alice.account_id()).unwrap();
+    bob.confirm_contact(alice.account_id()).unwrap();
     let g = alice.create_group().unwrap();
     let g2 = alice.create_group().unwrap();
     alice.invite(&g, bob.account_id()).unwrap();

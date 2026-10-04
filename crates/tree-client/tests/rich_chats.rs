@@ -34,8 +34,8 @@ fn trio(env: &Env) -> (Session, Session, Session, Vec<u8>) {
     let mut alice = env.device("alice");
     let mut bob = env.device("bob");
     let mut carol = env.device("carol");
-    bob.add_contact(alice.account_id()).unwrap();
-    carol.add_contact(alice.account_id()).unwrap();
+    bob.confirm_contact(alice.account_id()).unwrap();
+    carol.confirm_contact(alice.account_id()).unwrap();
     let g = alice.create_group().unwrap();
     alice.invite(&g, bob.account_id()).unwrap();
     alice.invite(&g, carol.account_id()).unwrap();
@@ -142,7 +142,7 @@ fn pins_are_shared_expire_are_limited_and_follow_chat_pins() {
 
     // In a 1:1 chat either person pins.
     let mut dave = env.device("dave");
-    dave.add_contact(alice.account_id()).unwrap();
+    dave.confirm_contact(alice.account_id()).unwrap();
     let d = alice.create_group().unwrap();
     alice.invite(&d, dave.account_id()).unwrap();
     dave.sync(0).unwrap();
@@ -238,7 +238,7 @@ fn scheduled_messages_wait_on_the_device() {
     let env = Env::new("sched");
     let mut alice = env.device("alice");
     let mut bob = env.device("bob");
-    bob.add_contact(alice.account_id()).unwrap();
+    bob.confirm_contact(alice.account_id()).unwrap();
     let g = alice.create_group().unwrap();
     alice.invite(&g, bob.account_id()).unwrap();
     bob.sync(0).unwrap();
@@ -286,7 +286,7 @@ fn forwarding_marks_and_follows_chat_forwarding() {
     let env = Env::new("forward");
     let mut alice = env.device("alice");
     let mut bob = env.device("bob");
-    bob.add_contact(alice.account_id()).unwrap();
+    bob.confirm_contact(alice.account_id()).unwrap();
     let a = alice.create_group().unwrap();
     let b = alice.create_group().unwrap();
     alice.invite(&a, bob.account_id()).unwrap();
@@ -335,7 +335,7 @@ fn export_follows_chat_export() {
     let env = Env::new("export");
     let mut alice = env.device("alice");
     let mut bob = env.device("bob");
-    bob.add_contact(alice.account_id()).unwrap();
+    bob.confirm_contact(alice.account_id()).unwrap();
     let g = alice.create_group().unwrap();
     alice.invite(&g, bob.account_id()).unwrap();
     bob.sync(0).unwrap();
@@ -391,7 +391,7 @@ fn storage_clean_deletes_old_media_only_while_applied() {
     let env = Env::new("clean");
     let mut alice = env.device("alice");
     let mut bob = env.device("bob");
-    bob.add_contact(alice.account_id()).unwrap();
+    bob.confirm_contact(alice.account_id()).unwrap();
     let g = alice.create_group().unwrap();
     alice.invite(&g, bob.account_id()).unwrap();
     bob.sync(0).unwrap();

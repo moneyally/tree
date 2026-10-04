@@ -78,7 +78,7 @@ fn locked_chat_keys_report_their_locked_value() {
     let env = Env::new("lockedchat");
     let mut alice = env.device("alice");
     let mut bob = env.device("bob");
-    bob.add_contact(alice.account_id()).unwrap();
+    bob.confirm_contact(alice.account_id()).unwrap();
     let g = alice.create_group().unwrap();
     alice.invite(&g, bob.account_id()).unwrap();
     bob.sync(0).unwrap();
@@ -105,7 +105,7 @@ fn read_receipts_released_hides_stored_receipts() {
     let env = Env::new("receipts");
     let mut alice = env.device("alice");
     let mut bob = env.device("bob");
-    bob.add_contact(alice.account_id()).unwrap();
+    bob.confirm_contact(alice.account_id()).unwrap();
     let g = alice.create_group().unwrap();
     alice.invite(&g, bob.account_id()).unwrap();
     bob.sync(0).unwrap();
@@ -133,7 +133,7 @@ fn options_are_checked_and_durations_work() {
     let env = Env::new("options");
     let mut alice = env.device("alice");
     let mut bob = env.device("bob");
-    bob.add_contact(alice.account_id()).unwrap();
+    bob.confirm_contact(alice.account_id()).unwrap();
     let g = alice.create_group().unwrap();
     alice.invite(&g, bob.account_id()).unwrap();
     bob.sync(0).unwrap();

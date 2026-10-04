@@ -20,8 +20,8 @@ fn formatting_mentions_voice_screenshots() {
     let mut alice = env.device("alice");
     let mut bob = env.device("bob");
     let mut carol = env.device("carol");
-    bob.add_contact(alice.account_id()).unwrap();
-    carol.add_contact(alice.account_id()).unwrap();
+    bob.confirm_contact(alice.account_id()).unwrap();
+    carol.confirm_contact(alice.account_id()).unwrap();
     let g = alice.create_group().unwrap();
     alice.invite(&g, bob.account_id()).unwrap();
     alice.invite(&g, carol.account_id()).unwrap();

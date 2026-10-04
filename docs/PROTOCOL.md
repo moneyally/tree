@@ -392,16 +392,23 @@ the second half is its own fingerprint and the first the one it holds for the
 contact (`crates/tree-core/src/safety.rs`). About 100 bits per side: a
 substituted key would have to match 30 decimal digits.
 
-Pinning (`tree-client`): the first set of devices learned for an account
-(from a key-package claim, or from a roster inside a group) is trusted as it
-is; any later member id not seen before for that account raises a key-change
-warning (`user.key_change_warning`, permanently on) and clears "verified".
-A new member id that only a group roster claimed (not the server, in a
-key-package claim) stays *unconfirmed* until the user verifies the safety
-number or invites the account: it is warned about but does not count as the
-contact when deciding requests (APP_PROTOCOL.md 5, F-018).
-This is trust on first use; key transparency (stage 4) removes the first-use
-gap. Today a person's side contains only the devices the other side has
+Pinning (`tree-client`): a device is *pinned* for an account only when
+(a) the server named it in a key-package claim this device made (inviting
+the account, or `confirm_contact`), (b) it came with the account data of a
+confirmed device link (8.11), or (c) the user verified a safety number that
+covers it. The first set the server names is pinned as it is (trust on first
+use of the server's answer); any later member id not seen before for that
+account raises a key-change warning (`user.key_change_warning`, permanently
+on) and clears "verified". A member id that only a group roster claimed is
+recorded but stays *unconfirmed*, whether or not the account had pinned
+devices before: it is part of the safety number (so comparing it confirms
+or exposes it), is warned about for a known account, and never counts as
+the contact (requests, `user.group_add`, auto-download, photo visibility:
+APP_PROTOCOL.md 5, F-018, F-021). A contact with no pinned device (added by
+hand or by username link) vouches for nobody. Roster account labels never
+make a device one of this account's own (only `own/members` from a device
+link does), never relabel a member, and do not escape a block (F-022).
+Key transparency (stage 4) removes the first-use gap of (a). Today a person's side contains only the devices the other side has
 seen; with several devices per person (stage 3) the safety number changes
 whenever a device is added, which is the intended warning.
 

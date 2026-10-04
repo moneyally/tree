@@ -1204,6 +1204,14 @@ impl TreeSession {
         Ok(self.s().add_contact(&account)?)
     }
 
+    /// Adds the account as a contact and pins the devices the server names
+    /// for it now (a key-package claim). Without this (or an invite, or a
+    /// verified safety number) the contact's chats arrive as requests.
+    /// Returns whether a key-change warning came up.
+    pub fn confirm_contact(&self, account: String) -> R<bool> {
+        Ok(!self.s().confirm_contact(&account)?.is_empty())
+    }
+
     pub fn block(&self, account: String) -> R<()> {
         Ok(self.s().block(&account)?)
     }

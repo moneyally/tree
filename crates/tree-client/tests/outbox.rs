@@ -124,7 +124,7 @@ fn server_rows(env: &Env, q: &'static str) -> Vec<String> {
 fn pair(env: &Env, proxy: &Proxy) -> (Session, Session, Vec<u8>) {
     let mut alice = Session::create(&env.profile("alice"), "alice passphrase", "alice", &proxy.url, 8).unwrap();
     let mut bob = env.device("bob");
-    bob.add_contact(alice.account_id()).unwrap();
+    bob.confirm_contact(alice.account_id()).unwrap();
     let g = alice.create_group().unwrap();
     alice.invite(&g, bob.account_id()).unwrap();
     bob.sync(0).unwrap();

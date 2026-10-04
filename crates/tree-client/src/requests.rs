@@ -12,9 +12,13 @@
 //! | stranger | request if `user.message_requests` applied, else accepted | declined if `user.group_add` applied (contacts only / nobody), else as 1:1 |
 //!
 //! The adder is the roster's sender, under the account it claims; the
-//! claim counts only if that device is already pinned for the account (or
-//! nothing is pinned yet). Otherwise the adder is treated as a stranger
-//! (and a key-change warning is shown). A group the user asked to join
+//! claim counts only if that device is pinned for the account (named by the
+//! server in a key-package claim this device made, or covered by a verified
+//! safety number). Otherwise the adder is treated as a stranger, also when
+//! the account has no pinned device yet (a contact added by hand or by
+//! username link), and a key-change warning is shown for a known account.
+//! A device is blocked if its account label is blocked or it was ever seen
+//! for a blocked account. A group the user asked to join
 //! through an invite link (the roster names the nonce of that request) is
 //! accepted without a request, whatever `user.group_add` says.
 //!
@@ -67,6 +71,28 @@ impl Session {
     /// added by hand, e.g. after finding a @username or scanning a QR code).
     pub fn add_contact(&self, account: &str) -> Result<(), Error> {
         self.accept_contact(account)
+    }
+
+    /// [`Session::add_contact`], and pins the devices the server names for
+    /// the account right now (a key-package claim, exactly as an invite
+    /// makes; the claimed key packages are not used). Adding a contact by
+    /// hand or by username link pins nothing (F-021): until the server
+    /// names a device in a claim this device made, or the user verifies the
+    /// safety number, the contact's groups arrive as requests. Returns any
+    /// key-change warnings.
+    pub fn confirm_contact(&self, account: &str) -> Result<Vec<Event>, Error> {
+        if account == self.account_id() {
+            return Err(Error::Usage("this is your own account".into()));
+        }
+        let claimed = self.api.claim(&self.creds, account)?;
+        let ids = claimed
+            .iter()
+            .map(|(_, kp)| self.client.check_key_package(kp).map(|(m, _)| m))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut events = Vec::new();
+        self.pin(account, &ids, true, &mut events)?;
+        self.accept_contact(account)?;
+        Ok(events)
     }
 
     pub(crate) fn accept_contact(&self, account: &str) -> Result<(), Error> {
@@ -123,14 +149,16 @@ impl Session {
     }
 
     /// Decides a group that is still a request once its adder is known.
-    /// `vouched`: the adding device is one already pinned for `adder` (or
-    /// none is pinned yet); otherwise the adder only claims that account
-    /// and is treated as a stranger. `link`: the nonce of the invite link
-    /// request the adder says this device made.
+    /// `adder`: the account the adding device (`adder_member`) claims.
+    /// `vouched`: that device is pinned for `adder`; otherwise the adder
+    /// only claims that account and is treated as a stranger (also when the
+    /// account has no pinned device at all, F-021). `link`: the nonce of
+    /// the invite link request the adder says this device made.
     pub(crate) fn decide_request(
         &mut self,
         gid: &[u8],
         adder: &str,
+        adder_member: &tree_core::MemberId,
         vouched: bool,
         link: Option<&str>,
         events: &mut Vec<Event>,
@@ -141,7 +169,7 @@ impl Session {
         let c = self.contact(adder)?;
         let direct = self.group(gid)?.members().len() <= 2;
         let decline = |reason: &str| Event::Declined { group: gid.to_vec(), from: adder.to_string(), reason: reason.into() };
-        if c.as_ref().is_some_and(|c| c.blocked) {
+        if c.as_ref().is_some_and(|c| c.blocked) || self.blocked_sender(gid, adder_member)? {
             events.push(decline("blocked"));
             return self.decline(gid, false);
         }
@@ -249,8 +277,10 @@ mod tests {
         let mut bob = srv.device("bob");
         let mut mallory = srv.device("mallory");
         let carol = srv.device("carol");
-        // bob knows alice and has her device pinned.
-        bob.add_contact(alice.account_id()).unwrap();
+        // bob knows alice and has her device pinned (the server named it
+        // when bob invited her).
+        let gb = bob.create_group().unwrap();
+        bob.invite(&gb, alice.account_id()).unwrap();
         let g0 = alice.create_group().unwrap();
         alice.invite(&g0, bob.account_id()).unwrap();
         bob.sync(0).unwrap();
@@ -280,6 +310,143 @@ mod tests {
         let ev = bob.sync(0).unwrap();
         assert!(!ev.iter().any(|e| matches!(e, Event::Request { .. } | Event::Declined { .. })), "{ev:?}");
         assert_eq!(bob.group_status(&g3).unwrap(), GroupStatus::Accepted);
+    }
+
+    /// F-021: a contact added by username link has no pinned device. A
+    /// stranger who claims that account in a roster is still a stranger: the
+    /// chat is a request, a group is declined by `user.group_add`, the
+    /// stranger's device is not pinned for the contact, and a warning is
+    /// shown. The contact's real device, once the server names it, counts.
+    #[test]
+    fn a_contact_without_pinned_devices_vouches_for_nobody() {
+        let srv = Server::new("emptycontact");
+        let mut alice = srv.device("alice");
+        let mut bob = srv.device("bob");
+        let mut mallory = srv.device("mallory");
+        let carol = srv.device("carol");
+        alice.set_username("alice_f021").unwrap();
+        alice.apply_feature("user.username_link", None).unwrap();
+        let link = alice.username_link().unwrap().unwrap();
+        assert_eq!(bob.add_contact_by_link(&link).unwrap().as_deref(), Some(alice.account_id()));
+        let c = bob.contact(alice.account_id()).unwrap().unwrap();
+        assert!(c.accepted && c.members.is_empty());
+
+        let g1 = mallory.create_group().unwrap();
+        claim_to_be(&mallory, &g1, alice.account_id());
+        mallory.invite(&g1, bob.account_id()).unwrap();
+        let ev = bob.sync(0).unwrap();
+        assert!(ev.iter().any(|e| matches!(e, Event::Request { direct: true, .. })), "{ev:?}");
+        assert!(matches!(bob.group_status(&g1).unwrap(), GroupStatus::Request { .. }));
+        assert!(ev.iter().any(|e| matches!(e, Event::KeyChanged { account, .. } if account == alice.account_id())), "warned: {ev:?}");
+        let c = bob.contact(alice.account_id()).unwrap().unwrap();
+        assert!(c.pinned().is_empty(), "no pin: {c:?}");
+        assert!(!c.vouches_for(&mallory.member_id().to_hex()));
+
+        let g2 = mallory.create_group().unwrap();
+        claim_to_be(&mallory, &g2, alice.account_id());
+        mallory.invite(&g2, carol.account_id()).unwrap();
+        mallory.invite(&g2, bob.account_id()).unwrap();
+        let ev = bob.sync(0).unwrap();
+        assert!(ev.iter().any(|e| matches!(e, Event::Declined { reason, .. } if reason.contains("user.group_add"))), "{ev:?}");
+        assert!(bob.contact(alice.account_id()).unwrap().unwrap().pinned().is_empty());
+
+        // bob invites alice: the server names her device, which is pinned;
+        // mallory's claimed device stays unpinned.
+        let gb = bob.create_group().unwrap();
+        bob.invite(&gb, alice.account_id()).unwrap();
+        let c = bob.contact(alice.account_id()).unwrap().unwrap();
+        assert_eq!(c.pinned(), vec![alice.member_id().to_hex()]);
+        assert!(!c.vouches_for(&mallory.member_id().to_hex()));
+        let g3 = alice.create_group().unwrap();
+        alice.invite(&g3, bob.account_id()).unwrap();
+        bob.sync(0).unwrap();
+        assert_eq!(bob.group_status(&g3).unwrap(), GroupStatus::Accepted);
+    }
+
+    /// A forged roster from `s`: its own device labelled `account`.
+    fn forged_roster(s: &mut Session, gid: &[u8], account: &str) {
+        let me = s.member_id().to_hex();
+        let roster = crate::Payload::Roster {
+            devices: [(me.clone(), s.device_id().to_string())].into(),
+            names: Default::default(),
+            accounts: [(me, account.to_string())].into(),
+            link: None,
+        };
+        s.send_payload(gid, &roster).unwrap();
+    }
+
+    fn file() -> crate::FileInfo {
+        serde_json::from_value(serde_json::json!({
+            "id": "a".repeat(22), "key": "k", "size": 10, "pt_sha256": "00", "name": "f", "mime": "application/octet-stream"
+        }))
+        .unwrap()
+    }
+
+    /// F-022 (c): a blocked member cannot get past the block by relabelling
+    /// its device: a roster never relabels a member, and a device ever seen
+    /// for a blocked account stays blocked under any label.
+    #[test]
+    fn relabelling_does_not_escape_a_block() {
+        let srv = Server::new("relabel");
+        let mut alice = srv.device("alice");
+        let mut bob = srv.device("bob");
+        let mut mallory = srv.device("mallory");
+        // bob has alice pinned; alice adds bob and mallory to a group.
+        let gb = bob.create_group().unwrap();
+        bob.invite(&gb, alice.account_id()).unwrap();
+        mallory.confirm_contact(alice.account_id()).unwrap();
+        let g = alice.create_group().unwrap();
+        alice.invite(&g, mallory.account_id()).unwrap();
+        alice.invite(&g, bob.account_id()).unwrap();
+        mallory.sync(0).unwrap();
+        bob.sync(0).unwrap();
+        assert_eq!(bob.group_status(&g).unwrap(), GroupStatus::Accepted);
+        bob.block(mallory.account_id()).unwrap();
+        mallory.send_text(&g, "blocked").unwrap();
+        assert!(bob.sync(0).unwrap().iter().any(|e| matches!(e, Event::Dropped { .. })));
+
+        // mallory relabels her device as a fresh account.
+        forged_roster(&mut mallory, &g, "fresh-account-id");
+        bob.sync(0).unwrap();
+        assert_eq!(bob.map(&accounts_key(&g)).unwrap().get(&mallory.member_id().to_hex()).map(String::as_str), Some(mallory.account_id()));
+        mallory.send_text(&g, "relabelled").unwrap();
+        let ev = bob.sync(0).unwrap();
+        assert!(!ev.iter().any(|e| matches!(e, Event::Text { .. })), "{ev:?}");
+        // A new chat where her first label is the fresh one: still blocked.
+        let g2 = mallory.create_group().unwrap();
+        claim_to_be(&mallory, &g2, "fresh-account-id");
+        mallory.invite(&g2, bob.account_id()).unwrap();
+        let ev = bob.sync(0).unwrap();
+        assert!(ev.iter().any(|e| matches!(e, Event::Declined { reason, .. } if reason == "blocked")), "{ev:?}");
+    }
+
+    /// F-022 (a), (d): a stranger who labels its device with the receiver's
+    /// own account is not taken as one of the receiver's devices: its files
+    /// do not download by themselves and a "contacts only" profile photo is
+    /// not sent to its chat.
+    #[test]
+    fn claiming_the_receivers_own_account_gets_nothing() {
+        let srv = Server::new("ownclaim");
+        let mut bob = srv.device("bob");
+        let mut mallory = srv.device("mallory");
+        let g = mallory.create_group().unwrap();
+        claim_to_be(&mallory, &g, bob.account_id());
+        mallory.invite(&g, bob.account_id()).unwrap();
+        bob.sync(0).unwrap();
+        bob.accept_request(&g).unwrap();
+        forged_roster(&mut mallory, &g, bob.account_id());
+        bob.sync(0).unwrap();
+        let m = mallory.member_id();
+        assert_ne!(bob.map(&accounts_key(&g)).unwrap().get(&m.to_hex()).map(String::as_str), Some(bob.account_id()), "label refused");
+        assert!(bob.vouched_account(&g, &m).unwrap().is_none());
+        bob.set_network(tree_core::features::Network::Wifi);
+        assert!(!bob.auto_download_allowed(&g, &m, &file()).unwrap(), "a stranger's file never downloads by itself");
+        bob.apply_feature(crate::profile::VISIBILITY, Some("contacts".into())).unwrap();
+        assert!(!bob.photo_allowed(&g).unwrap(), "the photo is not for strangers");
+        // Control: bob's real linked devices would count (own/members), and
+        // with "chats" visibility the photo goes to any chat.
+        bob.apply_feature(crate::profile::VISIBILITY, Some("chats".into())).unwrap();
+        assert!(bob.photo_allowed(&g).unwrap());
     }
 
     /// F-018: someone else who saw a public invite link cannot pull the

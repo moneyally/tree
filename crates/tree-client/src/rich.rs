@@ -40,11 +40,9 @@ impl Session {
         franking: Option<Vec<u8>>,
         events: &mut Vec<Event>,
     ) -> Result<(), Error> {
-        if let Some(a) = self.map(&crate::accounts_key(gid))?.get(&from.to_hex()) {
-            if self.is_blocked(a)? {
-                events.push(Event::Dropped { reason: "from a blocked account".into() });
-                return Ok(());
-            }
+        if self.blocked_sender(gid, &from)? {
+            events.push(Event::Dropped { reason: "from a blocked account".into() });
+            return Ok(());
         }
         self.note_traffic(gid)?;
         match p {

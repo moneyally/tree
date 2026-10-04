@@ -686,11 +686,15 @@ impl Session {
         if !policy.allows(self.media.network, f.size) {
             return Ok(false);
         }
-        let Some(account) = self.map(&crate::accounts_key(gid))?.get(&from.to_hex()).cloned() else { return Ok(false) };
+        // Only a device this device trusts as the account: one of its own
+        // linked devices, or one pinned for an accepted contact. A roster
+        // label alone (also one naming this user's own account) is a
+        // stranger's claim (F-022).
+        let Some(account) = self.vouched_account(gid, from)? else { return Ok(false) };
         if account == self.creds.account_id {
             return Ok(true);
         }
-        Ok(self.contact(&account)?.is_some_and(|c| c.accepted && !c.blocked))
+        Ok(self.contact(&account)?.is_some_and(|c| c.accepted && !c.blocked) && !self.blocked_sender(gid, from)?)
     }
 }
 

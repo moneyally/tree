@@ -15,12 +15,12 @@ fn refreshes_after_joining_with_traffic_and_on_demand() {
     let env = Env::new("refresh");
     let mut alice = env.device("alice");
     let mut bob = env.device("bob");
-    bob.add_contact(alice.account_id()).unwrap();
+    bob.confirm_contact(alice.account_id()).unwrap();
     let g = alice.create_group().unwrap();
 
     // Default policy: a joiner waits at least a minute, so nothing happens yet.
     let mut carol = env.device("carol");
-    carol.add_contact(alice.account_id()).unwrap();
+    carol.confirm_contact(alice.account_id()).unwrap();
     alice.invite(&g, carol.account_id()).unwrap();
     carol.sync(0).unwrap();
     assert!(!carol.refresh_due(&g).unwrap());

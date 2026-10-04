@@ -24,12 +24,12 @@ fn locked(r: Result<impl std::fmt::Debug, Error>) -> bool {
 fn chat(env: &Env, with_carol: bool) -> (Session, Session, Option<Session>, Vec<u8>) {
     let mut alice = env.device("alice");
     let mut bob = env.device("bob");
-    bob.add_contact(alice.account_id()).unwrap();
+    bob.confirm_contact(alice.account_id()).unwrap();
     let g = alice.create_group().unwrap();
     alice.invite(&g, bob.account_id()).unwrap();
     let carol = with_carol.then(|| {
         let mut c = env.device("carol");
-        c.add_contact(alice.account_id()).unwrap();
+        c.confirm_contact(alice.account_id()).unwrap();
         alice.invite(&g, c.account_id()).unwrap();
         c.sync(0).unwrap();
         c

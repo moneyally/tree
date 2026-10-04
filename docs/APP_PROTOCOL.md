@@ -172,12 +172,34 @@ request until the adder's account is known from its `roster`. Then
 | stranger | request if `user.message_requests` applied (default), else accepted | declined if `user.group_add` applied (default: contacts only), else as for a 1:1 chat |
 
 The adder is the roster's sender under the account its roster claims. The
-claim counts only if that device is already pinned for the account and is
-not an unconfirmed key change (a device that only a roster claimed for an
-account that already had devices; confirmed when the user verifies the
-safety number or the server names it in a key-package claim), or if no
-device is pinned for the account yet (trust on first use). Otherwise the
-adder is judged as a stranger, and the key-change warning is shown (F-018).
+claim counts only if that device is **pinned** for the account
+(`Contact::vouches_for`): named by the server in a key-package claim this
+device made (an invite, or `confirm_contact`), carried from the account's
+own device in a confirmed device link, or covered by a safety number the
+user verified. A device that only a roster claimed is *unconfirmed*, also
+when the account has no pinned device at all (a contact added by hand or by
+username link vouches for nobody, F-021). Otherwise the adder is judged as a
+stranger, and for an account this device already knew the key-change
+warning is shown (F-018). Accepting a request does not pin the adder.
+
+Account labels (`accounts/<group>`, from rosters) are claims, never trust
+(F-022). A label is taken only for a current member other than this device;
+never for this device's own account unless the member is one of its linked
+devices (`own/members`); only as the first label for that member (a later
+roster never relabels a member); and from the sender for itself, or for
+other members only if the sender is trusted (one of this account's devices,
+or pinned for its account). Members added by a stranger stay unlabelled
+until they label themselves. Every "is this a contact / my own device"
+decision (requests, auto-download, profile-photo visibility) goes through
+`own/members` and `vouches_for`, never a label alone. A device is blocked if
+its label is a blocked account or it was ever seen (pinned or claimed) for
+a blocked account, so relabelling does not escape a block.
+
+Meaning of `own/members` (for branches that build on it): the MLS member
+ids of this account's other devices, learned only through a confirmed
+device link (PROTOCOL.md 8.11: the existing device's member id from the
+transcript; the new device's member id from the invitation). A roster label
+naming this account never adds to it and never counts as it.
 
 A group whose adder names, in its roster, the nonce this device sent with
 an invite-link request to that adder in the last day (PROTOCOL.md 8.7) is
@@ -268,7 +290,7 @@ In the same encrypted database as the core (`tree_app` table, SCHEMA.md):
 | `announce/<group hex>` | present until the own profile was sent |
 | `held/<20-digit counter>` | a held message body |
 | `accounts/<group hex>` | JSON member id -> account id |
-| `contact/<account id>` | JSON: pinned member ids, verified, accepted (chosen by the user), blocked, unconfirmed (key changes only a roster claimed) |
+| `contact/<account id>` | JSON: member ids seen for the account (`members`, all covered by the safety number), verified, accepted (chosen by the user), blocked, unconfirmed (devices only a roster claimed; pinned = members minus unconfirmed) |
 | `gstatus/<group hex>` | request (with adder account) or declined; absent = accepted |
 | `feature/<key>` | the user's setting: applied or released, option |
 | `profile/username` | the own @username |
@@ -400,8 +422,9 @@ attaches a short video file and shows a placeholder to save and play it.
 The photo (an image of at most 2 MiB) is uploaded as an encrypted blob;
 the reference goes only inside MLS in `profile_photo`, to the chats the
 setting allows: `chats` (default: every accepted chat), `contacts` (chats
-whose other members are all contacts the user chose and has not blocked,
-each device vouched for as in 5), `nobody` (or released). Every sync
+whose other members are all this account's own linked devices or devices
+pinned for contacts the user chose and has not blocked, as in 5; a roster
+label alone, also one naming the user's own account, never counts), `nobody` (or released). Every sync
 compares what each chat should have with what it was last sent and sends the
 difference: the photo, or "removed" where it was removed or is no longer
 allowed, and again when members were added. Receivers keep the reference per

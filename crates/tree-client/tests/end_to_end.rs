@@ -58,7 +58,7 @@ fn three_devices_chat_through_the_server() {
     assert!(ev.iter().any(|e| matches!(e, Event::Changed { epoch: 2, .. })), "{ev:?}");
     // alice decides again in epoch 2 and wins.
     // carol knows alice (e.g. found her @username): only contacts may add her to groups.
-    carol.add_contact(alice.account_id()).unwrap();
+    carol.confirm_contact(alice.account_id()).unwrap();
     // Same devices as in the lost attempt: no key-change warning.
     assert_eq!(alice.invite(&g, carol.account_id()).unwrap(), (CommitOutcome::Accepted { epoch: 3 }, vec![]));
     let ev = carol.sync(0).unwrap();
@@ -70,14 +70,15 @@ fn three_devices_chat_through_the_server() {
     assert_eq!(texts(&alice.sync(0).unwrap()), vec![("carol".into(), "나도 왔어".into())]);
     assert_eq!(texts(&bob.sync(0).unwrap()), vec![("carol".into(), "나도 왔어".into())]);
     // Safety numbers: alice (who invited bob) and bob (who learned alice's
-    // account from the roster) see the same digits; bob pinned carol's
-    // devices from alice's roster too.
+    // account from the roster) see the same digits. alice is a stranger
+    // bob accepted, not a pinned contact, so her roster does not label the
+    // other members for bob (F-022): carol stays unknown to bob.
     let n = alice.safety_number(bob.account_id()).unwrap();
     assert_eq!(n, bob.safety_number(alice.account_id()).unwrap());
     assert_eq!(n.split(' ').count(), 12, "12 groups of 5 digits: {n}");
     assert!(n.split(' ').all(|g| g.len() == 5 && g.bytes().all(|b| b.is_ascii_digit())), "{n}");
     assert_ne!(n, alice.safety_number(carol.account_id()).unwrap(), "per contact");
-    assert!(bob.contact(carol.account_id()).unwrap().is_some());
+    assert!(bob.contact(carol.account_id()).unwrap().is_none());
     let qr = bob.safety_qr(alice.account_id()).unwrap();
     alice.verify(bob.account_id(), Some(&qr)).unwrap();
     assert!(alice.contact(bob.account_id()).unwrap().unwrap().verified);

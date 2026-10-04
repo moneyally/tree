@@ -229,6 +229,41 @@ impl Client<StoredProvider> {
         }
     }
 
+    /// Stores application-owned state inside the encrypted SQLCipher metadata table.
+    /// Keys are namespaced so application data cannot overwrite Tree identity records.
+    pub fn set_app_data(&self, key: &str, value: Option<&[u8]>) -> Result<(), TreeError> {
+        if key.is_empty() || key.len() > 256 || key.chars().any(|c| c.is_control()) {
+            return Err(TreeError::Storage("invalid app-data key".into()));
+        }
+        let key = format!("app/{key}");
+        self.provider.atomically(|| {
+            match value {
+                Some(value) => self.provider.put_meta(&key, value),
+                None => self.provider.delete_meta(&key),
+            }
+        })
+    }
+
+    pub fn app_data(&self, key: &str) -> Result<Option<Vec<u8>>, TreeError> {
+        if key.is_empty() || key.len() > 256 || key.chars().any(|c| c.is_control()) {
+            return Err(TreeError::Storage("invalid app-data key".into()));
+        }
+        self.provider.meta_optional(&format!("app/{key}"))
+    }
+
+    pub fn app_data_keys(&self, prefix: &str) -> Result<Vec<String>, TreeError> {
+        if prefix.len() > 256 || prefix.chars().any(|c| c.is_control()) {
+            return Err(TreeError::Storage("invalid app-data prefix".into()));
+        }
+        let prefix = format!("app/{prefix}");
+        Ok(self
+            .provider
+            .meta_keys(&prefix)?
+            .into_iter()
+            .map(|key| key["app/".len()..].to_string())
+            .collect())
+    }
+
     /// Loads a stored group. Load each group once and keep the [`Group`]:
     /// two live copies of the same group would get out of step.
     pub fn load_group(&self, group_id: &[u8]) -> Result<Group, TreeError> {

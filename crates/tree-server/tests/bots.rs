@@ -4,7 +4,7 @@ mod common;
 
 use common::*;
 use ed25519_dalek::SigningKey;
-use reqwest::{header::HeaderValue, Method, StatusCode};
+use reqwest::{Method, StatusCode};
 use serde_json::json;
 
 #[tokio::test]

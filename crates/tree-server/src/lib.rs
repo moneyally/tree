@@ -15,6 +15,7 @@
 //! * [`attachments`] — encrypted attachments (ciphertext blobs)
 //! * [`reports`] — reports with message franking, account suspension
 //! * [`features`] — operator flags with apply/release
+//! * [`relay`] — GIF search and map tiles fetched for devices (off by default)
 //!
 //! Privacy: no IP addresses, message bodies or key packages are logged. Logs
 //! carry method, route template, status and latency only. The sender of a
@@ -37,6 +38,7 @@ pub mod links;
 pub mod messages;
 pub mod push;
 pub mod recovery;
+pub mod relay;
 pub mod reports;
 pub mod usernames;
 pub mod util;
@@ -82,6 +84,8 @@ pub struct Inner {
     pub franking: tokio::sync::OnceCell<[u8; 32]>,
     /// Devices to wake through their push endpoint (see [`push`]).
     pub push: Option<tokio::sync::mpsc::Sender<String>>,
+    /// GIF and map relays (see [`relay`]).
+    pub relay: relay::Relay,
 }
 
 impl Deref for AppState {
@@ -104,6 +108,7 @@ impl AppState {
             waiters: Waiters::default(),
             franking: tokio::sync::OnceCell::new(),
             push,
+            relay: relay::Relay::new(),
             db,
             cfg,
         }))
@@ -255,6 +260,10 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/reports", post(reports::report).get(reports::list))
         .route("/v1/reports/{id}/resolve", post(reports::resolve))
         .route("/v1/accounts/{id}/suspend/{action}", post(reports::suspend))
+        .route("/v1/relay", get(relay::status))
+        .route("/v1/relay/gif/search", post(relay::gif_search))
+        .route("/v1/relay/gif/media/{id}", get(relay::gif_media))
+        .route("/v1/relay/map/{z}/{x}/{y}", get(relay::map_tile))
         .route("/v1/features", get(features::list))
         .route("/v1/features/{key}/apply", post(features::apply))
         .route("/v1/features/{key}/release", post(features::release))

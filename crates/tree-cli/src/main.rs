@@ -541,5 +541,20 @@ fn print_event(ev: &Event) {
             &hex(group)[..8],
             id.as_deref().unwrap_or("-")
         ),
+        Event::Sticker { group, id, from, emoji, .. } => println!("[{}] {} sent a sticker {emoji}   #{id}", &hex(group)[..8], &from.to_hex()[..8]),
+        Event::Location { group, id, from, live, .. } => {
+            println!("[{}] {} shared a {}location   #{id}", &hex(group)[..8], &from.to_hex()[..8], if *live { "live " } else { "" })
+        }
+        Event::LocationUpdated { group, id, from, stopped } => {
+            println!("[{}] {} {} #{id}", &hex(group)[..8], &from.to_hex()[..8], if *stopped { "stopped sharing" } else { "moved" })
+        }
+        Event::ChatEvent { group, id, from, title, .. } => println!("[{}] {} made an event: {title}   #{id}", &hex(group)[..8], &from.to_hex()[..8]),
+        Event::ChatEventChanged { group, id, from, cancelled } => {
+            println!("[{}] {} {} event #{id}", &hex(group)[..8], &from.to_hex()[..8], if *cancelled { "cancelled" } else { "changed" })
+        }
+        Event::Rsvp { group, id, from, answer } => println!("[{}] {} answered {answer} to #{id}", &hex(group)[..8], &from.to_hex()[..8]),
+        Event::ProfilePhoto { group, member, removed } => {
+            println!("[{}] {} {} a profile photo", &hex(group)[..8], &member.to_hex()[..8], if *removed { "removed" } else { "set" })
+        }
     }
 }

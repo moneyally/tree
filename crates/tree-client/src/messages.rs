@@ -18,6 +18,7 @@
 //! | `chat.formatting` | applied | formatting markup is shown; released: shown as plain text |
 //! | `chat.mention_all` | applied, option `admins` (default) or `all` | who may @all; otherwise the @all is ignored |
 //! | `chat.screenshot_block` | released | the apps block screenshots of the chat (also per user) |
+//! | `chat.gifs`, `chat.video_notes` | applied | files flagged as a GIF / a video note allowed (`gifs.rs`, `video_notes.rs`) |
 //!
 //! Windows are measured with this device's own clock from when it received
 //! (or sent) the original, never from a time the sender claims.
@@ -56,7 +57,7 @@ pub(crate) fn now() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
-fn new_id() -> String {
+pub(crate) fn new_id() -> String {
     let mut b = [0u8; 16];
     getrandom::getrandom(&mut b).expect("operating system random number generator failed");
     hex::encode(b)
@@ -83,6 +84,15 @@ fn text_data(formatted: bool, preview: Option<&crate::payload::LinkPreview>, sil
         v["preview"] = serde_json::to_value(p).expect("JSON");
     }
     Some(serde_json::to_vec(&v).expect("JSON"))
+}
+
+/// What kind of file an attachment is besides voice and view-once.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct FileKind {
+    /// Found through the GIF relay (`chat.gifs`).
+    pub gif: bool,
+    /// A round video note (`chat.video_notes`) of this length.
+    pub video_note: Option<u64>,
 }
 
 /// A stored file reference: which group and message it belongs to.
@@ -272,7 +282,7 @@ impl Session {
             return Err(Error::Usage("the message was deleted".into()));
         }
         let me = self.member_id().to_hex();
-        self.queue_payload(gid, &Payload::React { id: id.into(), emoji: emoji.into(), remove }, None, |s| {
+        self.queue_payload(gid, &Payload::React { id: id.into(), emoji: emoji.into(), remove, sticker: None }, None, |s| {
             Ok(s.client.react(gid, id, &me, emoji, remove)?)
         })?;
         Ok(())
@@ -299,9 +309,25 @@ impl Session {
         view_once: bool,
         voice: Option<u64>,
     ) -> Result<FileInfo, Error> {
+        self.send_attachment_as(gid, bytes, name, mime, view_once, voice, FileKind::default())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn send_attachment_as(
+        &mut self,
+        gid: &[u8],
+        bytes: &[u8],
+        name: &str,
+        mime: &str,
+        view_once: bool,
+        voice: Option<u64>,
+        kind: FileKind,
+    ) -> Result<FileInfo, Error> {
         if !self.chat_allows(gid, "chat.media")?
             || (view_once && !self.chat_allows(gid, "chat.view_once")?)
             || (voice.is_some() && !self.chat_allows(gid, "chat.voice")?)
+            || (kind.gif && !self.chat_allows(gid, "chat.gifs")?)
+            || (kind.video_note.is_some() && !self.chat_allows(gid, "chat.video_notes")?)
         {
             return Err(Self::locked_by_chat());
         }
@@ -311,7 +337,9 @@ impl Session {
             msg_id: new_id(),
             view_once,
             voice: voice.is_some(),
-            duration_ms: voice,
+            duration_ms: voice.or(kind.video_note),
+            gif: kind.gif,
+            video_note: kind.video_note.is_some(),
             id,
             key: api::b64(&fk.key[..]),
             nonce: api::b64(&fk.nonce_prefix),
@@ -436,7 +464,7 @@ impl Session {
                 }
                 Err(why) => refuse(events, why),
             },
-            Payload::React { id, emoji, remove } => {
+            Payload::React { id, emoji, remove, sticker } => {
                 if !self.chat_allows(gid, "chat.reactions")? {
                     refuse(events, "reactions are released in this group (chat.reactions)");
                     return Ok(());
@@ -445,6 +473,12 @@ impl Session {
                     refuse(events, "malformed reaction");
                     return Ok(());
                 }
+                // A custom emoji counts as itself only while the chat
+                // allows stickers; otherwise as its plain emoji.
+                let emoji = match sticker {
+                    Some(st) => self.custom_reaction_key(gid, &st)?.unwrap_or(emoji),
+                    None => emoji,
+                };
                 match self.client.message(gid, &id)? {
                     Some(m) if !m.deleted => {
                         self.client.react(gid, &id, &from.to_hex(), &emoji, remove)?;
@@ -464,6 +498,14 @@ impl Session {
                 }
                 if file.view_once && !self.chat_allows(gid, "chat.view_once")? {
                     refuse(events, "view-once files are released in this group (chat.view_once)");
+                    return Ok(());
+                }
+                if file.gif && !self.chat_allows(gid, "chat.gifs")? {
+                    refuse(events, "GIFs are released in this group (chat.gifs)");
+                    return Ok(());
+                }
+                if file.video_note && !self.chat_allows(gid, "chat.video_notes")? {
+                    refuse(events, "video notes are released in this group (chat.video_notes)");
                     return Ok(());
                 }
                 let data = serde_json::to_vec(&file).expect("JSON");

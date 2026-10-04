@@ -162,6 +162,7 @@ const SECURITY_KEYS: &[&str] = &[
     "user.discoverable",
     "user.recovery_phrase",
     "user.username_link",
+    "user.profile_photo_visibility",
 ];
 
 /// Reporting, spam and stranger protection.
@@ -391,6 +392,9 @@ pub fn option_format(key: &str) -> OptionFormat {
         "user.group_add" => OneOf(&["contacts", "nobody"]),
         // How the app unlocks (no option: the passphrase).
         "user.app_lock" => OneOf(&["passphrase", "pin", "bio"]),
+        // Who gets the profile photo: everyone in the user's chats (default),
+        // only chats whose other members are all contacts, or nobody.
+        "user.profile_photo_visibility" => OneOf(&["chats", "contacts", "nobody"]),
         k if standard_features().iter().any(|f| f.key == k) => Nothing,
         _ => Free,
     }
@@ -501,6 +505,16 @@ pub fn standard_features() -> Vec<Feature> {
         feat("chat.formatting", Chat, Applied, 1),
         feat("chat.view_once", Chat, Applied, 1),
         feat("chat.mention_all", Chat, Applied, 1),
+        // Rich chats (Wave 2 part B, APP_PROTOCOL.md 8): sticker and custom
+        // emoji packs, GIFs found through the server relay, location and
+        // live location, events with replies, round video notes, and
+        // members' display names / photos for this chat only.
+        feat("chat.stickers", Chat, Applied, 3),
+        feat("chat.gifs", Chat, Applied, 3),
+        feat("chat.location", Chat, Applied, 3),
+        feat("chat.events", Chat, Applied, 3),
+        feat("chat.video_notes", Chat, Applied, 3),
+        feat("chat.allow_per_chat_profiles", Chat, Applied, 3),
         // user
         feat("user.read_receipts", User, Applied, 1),
         feat("user.typing", User, Applied, 1),
@@ -534,6 +548,10 @@ pub fn standard_features() -> Vec<Feature> {
         feat("user.drafts", User, Applied, 1),
         feat("user.unarchive_on_message", User, Applied, 1),
         feat("user.username_link", User, Released, 1),
+        // Profile photo (encrypted attachment, shared inside MLS only) and a
+        // display name / photo for one chat only (APP_PROTOCOL.md 8.6, 8.7).
+        feat("user.profile_photo_visibility", User, Applied, 3),
+        feat("user.per_chat_profile", User, Released, 3),
         // server flags
         feat("server.signups", Server, Applied, 1),
         // Anti-spam (design: limits for new accounts and for accounts with
@@ -542,6 +560,11 @@ pub fn standard_features() -> Vec<Feature> {
         feat("server.report_limits", Server, Applied, 1),
         feat("server.bot_platform", Server, Applied, 2),
         feat("server.calls", Server, Applied, 3),
+        // Relays the operator may offer (off until applied and configured):
+        // GIF search and map tiles, fetched by the server so the provider
+        // never sees the user's address (PROTOCOL.md 8.12).
+        feat("server.gif_relay", Server, Released, 3),
+        feat("server.map_relay", Server, Released, 3),
     ];
     let locked = [
         ("chat.e2e", Chat, Lock::AlwaysOn("end-to-end encryption is why Tree exists")),

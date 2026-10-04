@@ -324,6 +324,25 @@ impl Api {
         Ok(reply.bytes().map_err(|e| Error::Network(e.to_string()))?.to_vec())
     }
 
+    /// A signed GET that answers with bytes (relays): the bytes and their
+    /// type, or the server's error code.
+    pub fn get_bytes(&self, c: &Creds, path: &str) -> Result<(Vec<u8>, String), Error> {
+        let reply = self.request_raw(&c.key, &c.device_id, Method::GET, path, vec![])?;
+        let status = reply.status();
+        let mime = reply
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("application/octet-stream")
+            .to_string();
+        let bytes = reply.bytes().map_err(|e| Error::Network(e.to_string()))?.to_vec();
+        if !status.is_success() {
+            let v: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+            return Err(Error::Server { status: status.as_u16(), code: v["code"].as_str().unwrap_or("").into() });
+        }
+        Ok((bytes, mime))
+    }
+
     /// A signed request with a raw (non-JSON) body; returns the response.
     fn request_raw(&self, key: &SigningKey, device_id: &str, method: Method, path: &str, body: Vec<u8>) -> Result<reqwest::blocking::Response, Error> {
         let ts = now().to_string();

@@ -11,6 +11,9 @@ use tree_client::{CommitOutcome, Event, FileInfo, GroupStatus, LinkStatus, Membe
 
 uniffi::setup_scaffolding!();
 
+mod rich;
+pub use rich::*;
+
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum TreeError {
     /// The server refused (`code` as in SERVER_API.md, e.g. `SUSPENDED`).
@@ -65,6 +68,10 @@ pub struct Attachment {
     pub view_once: bool,
     pub voice: bool,
     pub duration_ms: Option<u64>,
+    /// A GIF found through the relay (`chat.gifs`).
+    pub gif: bool,
+    /// A round video note (`chat.video_notes`).
+    pub video_note: bool,
     pub id: String,
     pub key: String,
     pub nonce: String,
@@ -82,6 +89,8 @@ impl From<FileInfo> for Attachment {
             view_once: f.view_once,
             voice: f.voice,
             duration_ms: f.duration_ms,
+            gif: f.gif,
+            video_note: f.video_note,
             id: f.id,
             key: f.key,
             nonce: f.nonce,
@@ -101,6 +110,8 @@ impl From<Attachment> for FileInfo {
             view_once: f.view_once,
             voice: f.voice,
             duration_ms: f.duration_ms,
+            gif: f.gif,
+            video_note: f.video_note,
             id: f.id,
             key: f.key,
             nonce: f.nonce,
@@ -156,6 +167,17 @@ pub enum TreeEvent {
     Sent { group: String, id: Option<String> },
     /// An outbox item was given up; offer `retry_send` / `cancel_send`.
     SendFailed { group: String, id: Option<String>, local_id: String, reason: String },
+    /// A sticker: item `index` of pack `pack` (`sticker_image`).
+    Sticker { group: String, id: String, from: String, name: Option<String>, pack: String, index: u32, emoji: String, request: bool },
+    /// A place or live location (`location`).
+    Location { group: String, id: String, from: String, name: Option<String>, live: bool, request: bool },
+    LocationUpdated { group: String, id: String, from: String, stopped: bool },
+    /// An event to answer (`chat_event`).
+    ChatEvent { group: String, id: String, from: String, name: Option<String>, title: String, request: bool },
+    ChatEventChanged { group: String, id: String, from: String, cancelled: bool },
+    Rsvp { group: String, id: String, from: String, answer: String },
+    /// A member's photo changed (`member_photo`).
+    ProfilePhoto { group: String, member: String, removed: bool },
 }
 
 fn ids(v: Vec<MemberId>) -> Vec<String> {
@@ -209,6 +231,21 @@ impl From<Event> for TreeEvent {
             Event::GroupSafetyNotice { group, adder } => TreeEvent::GroupSafetyNotice { group: h(group), adder },
             Event::Sent { group, id } => TreeEvent::Sent { group: h(group), id },
             Event::SendFailed { group, id, local_id, reason } => TreeEvent::SendFailed { group: h(group), id, local_id, reason },
+            Event::Sticker { group, id, from, name, pack, index, emoji, request } => {
+                TreeEvent::Sticker { group: h(group), id, from: from.to_hex(), name, pack, index, emoji, request }
+            }
+            Event::Location { group, id, from, name, live, request } => {
+                TreeEvent::Location { group: h(group), id, from: from.to_hex(), name, live, request }
+            }
+            Event::LocationUpdated { group, id, from, stopped } => TreeEvent::LocationUpdated { group: h(group), id, from: from.to_hex(), stopped },
+            Event::ChatEvent { group, id, from, name, title, request } => {
+                TreeEvent::ChatEvent { group: h(group), id, from: from.to_hex(), name, title, request }
+            }
+            Event::ChatEventChanged { group, id, from, cancelled } => {
+                TreeEvent::ChatEventChanged { group: h(group), id, from: from.to_hex(), cancelled }
+            }
+            Event::Rsvp { group, id, from, answer } => TreeEvent::Rsvp { group: h(group), id, from: from.to_hex(), answer },
+            Event::ProfilePhoto { group, member, removed } => TreeEvent::ProfilePhoto { group: h(group), member: member.to_hex(), removed },
         }
     }
 }

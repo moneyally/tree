@@ -19,9 +19,16 @@ pub const CALLS: &str = "server.calls";
 pub const PUBLIC_SPACES: &str = "server.public_spaces";
 pub const NEW_ACCOUNT_LIMITS: &str = "server.new_account_limits";
 pub const REPORT_LIMITS: &str = "server.report_limits";
+pub use crate::relay::{GIF_RELAY, MAP_RELAY};
 
-/// Server flags known to this build. All start applied.
-pub const SERVER_FLAGS: &[&str] = &[SIGNUPS, BOT_PLATFORM, CALLS, PUBLIC_SPACES, NEW_ACCOUNT_LIMITS, REPORT_LIMITS];
+/// Server flags known to this build. All start applied except those in
+/// [`START_RELEASED`].
+pub const SERVER_FLAGS: &[&str] =
+    &[SIGNUPS, BOT_PLATFORM, CALLS, PUBLIC_SPACES, NEW_ACCOUNT_LIMITS, REPORT_LIMITS, GIF_RELAY, MAP_RELAY];
+
+/// Flags that start released: the relays work only once the operator
+/// applies them (and configures an upstream, PROTOCOL.md 8.12).
+pub const START_RELEASED: &[&str] = &[GIF_RELAY, MAP_RELAY];
 
 const APPLIED: &str = "applied";
 const RELEASED: &str = "released";
@@ -33,7 +40,7 @@ pub async fn seed(db: &SqlitePool) -> Result<(), sqlx::Error> {
     for key in SERVER_FLAGS {
         sqlx::query("INSERT OR IGNORE INTO features (key, state, changed_at) VALUES (?, ?, ?)")
             .bind(key)
-            .bind(APPLIED)
+            .bind(if START_RELEASED.contains(key) { RELEASED } else { APPLIED })
             .bind(now)
             .execute(db)
             .await?;

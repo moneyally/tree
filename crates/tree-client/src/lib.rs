@@ -15,7 +15,7 @@ use thiserror::Error;
 
 use tree_core::{
     group::{Group, Incoming, MemberId, PendingCommit},
-    media::{decrypt_preview, EncryptedChunk, MediaEnvelope, MediaKey, MediaLifecycle, MediaManifest, PreviewMode, ViewPolicy},
+    media::{decrypt_preview, EncryptedChunk, MediaEnvelope, MediaKey, MediaLifecycle, MediaManifest, MediaViewEvent, SecureMediaBytes, PreviewMode, ViewPolicy},
     storage::StoredProvider,
     Client, TreeError,
 };
@@ -61,7 +61,7 @@ pub struct SentMedia {
 
 pub struct DownloadedMediaChunk {
     pub index: u32,
-    pub plaintext: Vec<u8>,
+    pub plaintext: SecureMediaBytes,
 }
 
 
@@ -356,7 +356,7 @@ impl Session {
     pub fn decrypt_media_preview(
         &self,
         envelope: &MediaEnvelope,
-    ) -> Result<Option<Vec<u8>>, Error> {
+    ) -> Result<Option<SecureMediaBytes>, Error> {
         match &envelope.preview {
             Some(preview) => Ok(Some(SecureMediaBytes::new(decrypt_preview(
                 &envelope.file_key,

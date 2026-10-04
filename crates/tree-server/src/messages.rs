@@ -35,7 +35,7 @@ json_body!(SendReq, |cfg| cfg.max_message_bytes.div_ceil(3) * 4
     + cfg.max_recipients * (ID_LEN + 4)
     + 1024);
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 pub struct SendResp {
     /// Mailboxes the message was put into.
     pub delivered: usize,

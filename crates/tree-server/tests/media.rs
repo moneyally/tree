@@ -47,7 +47,7 @@ async fn encrypted_media_can_resume_finalize_and_download_without_plaintext() {
     let commitment = manifest.key_commitment(&key).unwrap();
     let body = json!({
         "manifest": b64(&encrypt_manifest(&key, &manifest).unwrap()),
-        "key_commitment": hex::encode(commitment),
+        "key_commitment": b64(&commitment),
         "plaintext_size": 5,
         "chunk_size": manifest.chunk_size,
         "chunk_count": manifest.chunk_count,

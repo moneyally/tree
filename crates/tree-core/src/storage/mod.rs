@@ -386,7 +386,8 @@ impl StoredProvider {
         let rows = stmt
             .query_map(params![pattern], |r| r.get(0))
             .map_err(storage_err)?;
-        rows.collect::<Result<Vec<String>, _>>().map_err(storage_err)
+        rows.collect::<Result<Vec<String>, _>>()
+            .map_err(storage_err)
     }
 
     pub(crate) fn group_ids(&self) -> Result<Vec<Vec<u8>>, TreeError> {

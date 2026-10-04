@@ -18,7 +18,6 @@
 
 mod forward;
 pub mod key;
-pub mod messages;
 #[cfg(test)]
 mod tests;
 

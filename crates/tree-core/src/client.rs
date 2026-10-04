@@ -155,6 +155,45 @@ impl Client<StoredProvider> {
         self.provider.group_ids()
     }
 
+    /// Returns due durable outbound messages. Sending state is persisted
+    /// separately so a process crash can be recovered without losing work.
+    pub fn due_outbox(
+        &self,
+        now: i64,
+        limit: u32,
+    ) -> Result<Vec<crate::messenger_store::OutboxItem>, TreeError> {
+        self.provider.due_outbox(now, limit)
+    }
+
+    pub fn mark_outbox_sending(&self, local_id: [u8; 16], now: i64) -> Result<bool, TreeError> {
+        self.provider.mark_outbox_sending(local_id, now)
+    }
+
+    pub fn mark_outbox_sent(&self, local_id: [u8; 16], server_id: &str) -> Result<(), TreeError> {
+        self.provider.mark_outbox_sent(local_id, server_id)
+    }
+
+    pub fn mark_outbox_retry(
+        &self,
+        local_id: [u8; 16],
+        error_code: &str,
+        next_retry_at: i64,
+    ) -> Result<(), TreeError> {
+        self.provider.mark_outbox_retry(local_id, error_code, next_retry_at)
+    }
+
+    pub fn mark_outbox_failed(
+        &self,
+        local_id: [u8; 16],
+        error_code: &str,
+    ) -> Result<(), TreeError> {
+        self.provider.mark_outbox_failed(local_id, error_code)
+    }
+
+    pub fn recover_sending_outbox(&self, now: i64) -> Result<u32, TreeError> {
+        self.provider.recover_sending_outbox(now)
+    }
+
     /// Stores the 32-byte Ed25519 seed used only to authenticate HTTP
     /// requests to a Tree server. The value is stored inside the SQLCipher
     /// database, never in a sidecar plaintext file.

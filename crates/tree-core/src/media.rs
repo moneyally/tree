@@ -944,6 +944,7 @@ pub struct MediaEnvelope {
     pub manifest: MediaManifest,
     pub file_key: MediaKey,
     pub preview: Option<EncryptedChunk>,
+    pub caption: String,
 }
 
 impl MediaEnvelope {
@@ -990,6 +991,7 @@ impl MediaEnvelope {
         put_bytes_u16(&mut out, &manifest)?;
         out.extend_from_slice(self.file_key.as_bytes());
         out.extend_from_slice(&key_commitment);
+        put_string_u16(&mut out, &self.caption)?;
         match &self.preview {
             None => out.push(0),
             Some(preview) => {
@@ -1022,6 +1024,7 @@ impl MediaEnvelope {
                 "media key commitment mismatch".into(),
             ));
         }
+        let caption = r.string_u16()?;
         let preview = match r.u8()? {
             0 => None,
             1 => {

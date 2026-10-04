@@ -4,7 +4,10 @@ use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
 use ed25519_dalek::{Signer, SigningKey};
 use reqwest::blocking::Client as Http;
-use reqwest::{header::{HeaderMap, HeaderValue}, Method, StatusCode};
+use reqwest::{
+    header::{HeaderMap, HeaderValue},
+    Method, StatusCode,
+};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
@@ -285,21 +288,26 @@ impl Api {
             HeaderValue::from_str(capability)
                 .map_err(|_| ClientError::Usage("invalid media capability".into()))?,
         );
-        let value = self.call_with_headers(
-            c,
-            Method::GET,
-            &format!("/v1/media/{media_id}/chunks/{index}"),
-            None,
-            headers,
-        )?
-        .ok()?;
+        let value = self
+            .call_with_headers(
+                c,
+                Method::GET,
+                &format!("/v1/media/{media_id}/chunks/{index}"),
+                None,
+                headers,
+            )?
+            .ok()?;
         let raw = unb64(value["ciphertext"].as_str().unwrap_or(""))?;
         let hash = hex::decode(value["sha256"].as_str().unwrap_or(""))
             .map_err(|_| ClientError::Usage("invalid media chunk hash".into()))?;
         let sha256: [u8; 32] = hash
             .try_into()
             .map_err(|_| ClientError::Usage("invalid media chunk hash length".into()))?;
-        Ok(MediaChunk { index, ciphertext: raw, sha256 })
+        Ok(MediaChunk {
+            index,
+            ciphertext: raw,
+            sha256,
+        })
     }
 
     pub fn ack(&self, c: &Creds, ids: &[String]) -> Result<(), ClientError> {

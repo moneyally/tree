@@ -446,6 +446,14 @@ impl Api {
     }
 
     pub async fn fetch(&self, dev: &Device, wait: u64) -> Vec<Value> {
+        self.fetch_with_cursor(dev, wait).await.1
+    }
+
+    pub async fn fetch_with_cursor(
+        &self,
+        dev: &Device,
+        wait: u64,
+    ) -> (i64, Vec<Value>) {
         let path = if wait > 0 {
             format!("/v1/messages?wait={wait}")
         } else {
@@ -453,7 +461,10 @@ impl Api {
         };
         let (st, v) = self.call(dev, Method::GET, &path, None).await;
         assert_eq!(st, StatusCode::OK, "{v}");
-        v["messages"].as_array().unwrap().clone()
+        (
+            v["cursor"].as_i64().unwrap(),
+            v["messages"].as_array().unwrap().clone(),
+        )
     }
 
     pub async fn ack(&self, dev: &Device, ids: &[&str]) -> (StatusCode, Value) {

@@ -14,7 +14,7 @@ fn strangers_join_through_a_link() {
     let mut dave = env.device("dave");
     let g = alice.create_group().unwrap();
     // bob is a member but not an admin: he cannot make links.
-    bob.add_contact(alice.account_id()).unwrap();
+    bob.confirm_contact(alice.account_id()).unwrap();
     alice.invite(&g, bob.account_id()).unwrap();
     bob.sync(0).unwrap();
     assert!(matches!(bob.create_invite_link(&g, 3600, 5), Err(Error::Feature(c)) if c == "NOT_ADMIN"));

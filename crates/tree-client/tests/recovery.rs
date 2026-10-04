@@ -11,8 +11,8 @@ fn a_lost_phone_is_replaced_with_the_phrase() {
     let env = Env::new("recovery");
     let mut alice = env.device("alice");
     let mut bob = env.device("bob");
-    bob.add_contact(alice.account_id()).unwrap();
-    alice.add_contact(bob.account_id()).unwrap();
+    bob.confirm_contact(alice.account_id()).unwrap();
+    alice.confirm_contact(bob.account_id()).unwrap();
     alice.set_username("alice_tree").unwrap();
     let g = alice.create_group().unwrap();
     alice.invite(&g, bob.account_id()).unwrap();
@@ -134,7 +134,7 @@ fn deleting_the_account_leaves_nothing_behind() {
     let env = Env::new("delete");
     let mut alice = env.device("alice");
     let mut bob = env.device("bob");
-    bob.add_contact(alice.account_id()).unwrap();
+    bob.confirm_contact(alice.account_id()).unwrap();
     alice.set_username("gone_soon").unwrap();
     let g = alice.create_group().unwrap();
     alice.invite(&g, bob.account_id()).unwrap();

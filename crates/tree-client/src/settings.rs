@@ -6,6 +6,9 @@
 //! Three settings are also the server's business, so applying or releasing
 //! them goes to the server first and is stored only once it agreed:
 //!
+//! * `user.username`: applied while the account has a @username (choosing
+//!   one with `set_username` applies it); releasing it releases the name on
+//!   the server (and its link), applying it needs a name (F-033);
 //! * `user.discoverable`: the @username's registration is changed to
 //!   findable / hidden (PROTOCOL.md 8.4);
 //! * `user.username_link`: a link token's hash is registered / deleted
@@ -39,6 +42,8 @@ fn key(k: &str) -> String {
 pub(crate) const RECOVERY: &str = "user.recovery_phrase";
 /// Whether the @username can be found (PROTOCOL.md 8.4).
 pub(crate) const DISCOVERABLE: &str = "user.discoverable";
+/// Whether the account has a @username (PROTOCOL.md 8.4).
+pub(crate) const USERNAME: &str = "user.username";
 /// When the server drops the recovery key after a release without the
 /// phrase (unix seconds). Not under `feature/`.
 const RECOVERY_RELEASE_AT: &str = "recovery/release_at";
@@ -57,6 +62,8 @@ impl Session {
             // A setting that is no longer allowed (e.g. a new lock) is ignored.
             let _ = if applied { r.apply(name, s.option, ME) } else { r.release(name, ME) };
         }
+        // `user.username` is whether a name is registered (F-033).
+        let _ = if self.username()?.is_some() { r.apply(USERNAME, None, ME) } else { r.release(USERNAME, ME) };
         Ok(r)
     }
 
@@ -113,6 +120,16 @@ impl Session {
             // Refused changes (locks) must not reach the server either.
             let mut r = self.registry()?;
             let _ = (if applied { r.apply(k, option.clone(), ME) } else { r.release(k, ME) })?;
+        }
+        if k == USERNAME {
+            let mut r = self.registry()?;
+            let _ = (if applied { r.apply(k, option.clone(), ME) } else { r.release(k, ME) })?;
+            match (applied, self.username()?) {
+                (true, None) => return Err(Error::Usage("choose a @username first (set_username)".into())),
+                (true, Some(name)) => self.register_username(&name, self.is_applied(DISCOVERABLE)?)?,
+                (false, Some(_)) => self.release_username()?,
+                (false, None) => {}
+            }
         }
         if k == DISCOVERABLE {
             if let Some(name) = self.username()? {

@@ -28,6 +28,9 @@ const CLEANED_AT: &str = "media_clean/last";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CachedMedia {
     pub attachment_id: String,
+    /// The file's content hash: the cache is keyed by id and hash (F-029).
+    #[serde(default)]
+    pub pt_sha256: String,
     pub path: String,
     /// When it was downloaded (unix seconds).
     pub at: i64,
@@ -42,15 +45,39 @@ pub struct CleanReport {
 }
 
 /// A file name safe inside the media folder: the attachment id (base64url
-/// from the server) and the extension of the sender's name.
+/// from the server), the start of the content hash, and the extension of
+/// the sender's name.
 fn cache_name(f: &FileInfo) -> String {
     let id: String = f.id.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').take(64).collect();
+    let h: String = f.pt_sha256.chars().filter(char::is_ascii_hexdigit).take(16).collect();
+    let base = if h.is_empty() { id } else { format!("{id}-{h}") };
     let ext: String = f
         .name
         .rsplit_once('.')
         .map(|(_, e)| e.chars().filter(char::is_ascii_alphanumeric).take(8).collect())
         .unwrap_or_default();
-    if ext.is_empty() { id } else { format!("{id}.{ext}") }
+    if ext.is_empty() { base } else { format!("{base}.{ext}") }
+}
+
+/// Where a downloaded file is recorded: by attachment id and content hash.
+fn media_key(id: &str, pt_sha256: &str) -> String {
+    format!("media/{id}/{pt_sha256}")
+}
+
+/// The SHA-256 (hex) of a file on disk, read in pieces.
+fn file_sha256(path: &str) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut h = Sha256::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = f.read(&mut buf).ok()?;
+        if n == 0 {
+            return Some(hex::encode(h.finalize()));
+        }
+        h.update(&buf[..n]);
+    }
 }
 
 impl Session {
@@ -62,9 +89,11 @@ impl Session {
         if f.view_once {
             return Err(Error::Usage("view-once files are not kept on the device".into()));
         }
-        let key = format!("media/{}", f.id);
+        // Keyed by id and content hash, and the file is checked against the
+        // hash before it is handed out again (F-029).
+        let key = media_key(&f.id, &f.pt_sha256);
         if let Some(c) = self.client.app_data(&key)?.and_then(|v| serde_json::from_slice::<CachedMedia>(&v).ok()) {
-            if std::path::Path::new(&c.path).exists() {
+            if file_sha256(&c.path).is_some_and(|h| h == f.pt_sha256) {
                 return Ok(c.path);
             }
         }
@@ -72,7 +101,7 @@ impl Session {
         std::fs::create_dir_all(dir).map_err(|e| Error::Usage(format!("{dir}: {e}")))?;
         let path = std::path::Path::new(dir).join(cache_name(f)).display().to_string();
         std::fs::write(&path, &bytes).map_err(|e| Error::Usage(format!("{path}: {e}")))?;
-        let c = CachedMedia { attachment_id: f.id.clone(), path: path.clone(), at: now(), size: bytes.len() as u64 };
+        let c = CachedMedia { attachment_id: f.id.clone(), pt_sha256: f.pt_sha256.clone(), path: path.clone(), at: now(), size: bytes.len() as u64 };
         self.client.set_app_data(&key, Some(&serde_json::to_vec(&c).expect("JSON")))?;
         Ok(path)
     }
@@ -116,7 +145,8 @@ impl Session {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => return Err(Error::Usage(format!("{}: {e}", c.path))),
             }
-            self.client.set_app_data(&format!("media/{}", c.attachment_id), None)?;
+            self.client.set_app_data(&media_key(&c.attachment_id, &c.pt_sha256), None)?;
+            self.client.set_app_data(&format!("media/{}", c.attachment_id), None)?; // the old form
         }
         self.client.set_app_data(CLEANED_AT, Some(now().to_string().as_bytes()))?;
         Ok(r)
@@ -159,5 +189,7 @@ mod tests {
             fwd: false,
         };
         assert_eq!(cache_name(&f), "etcpasswd.JPG");
+        let g = FileInfo { pt_sha256: "ab/cd".repeat(10), ..f };
+        assert_eq!(cache_name(&g), "etcpasswd-abcdabcdabcdabcd.JPG", "the hash part is hex only");
     }
 }

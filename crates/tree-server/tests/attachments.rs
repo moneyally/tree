@@ -10,6 +10,12 @@ use serde_json::{json, Value};
 
 const CS: usize = 4096;
 
+/// Attachment sizes a client produces (PROTOCOL.md 6.12): 32 + padded + 16
+/// per MiB chunk. `blob_len(1024)` is the smallest, 1072 bytes.
+fn blob_len(padded: u64) -> u64 {
+    32 + padded + 16 * padded.div_ceil(1 << 20)
+}
+
 async fn create(api: &Api, dev: &Device, size: u64) -> (StatusCode, Value) {
     api.call(dev, Method::POST, "/v1/uploads", Some(json!({ "size": size }))).await
 }
@@ -75,10 +81,10 @@ async fn chunked_upload_resume_and_ranged_download() {
     let ts = boot(|c| c.upload_chunk_bytes = CS).await;
     let api = &ts.api;
     let (a, b) = (api.signup().await, api.signup().await);
-    let blob: Vec<u8> = (0..(3 * CS + 100)).map(|i| (i % 251) as u8).collect();
+    let blob: Vec<u8> = (0..blob_len(16384)).map(|i| (i % 251) as u8).collect();
     let (st, v) = create(api, &a, blob.len() as u64).await;
     assert_eq!(st, StatusCode::CREATED, "{v}");
-    assert_eq!((v["chunk_size"].as_u64(), v["chunks"].as_u64(), v["received"].as_u64()), (Some(CS as u64), Some(4), Some(0)));
+    assert_eq!((v["chunk_size"].as_u64(), v["chunks"].as_u64(), v["received"].as_u64()), (Some(CS as u64), Some(5), Some(0)));
     let id = v["id"].as_str().unwrap().to_string();
     let parts: Vec<&[u8]> = blob.chunks(CS).collect();
 
@@ -100,10 +106,11 @@ async fn chunked_upload_resume_and_ranged_download() {
     // Not downloadable before it is complete.
     assert_eq!(get_range(api, &b, &id, None).await.0, StatusCode::NOT_FOUND);
     assert_eq!(put(api, &a, &id, 2, parts[2]).await.1["received"], 3);
-    let (st, v) = put(api, &a, &id, 3, parts[3]).await;
+    assert_eq!(put(api, &a, &id, 3, parts[3]).await.1["received"], 4);
+    let (st, v) = put(api, &a, &id, 4, parts[4]).await;
     assert_eq!((st, v["complete"].as_bool()), (StatusCode::OK, Some(true)), "{v}");
     // Complete: a repeated last part and a status say so.
-    assert_eq!(put(api, &a, &id, 3, parts[3]).await.1["complete"], true);
+    assert_eq!(put(api, &a, &id, 4, parts[4]).await.1["complete"], true);
     assert_eq!(status(api, &b, &id).await.1["complete"], true);
 
     // Any registered device with the id downloads, one part per request.
@@ -126,7 +133,7 @@ async fn chunked_upload_resume_and_ranged_download() {
     assert_eq!(std::fs::read(&file).unwrap(), blob);
 
     // The uploader can give up an unfinished upload; its partial file goes.
-    let (_, v) = create(api, &a, 2 * CS as u64).await;
+    let (_, v) = create(api, &a, blob_len(8192)).await;
     let id2 = v["id"].as_str().unwrap().to_string();
     put(api, &a, &id2, 0, &blob[..CS]).await;
     let part = ts.dir.join("attachments").join(format!(".{id2}.part"));
@@ -144,7 +151,7 @@ async fn size_limit_and_daily_quota() {
     let ts = boot(|c| {
         c.upload_chunk_bytes = CS;
         c.max_attachment_bytes = 10_000;
-        c.upload_quota_bytes_per_day = 25_000;
+        c.upload_quota_bytes_per_day = 20_000;
     })
     .await;
     let api = &ts.api;
@@ -153,27 +160,85 @@ async fn size_limit_and_daily_quota() {
     assert_eq!((st, v["code"].as_str(), v["max_bytes"].as_u64()), (StatusCode::PAYLOAD_TOO_LARGE, Some("TOO_LARGE"), Some(10_000)));
     assert_eq!(create(api, &a, 0).await.0, StatusCode::BAD_REQUEST);
     // A part larger than the part size never reaches the handler.
-    let (_, v) = create(api, &a, 10_000).await;
+    let (_, v) = create(api, &a, blob_len(8192)).await;
     let id = v["id"].as_str().unwrap().to_string();
     assert_eq!(put(api, &a, &id, 0, &vec![0; CS + 1]).await.0, StatusCode::PAYLOAD_TOO_LARGE);
-    // 10 000 + 10 000 fit in 25 000; another 10 000 does not, 5 000 does.
-    assert_eq!(create(api, &a, 10_000).await.0, StatusCode::CREATED);
-    let (st, v) = create(api, &a, 10_000).await;
+    // 8 240 + 8 240 fit in 20 000; another 8 240 does not, 2 096 does.
+    assert_eq!(create(api, &a, blob_len(8192)).await.0, StatusCode::CREATED);
+    let (st, v) = create(api, &a, blob_len(8192)).await;
     assert_eq!((st, v["code"].as_str()), (StatusCode::FORBIDDEN, Some("QUOTA_EXCEEDED")));
-    assert_eq!(create(api, &a, 5_000).await.0, StatusCode::CREATED);
-    assert_eq!(create(api, &a, 1).await.1["code"], "QUOTA_EXCEEDED");
+    assert_eq!(create(api, &a, blob_len(2048)).await.0, StatusCode::CREATED);
+    assert_eq!(create(api, &a, blob_len(4096)).await.1["code"], "QUOTA_EXCEEDED");
     // Per account: b has its own.
-    assert_eq!(create(api, &b, 10_000).await.0, StatusCode::CREATED);
+    assert_eq!(create(api, &b, blob_len(8192)).await.0, StatusCode::CREATED);
     // Another device of the same account shares a's quota.
     let a2 = api.add_device(&a).await;
-    assert_eq!(create(api, &a2, 1).await.1["code"], "QUOTA_EXCEEDED");
-    // The counter is per day: yesterday's row is purged and does not count today.
+    assert_eq!(create(api, &a2, blob_len(4096)).await.1["code"], "QUOTA_EXCEEDED");
+    // The quota is per day: yesterday's bytes do not count against today's
+    // quota (they still count toward what the account holds).
     let db = &ts.server.state.db;
     sqlx::query("UPDATE upload_quota SET day = day - 1").execute(db).await.unwrap();
-    assert_eq!(create(api, &a, 10_000).await.0, StatusCode::CREATED);
+    assert_eq!(create(api, &a, blob_len(8192)).await.0, StatusCode::CREATED);
     tree_server::purge_expired(&ts.server.state, now()).await.unwrap();
     let rows: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM upload_quota WHERE day < ?").bind(now() / 86_400).fetch_one(db).await.unwrap();
+    assert_eq!(rows.0, 2, "kept for the attachment lifetime");
+    let ttl = ts.server.state.cfg.message_ttl_secs as i64;
+    tree_server::purge_expired(&ts.server.state, now() + ttl + 3 * 86_400).await.unwrap();
+    let rows: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM upload_quota").fetch_one(db).await.unwrap();
     assert_eq!(rows.0, 0);
+    ts.stop().await;
+}
+
+/// F-026: only sizes a client produces (the smallest is 1072 bytes), a cap
+/// on what one account holds, and the server's disk.
+#[tokio::test]
+async fn sizes_holdings_and_disk_are_bounded() {
+    let ts = boot(|c| {
+        c.upload_chunk_bytes = CS;
+        c.max_live_bytes_per_account = 20_000;
+    })
+    .await;
+    let api = &ts.api;
+    let a = api.signup().await;
+    for bad in [1, 1071, 1073, 2095, blob_len(1024) + 1, blob_len(8192) - 16, 3 * CS as u64 + 100] {
+        let (st, v) = create(api, &a, bad).await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "{bad}: {v}");
+    }
+    for good in [blob_len(1024), blob_len(2048), blob_len(1 << 20), blob_len(3 << 20), blob_len((1 << 20) + (1 << 16))] {
+        assert!(tree_server::attachments::valid_size(good), "{good}");
+    }
+    // What the account holds: everything started within the lifetime.
+    assert_eq!(create(api, &a, blob_len(8192)).await.0, StatusCode::CREATED);
+    assert_eq!(create(api, &a, blob_len(8192)).await.0, StatusCode::CREATED);
+    let db = &ts.server.state.db;
+    sqlx::query("UPDATE upload_quota SET day = day - 5").execute(db).await.unwrap();
+    let (st, v) = create(api, &a, blob_len(8192)).await;
+    assert_eq!((st, v["code"].as_str()), (StatusCode::FORBIDDEN, Some("STORAGE_LIMIT")), "a new day does not reset it");
+    // Once older than the attachment lifetime, those bytes are gone.
+    let ttl_days = (ts.server.state.cfg.message_ttl_secs / 86_400) as i64;
+    sqlx::query("UPDATE upload_quota SET day = day - ?").bind(ttl_days).execute(db).await.unwrap();
+    assert_eq!(create(api, &a, blob_len(8192)).await.0, StatusCode::CREATED);
+    ts.stop().await;
+
+    // The disk: below the free-space floor every upload is refused.
+    let ts = boot(|c| c.min_free_disk_bytes = u64::MAX / 4).await;
+    let a = ts.api.signup().await;
+    let (st, v) = create(&ts.api, &a, blob_len(1024)).await;
+    assert_eq!((st, v["code"].as_str()), (StatusCode::INSUFFICIENT_STORAGE, Some("INSUFFICIENT_STORAGE")), "{v}");
+    ts.stop().await;
+
+    // Without a free-space reading: a total for all attachments and
+    // unfinished uploads.
+    let ts = boot(|c| {
+        c.min_free_disk_bytes = 0;
+        c.max_total_attachment_bytes = 10_000;
+    })
+    .await;
+    let a = ts.api.signup().await;
+    assert_eq!(create(&ts.api, &a, blob_len(8192)).await.0, StatusCode::CREATED);
+    let (st, _) = create(&ts.api, &a, blob_len(2048)).await;
+    assert_eq!(st, StatusCode::INSUFFICIENT_STORAGE, "8 240 pending + 2 096 > 10 000");
+    assert_eq!(create(&ts.api, &a, blob_len(1024)).await.0, StatusCode::CREATED);
     ts.stop().await;
 }
 
@@ -185,9 +250,9 @@ async fn purge_unfinished_after_a_day() {
     let ts = boot(|c| c.upload_chunk_bytes = CS).await;
     let api = &ts.api;
     let (a, b) = (api.signup().await, api.signup().await);
-    let blob = vec![7u8; 2 * CS];
+    let blob = vec![7u8; blob_len(8192) as usize];
     let done = upload_all(api, &a, &blob).await;
-    let (_, v) = create(api, &a, 2 * CS as u64).await;
+    let (_, v) = create(api, &a, blob.len() as u64).await;
     let open = v["id"].as_str().unwrap().to_string();
     put(api, &a, &open, 0, &blob[..CS]).await;
     let dir = ts.dir.join("attachments");
@@ -202,12 +267,12 @@ async fn purge_unfinished_after_a_day() {
     assert_eq!(tree_server::purge_expired(state, now() + 25 * 3600).await.unwrap(), 1);
     assert!(!part.exists());
     assert_eq!(status(api, &a, &open).await.0, StatusCode::NOT_FOUND);
-    assert_eq!(put(api, &a, &open, 1, &blob[CS..]).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(put(api, &a, &open, 1, &blob[CS..2 * CS]).await.0, StatusCode::NOT_FOUND);
     assert_eq!(download_all(api, &b, &done).await, blob);
 
     // A device deleted mid-upload leaves no partial file behind.
     let c = api.signup().await;
-    let (_, v) = create(api, &c, 2 * CS as u64).await;
+    let (_, v) = create(api, &c, blob.len() as u64).await;
     let cid = v["id"].as_str().unwrap().to_string();
     put(api, &c, &cid, 0, &blob[..CS]).await;
     assert_eq!(api.call(&c, Method::DELETE, "/v1/accounts", None).await.0, StatusCode::OK);
@@ -219,6 +284,46 @@ async fn purge_unfinished_after_a_day() {
     tree_server::purge_expired(state, now() + ttl + 120).await.unwrap();
     assert!(!dir.join(&done).exists());
     assert_eq!(get_range(api, &b, &done, None).await.0, StatusCode::NOT_FOUND);
+    ts.stop().await;
+}
+
+/// F-031: many copies of the parts of one upload at once, retries of
+/// earlier parts racing later ones: the finished file is exactly the blob
+/// (a late retry of part i never truncates part i + 1).
+#[tokio::test]
+async fn racing_part_retries_keep_the_file_whole() {
+    let ts = boot(|c| {
+        c.upload_chunk_bytes = CS;
+        c.rate_burst = 100_000.0;
+    })
+    .await;
+    let api = &ts.api;
+    let (a, b) = (api.signup().await, api.signup().await);
+    for round in 0..5u8 {
+        let blob: Vec<u8> = (0..blob_len(16384)).map(|i| (i as u8) ^ round).collect();
+        let (_, v) = create(api, &a, blob.len() as u64).await;
+        let id = v["id"].as_str().unwrap().to_string();
+        let parts: Vec<Vec<u8>> = blob.chunks(CS).map(<[u8]>::to_vec).collect();
+        // Each part sent many times at once, every part in flight together;
+        // keep going until the upload is complete.
+        for _ in 0..20 {
+            let mut tasks = Vec::new();
+            for (i, p) in parts.iter().enumerate() {
+                for _ in 0..4 {
+                    let (api, a, id, p) = (api.clone(), a.clone(), id.clone(), p.clone());
+                    tasks.push(tokio::spawn(async move { put(&api, &a, &id, i as u64, &p).await }));
+                }
+            }
+            let mut done = false;
+            for t in tasks {
+                done |= t.await.unwrap().1["complete"] == true;
+            }
+            if done {
+                break;
+            }
+        }
+        assert_eq!(download_all(api, &b, &id).await, blob, "round {round}");
+    }
     ts.stop().await;
 }
 
@@ -234,12 +339,12 @@ async fn upload_cost_per_mib() {
     let api = &ts.api;
     let (a, b) = (api.signup().await, api.signup().await);
     let mib = 1024 * 1024;
-    // a: create (1) + part of 3 MiB (1 + 3) = 5 of 5.
-    let (_, v) = create(api, &a, 3 * mib).await;
+    // a: create (1) + part of 3 MiB and a little (1 + 3) = 5 of 5.
+    let (_, v) = create(api, &a, blob_len(3 * mib)).await;
     let id = v["id"].as_str().unwrap().to_string();
-    assert_eq!(put(api, &a, &id, 0, &vec![1u8; 3 * mib as usize]).await.0, StatusCode::OK, "1 + 3 tokens");
-    // b: create (1) + part of 4 MiB (1 + 4) = 6 of 5.
-    let (_, v) = create(api, &b, 4 * mib).await;
+    assert_eq!(put(api, &a, &id, 0, &vec![1u8; blob_len(3 * mib) as usize]).await.0, StatusCode::OK, "1 + 3 tokens");
+    // b: create (1) + a first part of 4 MiB (1 + 4) = 6 of 5.
+    let (_, v) = create(api, &b, blob_len(4 * mib)).await;
     let id = v["id"].as_str().unwrap().to_string();
     assert_eq!(put(api, &b, &id, 0, &vec![1u8; 4 * mib as usize]).await.0, StatusCode::TOO_MANY_REQUESTS, "1 + 4 tokens");
     ts.stop().await;

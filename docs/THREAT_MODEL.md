@@ -94,6 +94,23 @@ Residual risks:
   separate feature).
 - File sizes and modification times show roughly how much the device is used.
 
+### Plaintext outside the encrypted database (F-034)
+
+The database is the only encrypted store. These files hold plaintext (or
+are kept on purpose) and are protected only by the operating system's file
+permissions and its own storage encryption:
+
+| Where | What | How it goes away |
+| --- | --- | --- |
+| the app's media folder (`download_to_cache`; Android `cacheDir/downloads`) | decrypted files the user opened | `user.storage_clean` deletes them after its period (every sync, at most hourly, and `clean_storage`); the app's cache can be cleared by the system; deleting the account deletes the profile, not this folder (the app clears its cache) |
+| `<destination>.tree-part` next to a file being saved (`fetch_to`) | the decrypted file while it is written | renamed to the destination when complete; deleted on any error or cancel; one left by a crash or a kill is deleted the next time the profile is opened (noted in `<profile>.media/partial/`) |
+| exports (`export_chat_to`, apps: a place the user chooses) | the chat's text and a JSON copy | the user's own files; Tree never deletes them. `chat.export` lets a group forbid it on honest devices |
+| `<profile>.media/in`, `<profile>.media/out` | attachment ciphertext being downloaded or uploaded | not plaintext; deleted when done, and with the account |
+| saved files the user chose (`fetch_to` destination) | the decrypted file | the user's own file |
+
+Android keeps none of these in backups (`no_backup.xml`). Spyware or
+someone with the unlocked device can read them, as anything the user sees.
+
 ## Out of scope for now
 
 Metadata protection beyond padding and contact discovery (there is none: no phone

@@ -1204,6 +1204,14 @@ impl TreeSession {
         Ok(self.s().add_contact(&account)?)
     }
 
+    /// Adds the account as a contact and pins the devices the server names
+    /// for it now (a key-package claim). Without this (or an invite, or a
+    /// verified safety number) the contact's chats arrive as requests.
+    /// Returns whether a key-change warning came up.
+    pub fn confirm_contact(&self, account: String) -> R<bool> {
+        Ok(!self.s().confirm_contact(&account)?.is_empty())
+    }
+
     pub fn block(&self, account: String) -> R<()> {
         Ok(self.s().block(&account)?)
     }
@@ -1212,8 +1220,23 @@ impl TreeSession {
         Ok(self.s().unblock(&account)?)
     }
 
+    /// Accepts a request; the adder's account becomes a contact and the
+    /// devices the server names for that account now are pinned (a
+    /// key-package claim, best effort). A device that only claimed the
+    /// account stays unconfirmed (F-021): if it was not the account's, the
+    /// account's real devices are pinned, not it.
     pub fn accept_request(&self, group: String) -> R<()> {
-        Ok(self.s().accept_request(&unhex(&group, "group")?)?)
+        let gid = unhex(&group, "group")?;
+        let mut s = self.s();
+        let from = match s.group_status(&gid)? {
+            tree_client::GroupStatus::Request { from } => from,
+            _ => None,
+        };
+        s.accept_request(&gid)?;
+        if let Some(a) = from {
+            let _ = s.confirm_contact(&a);
+        }
+        Ok(())
     }
 
     pub fn decline_request(&self, group: String, block: bool) -> R<()> {

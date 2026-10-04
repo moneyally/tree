@@ -8,6 +8,12 @@
 //! group the link is for). The server learns that this account asked to
 //! join something of the owner's, which it would learn anyway from the key
 //! package claim and the welcome that follow.
+//!
+//! Version 2 links (F-025): the joiner sends `proof = HKDF(secret, ...)`
+//! (32 bytes) instead of the secret, so the server never holds the secret,
+//! and its nonce sealed to the link's owner (44 bytes), which the server
+//! relays without being able to read it. Version 1 links (a 16-byte secret,
+//! a 16-byte nonce in the clear from older clients) still work.
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -31,6 +37,11 @@ pub const MAX_PER_DEVICE: i64 = 100;
 /// An expired link is kept this long so requests made before it expired are
 /// still handled.
 pub const KEEP_EXPIRED: i64 = 7 * 86400;
+/// A version 1 secret, or a version 2 proof.
+const TOKEN_LENS: [usize; 2] = [16, 32];
+/// A version 1 nonce (older clients, in the clear), or a version 2 sealed
+/// nonce (AES-256-GCM: 12-byte nonce, 16 bytes, 16-byte tag).
+const NONCE_LENS: [usize; 2] = [16, 12 + 16 + 16];
 
 /// Deletes links that expired more than [`KEEP_EXPIRED`] ago.
 pub async fn purge(db: &sqlx::SqlitePool, now: i64) -> Result<u64, sqlx::Error> {
@@ -109,9 +120,11 @@ pub async fn revoke(State(state): State<AppState>, Path(hash): Path<String>, req
 
 #[derive(Deserialize)]
 pub struct JoinReq {
+    /// The link secret (version 1) or the proof derived from it (version 2).
     pub token: String,
-    /// 16 random bytes from the joining device, handed only to the link
-    /// owner's device with the request (it names them in its roster).
+    /// From the joining device, handed only to the link owner's device with
+    /// the request (it names the nonce in its roster). Version 2: sealed to
+    /// the link's owner, opaque here.
     #[serde(default)]
     pub nonce: Option<String>,
 }
@@ -120,12 +133,12 @@ json_body!(JoinReq, |_cfg| 512);
 /// `POST /v1/invites/join` — use a link. `202 {"owner_account"}`.
 pub async fn join(State(state): State<AppState>, req: Signed<JoinReq>) -> ApiResult<(StatusCode, Json<Value>)> {
     let token = unb64(&req.body.token, "token")?;
-    if token.len() != 16 {
-        return Err(ApiError::bad_request("token must be 16 bytes"));
+    if !TOKEN_LENS.contains(&token.len()) {
+        return Err(ApiError::bad_request("token must be 16 or 32 bytes"));
     }
     let nonce = req.body.nonce.as_deref().map(|n| unb64(n, "nonce")).transpose()?;
-    if nonce.as_ref().is_some_and(|n| n.len() != 16) {
-        return Err(ApiError::bad_request("nonce must be 16 bytes"));
+    if nonce.as_ref().is_some_and(|n| !NONCE_LENS.contains(&n.len())) {
+        return Err(ApiError::bad_request("nonce must be 16 or 44 bytes"));
     }
     // Guessing links is pointless at 128 bits, but each try still costs.
     req.device.charge_outreach(&state, 5.0)?;

@@ -52,6 +52,18 @@ pub struct Config {
     /// `UPLOAD_QUOTA_BYTES_PER_DAY`: attachment bytes one account may start
     /// uploading per day (UTC).
     pub upload_quota_bytes_per_day: u64,
+    /// `MAX_LIVE_BYTES_PER_ACCOUNT`: attachment bytes one account may have
+    /// started uploading within the attachment lifetime (`MESSAGE_TTL_SECS`),
+    /// an upper bound on what it holds on the server at any time.
+    pub max_live_bytes_per_account: u64,
+    /// `MIN_FREE_DISK_BYTES`: uploads are refused (`507`) when the file
+    /// system of `ATTACHMENT_DIR` would have less than this free after the
+    /// upload and the unfinished ones (0: no check).
+    pub min_free_disk_bytes: u64,
+    /// `MAX_TOTAL_ATTACHMENT_BYTES`: all stored attachments and unfinished
+    /// uploads together, for systems where free space cannot be read
+    /// (0: no limit).
+    pub max_total_attachment_bytes: u64,
     /// `MAX_MAILBOX_MESSAGES`: pending messages per device mailbox.
     pub max_mailbox_messages: u32,
     /// `MAX_IDEMPOTENCY_KEYS`: idempotency records kept per sending device
@@ -129,6 +141,9 @@ impl Default for Config {
             max_attachment_bytes: DEFAULT_MAX_ATTACHMENT,
             upload_chunk_bytes: 1024 * 1024,
             upload_quota_bytes_per_day: 20 * 1024 * 1024 * 1024,
+            max_live_bytes_per_account: 5 * 1024 * 1024 * 1024,
+            min_free_disk_bytes: 1024 * 1024 * 1024,
+            max_total_attachment_bytes: 0,
             max_mailbox_messages: 10_000,
             max_idempotency_keys: 10_000,
             fetch_limit: 100,
@@ -220,6 +235,9 @@ impl Config {
             max_attachment_bytes: env_parse("MAX_ATTACHMENT_BYTES", d.max_attachment_bytes)?,
             upload_chunk_bytes: env_parse("UPLOAD_CHUNK_BYTES", d.upload_chunk_bytes)?,
             upload_quota_bytes_per_day: env_parse("UPLOAD_QUOTA_BYTES_PER_DAY", d.upload_quota_bytes_per_day)?,
+            max_live_bytes_per_account: env_parse("MAX_LIVE_BYTES_PER_ACCOUNT", d.max_live_bytes_per_account)?,
+            min_free_disk_bytes: env_parse("MIN_FREE_DISK_BYTES", d.min_free_disk_bytes)?,
+            max_total_attachment_bytes: env_parse("MAX_TOTAL_ATTACHMENT_BYTES", d.max_total_attachment_bytes)?,
             max_mailbox_messages: env_parse("MAX_MAILBOX_MESSAGES", d.max_mailbox_messages)?,
             max_idempotency_keys: env_parse("MAX_IDEMPOTENCY_KEYS", d.max_idempotency_keys)?,
             fetch_limit: env_parse("FETCH_LIMIT", d.fetch_limit)?,
@@ -256,6 +274,7 @@ impl Config {
             || self.max_welcome_bytes == 0
             || self.max_attachment_bytes == 0
             || self.upload_quota_bytes_per_day == 0
+            || self.max_live_bytes_per_account == 0
             || self.max_key_packages_per_upload == 0
             || self.max_idempotency_keys == 0
         {
@@ -342,6 +361,7 @@ mod tests {
             |c| c.max_welcome_bytes = 0,
             |c| c.max_attachment_bytes = 0,
             |c| c.upload_quota_bytes_per_day = 0,
+            |c| c.max_live_bytes_per_account = 0,
             |c| c.upload_chunk_bytes = 100,
             |c| c.upload_chunk_bytes = 64 * 1024 * 1024,
             |c| c.max_key_packages_per_upload = 0,

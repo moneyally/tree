@@ -124,7 +124,7 @@ fn server_rows(env: &Env, q: &'static str) -> Vec<String> {
 fn pair(env: &Env, proxy: &Proxy) -> (Session, Session, Vec<u8>) {
     let mut alice = Session::create(&env.profile("alice"), "alice passphrase", "alice", &proxy.url, 8).unwrap();
     let mut bob = env.device("bob");
-    bob.add_contact(alice.account_id()).unwrap();
+    bob.confirm_contact(alice.account_id()).unwrap();
     let g = alice.create_group().unwrap();
     alice.invite(&g, bob.account_id()).unwrap();
     bob.sync(0).unwrap();
@@ -361,4 +361,36 @@ fn two_groups_two_senders_never_collide() {
     let ev = bob.sync(0).unwrap();
     assert_eq!(texts(&ev).len(), 6);
     assert_eq!(texts(&alice.sync(0).unwrap()).len(), 6);
+}
+
+/// F-028: an item sealed while mallory was a member, still waiting when
+/// alice removes her, goes only to the members that are left: the server
+/// never stores it for mallory's device.
+#[test]
+fn a_waiting_item_never_goes_to_a_removed_member() {
+    let env = Env::new("outbox-removed");
+    let proxy = Proxy::new(&env.url);
+    let (mut alice, mut bob, g) = pair(&env, &proxy);
+    let mut mallory = env.device("mallory");
+    mallory.confirm_contact(alice.account_id()).unwrap();
+    alice.invite(&g, mallory.account_id()).unwrap();
+    mallory.sync(0).unwrap();
+    bob.sync(0).unwrap();
+    alice.sync(0).unwrap();
+
+    // Offline: sealed at once (no franking needed), sending fails.
+    proxy.set(UNREACHABLE);
+    alice.send_unchecked(&g, &tree_client::Payload::Profile { name: "alice (sealed with mallory in)".into(), chat: false }).unwrap();
+    let waiting = alice.outbox().unwrap();
+    assert_eq!(waiting.len(), 1);
+    assert_eq!(waiting[0].state, OutboxState::Retry);
+    proxy.set(NORMAL);
+    assert!(matches!(alice.remove(&g, &[mallory.member_id()]).unwrap(), tree_client::CommitOutcome::Accepted { .. }));
+    let before = env.sql_i64("SELECT COUNT(*) FROM deliveries WHERE device_id = ?", mallory.device_id());
+    // A send by the user makes the group's waiting item go now.
+    alice.send_text(&g, "after the removal").unwrap();
+    assert!(alice.outbox().unwrap().is_empty(), "sent");
+    assert_eq!(env.sql_i64("SELECT COUNT(*) FROM deliveries WHERE device_id = ?", mallory.device_id()), before, "nothing more for mallory");
+    let ev = bob.sync(0).unwrap();
+    assert!(ev.iter().any(|e| matches!(e, Event::Profile { name, .. } if name.contains("sealed"))), "bob still gets it: {ev:?}");
 }

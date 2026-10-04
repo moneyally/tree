@@ -28,6 +28,7 @@ Some errors add fields (named with the endpoint).
 | `TRANSCRIPT_MISMATCH` | 403 | device link: the hash differs from the one the new device confirmed |
 | `LINK_SIGNATURE` | 403 | device link: a confirmation or authorisation signature does not verify |
 | `LIMITED` | 403 | a message or commit to more devices than the account may reach for now (new account, or recent verified reports; PROTOCOL.md 8.9) |
+| `STORAGE_LIMIT` | 403 | the account holds as many attachment bytes as `MAX_LIVE_BYTES_PER_ACCOUNT` allows (F-026) |
 | `RECOVERY_REFUSED` | 403 | no account holds this recovery key, or the recovery signature is wrong |
 | `NOT_FOUND` | 404 | no such endpoint, account or device |
 | `UNKNOWN_FEATURE` | 404 | unknown feature key |
@@ -44,6 +45,7 @@ Some errors add fields (named with the endpoint).
 | `TOO_LARGE` | 413 | body, message, commit, welcome, key package, or a list (recipients, key packages, ack ids) too large |
 | `RATE_LIMITED` | 429 | slow down; see `Retry-After` (seconds) |
 | `INTERNAL` | 500 | server error |
+| `INSUFFICIENT_STORAGE` | 507 | the server is short of disk space for attachments (F-026) |
 
 ## Authentication
 
@@ -237,8 +239,10 @@ request (same body, same set of recipients) with the same key from the same
 device is answered `200` with the first `delivered` count and
 `"replayed": true`, and delivers nothing again. The same key with another
 body or other recipients: `409 IDEMPOTENCY_KEY_REUSE`. Keys are per sending
-device and expire with the message TTL; at most `MAX_IDEMPOTENCY_KEYS` per
-device are kept (the oldest go first). Malformed key: `400`.
+device and kept one to two days (until the day after the send has passed);
+at most `MAX_IDEMPOTENCY_KEYS` per device are kept (the oldest go first).
+After a server restart a retry of a key from before is answered as a
+replay (it can no longer be compared). Malformed key: `400`.
 
 The body must be a Tree envelope holding an MLS application message
 (PROTOCOL.md 4.1; the server reads only the cleartext header). Refused with
@@ -341,10 +345,19 @@ in parts and resume; downloads go by ranges.
 
 `{ "size": N }`: the blob size in bytes. At most `MAX_ATTACHMENT_BYTES`
 (default 2 GiB + 64 KiB, a 2 GiB file with its encryption overhead), else
-`413 TOO_LARGE` with `max_bytes`; `0` is `BAD_REQUEST`. The size counts
-against the account's `UPLOAD_QUOTA_BYTES_PER_DAY` (UTC day, all devices of
-the account; not given back when an upload is cancelled or dropped): over
-it, `403 QUOTA_EXCEEDED`.
+`413 TOO_LARGE` with `max_bytes`. Only sizes the attachment format produces
+are accepted (`32 + padded + 16 · ceil(padded / 1 MiB)` with `padded` a
+bucket of PROTOCOL.md 6.12; the smallest is 1072): any other, `0`
+included, is `BAD_REQUEST` (F-026). The size counts against the account's
+`UPLOAD_QUOTA_BYTES_PER_DAY` (UTC day, all devices of the account; not
+given back when an upload is cancelled or dropped): over it, `403
+QUOTA_EXCEEDED`; and against `MAX_LIVE_BYTES_PER_ACCOUNT`, all bytes the
+account started uploading within the attachment lifetime (an upper bound on
+what it holds): over it, `403 STORAGE_LIMIT` with `max_bytes`. If the file
+system of `ATTACHMENT_DIR` would keep less than `MIN_FREE_DISK_BYTES` free
+after this and the unfinished uploads (or, where free space cannot be read,
+`MAX_TOTAL_ATTACHMENT_BYTES` would be passed), `507
+INSUFFICIENT_STORAGE`.
 
 `201` →
 
@@ -488,12 +501,17 @@ Only the device that made it; idempotent. `200 { "state": "released" }`.
 
 ### `POST /v1/invites/join` — use a link
 
-`{ "token": "<16 bytes>", "nonce": "<16 bytes>" }` → `202 { "owner_account":
-"..." }`. `nonce` (optional, random from the joining device) is handed only
-to the owner's device with the request (PROTOCOL.md 8.7). `404` if unknown,
-expired or used up; `400` for the owner's own account or a nonce that is not
-16 bytes. A repeated request by the same account counts once and replaces
-the nonce. Costs 5 rate tokens.
+`{ "token": "<16 or 32 bytes>", "nonce": "<16 or 44 bytes>" }` → `202 {
+"owner_account": "..." }`. `token`: the proof derived from a version 2
+link's secret (32 bytes; the server never sees the secret) or a version 1
+secret (16 bytes). The server looks up `SHA-256("tree/invite/v1" || token)`.
+`nonce` (optional) is opaque to the server and handed only to the owner's
+device with the request (PROTOCOL.md 8.7): sealed to the link's owner for
+version 2 links (44 bytes), 16 bytes in the clear only from older clients.
+`404` if unknown, expired or used up; `400` for the owner's own account or
+other lengths. A repeated request by the same account counts once and
+replaces the nonce. Costs 5 rate tokens. Version 2 joiners compare
+`owner_account` with the owner named in the link and stop if they differ.
 
 ### `GET /v1/invites/requests` — requests for my links
 
@@ -623,7 +641,7 @@ Errors: `UNAUTHORIZED`, `UNKNOWN_FEATURE`.
 | per group: last accepted epoch, the device ids that may commit next, SHA-256 and id of the last 64 accepted commits | while one of its devices exists |
 | message ciphertext + recipient device + arrival minute | until acknowledged, at most 30 days |
 | message sender | **no** (not with the message) |
-| idempotency records (`POST /v1/messages` with a key) | sending device, key, request hash, delivered count, day; until the message TTL, at most `MAX_IDEMPOTENCY_KEYS` per device, deleted with the device; never recipients, body or message id |
+| idempotency records (`POST /v1/messages` with a key) | sending device, key, a tag of the request (HMAC under a key held only in memory, forgotten after a day, PROTOCOL.md 8.10), delivered count, day; one to two days, at most `MAX_IDEMPOTENCY_KEYS` per device, deleted with the device. Not stored: the body, the recipients, the message id. A database copy cannot match a record to a stored message; the running server can, for the record's lifetime, by recomputing tags of stored bodies with the key in its memory |
 | IP addresses | **no** (signup rate limit keeps them in memory only) |
 | relays | **no**: search words and tile coordinates are passed on and forgotten; media ids (opaque id -> provider URL) in memory for one hour |
 | operator flag changes | key, state, time, optional reason |
@@ -655,6 +673,9 @@ Logs contain method, route template, status and latency only.
 | `ATTACHMENT_DIR` / `MAX_ATTACHMENT_BYTES` | `attachments` / `2147549184` (2 GiB + 64 KiB) |
 | `UPLOAD_CHUNK_BYTES` (part and download range size, 4096 to 16777216) | `1048576` |
 | `UPLOAD_QUOTA_BYTES_PER_DAY` (per account) | `21474836480` (20 GiB) |
+| `MAX_LIVE_BYTES_PER_ACCOUNT` (bytes started within the attachment lifetime) | `5368709120` (5 GiB) |
+| `MIN_FREE_DISK_BYTES` (free space kept on the attachment file system; `0` = no check) | `1073741824` (1 GiB) |
+| `MAX_TOTAL_ATTACHMENT_BYTES` (all attachments and unfinished uploads; `0` = no limit) | `0` |
 | `RATE_PER_SEC` / `RATE_BURST` (per device) | `20` / `200` |
 | `SIGNUP_PER_HOUR` / `SIGNUP_BURST` (per address, IPv6 per /64) | `20` / `10` |
 | `TRUST_FORWARDED_FOR` | `false` (set `true` only behind a proxy that overwrites `X-Forwarded-For`) |

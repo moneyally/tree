@@ -436,8 +436,14 @@ class AppModel(
     /** A new username link; the old one stops working. */
     suspend fun resetUsernameLink(): String? = call { it.resetUsernameLink() }.also { loadUsernameLink() }
 
-    /** Scanned QR code or pasted username link: adds the person as a contact. */
-    suspend fun addByLink(link: String): String? = call { it.addContactByLink(link.trim()) }
+    /**
+     * Scanned QR code or pasted username link: adds the person as a contact and
+     * pins the devices the server names for the account now (a key-package
+     * claim), so their chats are not requests. A device only claimed later in
+     * a group's member list never counts as the contact (F-021).
+     */
+    suspend fun addByLink(link: String): String? =
+        call { it.addContactByLink(link.trim()) }?.also { account -> call { it.confirmContact(account) } }
 
     suspend fun typing(group: String, on: Boolean) {
         call { it.setTyping(group, on) }

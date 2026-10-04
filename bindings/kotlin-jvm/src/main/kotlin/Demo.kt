@@ -9,7 +9,7 @@ fun main() {
     val bits = 12u
     val alice = TreeSession.create("$dir/alice.db", "alice pass", "alice", url, bits)
     val bob = TreeSession.create("$dir/bob.db", "bob pass", "bob", url, bits)
-    bob.addContact(alice.accountId())
+    bob.confirmContact(alice.accountId())
 
     val g = alice.createGroup()
     check(alice.invite(g, bob.accountId()).accepted)

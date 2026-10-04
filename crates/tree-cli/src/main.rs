@@ -52,7 +52,8 @@ commands:
   contacts                               known accounts and whether verified
   safety <account-id>                    safety number to compare out of band
   verify <account-id>                    mark verified after comparing
-  add-contact <account-id>               trust this account (its chats are not requests)
+  add-contact <account-id>               add this account as a contact (no device pinned yet)
+  confirm-contact <account-id>           add it and pin the devices the server names (its chats are not requests)
   requests                               pending chat requests and invitations
   accept <group> | decline <group> [block]
   block <account-id> | unblock <account-id>
@@ -298,7 +299,11 @@ fn run(args: Vec<String>) -> Result<(), String> {
         }
         ["add-contact", account] => {
             s.add_contact(account).map_err(e)?;
-            println!("{account} added to contacts");
+            println!("{account} added to contacts (no device pinned yet: confirm-contact, invite or verify)");
+        }
+        ["confirm-contact", account] => {
+            let warnings = s.confirm_contact(account).map_err(e)?;
+            println!("{account} added to contacts, devices named by the server pinned ({} warning(s))", warnings.len());
         }
         ["settings"] => {
             for f in s.features().map_err(e)? {

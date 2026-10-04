@@ -29,7 +29,7 @@ One JSON object per application message, UTF-8, field `t` names the type:
 | `file` | `msg_id`, `fwd` (optional: forwarded), `view_once` (optional), `voice` (optional), `duration_ms` (optional: voice, video, video note), `gif` (optional, a GIF found through the relay, 8.2), `video_note` (optional, with `duration_ms`, 8.5), `id`, `key` (base64, the 32-byte file secret), `size` (plaintext bytes), `pt_sha256` (hex), `name` (at most 255 characters), `mime` (at most 127), `v` (format, 2), `width` and `height` (optional, pixels), `thumb` (optional, base64 JPEG or PNG preview made by the sender, at most 32 KiB) | an encrypted attachment (PROTOCOL.md 6.12); a reference that does not fit is dropped | any member, if `chat.media` is applied (and `chat.view_once` for view-once, `chat.voice` for voice, `chat.gifs` for `gif`, `chat.video_notes` for `video_note`) |
 | `pin` | `id`, `ttl` (optional: seconds, 1 s to 365 days, counted from arrival on each device; none: until unpinned), `remove` (optional: unpin) | pins or unpins message `id` for the whole chat (6.2) | an admin, or either member of a 1:1 chat, if `chat.pins` is applied |
 | `poll` | `id`, `q` (question, at most 300 characters), `opts` (2 to 10 options, 1 to 100 characters each), `multi` (optional: several choices), `anon` (optional: apps do not show who voted), `close_in` (optional: seconds, 1 s to 30 days from arrival) | a poll; franked like a text (it can be reported) | any member, if `chat.polls` is applied |
-| `vote` | `id` (the poll), `choices` (option indexes; empty: take the vote back) | the sender's whole vote; the latest one per member counts | any member, if `chat.polls` is applied, before the poll closed |
+| `vote` | `id` (the poll), `choices` (option indexes; empty: take the vote back) | the sender's whole vote; the latest one per person counts (one per account for devices the receiver ties to an account: F-030) | any member, if `chat.polls` is applied, before the poll closed |
 | `poll_close` | `id` | closes the poll for everyone | the poll's creator, if `chat.polls` is applied |
 | `sticker` | `id`, `pack` (blob reference of the pack manifest: `id`, `key`, `size`, `pt_sha256`, `v`), `index`, `emoji` (the item's plain emoji, 1 to 8 characters) | a sticker (8.1) | any member, if `chat.stickers` is applied |
 | `location` | `id`, `lat_e7`, `lon_e7` (integers, 10^-7 degrees), `accuracy_m`, `label` (optional, at most 200 characters), `live_secs` (optional, at most 28800: a live location) | a place or the start of a live location (8.3) | any member, if `chat.location` is applied |
@@ -172,19 +172,48 @@ request until the adder's account is known from its `roster`. Then
 | stranger | request if `user.message_requests` applied (default), else accepted | declined if `user.group_add` applied (default: contacts only), else as for a 1:1 chat |
 
 The adder is the roster's sender under the account its roster claims. The
-claim counts only if that device is already pinned for the account and is
-not an unconfirmed key change (a device that only a roster claimed for an
-account that already had devices; confirmed when the user verifies the
-safety number or the server names it in a key-package claim), or if no
-device is pinned for the account yet (trust on first use). Otherwise the
-adder is judged as a stranger, and the key-change warning is shown (F-018).
+claim counts only if that device is **pinned** for the account
+(`Contact::vouches_for`): named by the server in a key-package claim this
+device made (an invite, or `confirm_contact`), carried from the account's
+own device in a confirmed device link, or covered by a safety number the
+user verified. A device that only a roster claimed is *unconfirmed*, also
+when the account has no pinned device at all (a contact added by hand or by
+username link vouches for nobody, F-021). Otherwise the adder is judged as a
+stranger, and for an account this device already knew the key-change
+warning is shown (F-018). Accepting a request (`Session::accept_request`)
+does not pin the adder's device. The apps' accept (FFI `accept_request`) and
+add-by-link also ask the server for the account's devices (`confirm_contact`,
+a key-package claim) and pin those: if the adding device only claimed the
+account, the account's real devices are pinned, not it.
+
+Account labels (`accounts/<group>`, from rosters) are claims, never trust
+(F-022). A label is taken only for a current member other than this device;
+never for this device's own account unless the member is one of its linked
+devices (`own/members`); only as the first label for that member (a later
+roster never relabels a member); and from the sender for itself, or for
+other members only if the sender is trusted (one of this account's devices,
+or pinned for its account). Members added by a stranger stay unlabelled
+until they label themselves. Every "is this a contact / my own device"
+decision (requests, auto-download, profile-photo visibility) goes through
+`own/members` and `vouches_for`, never a label alone. A device is blocked if
+its label is a blocked account or it was ever seen (pinned or claimed) for
+a blocked account, so relabelling does not escape a block.
+
+Meaning of `own/members` (for branches that build on it): the MLS member
+ids of this account's other devices, learned only through a confirmed
+device link (PROTOCOL.md 8.11: the existing device's member id from the
+transcript; the new device's member id from the invitation). A roster label
+naming this account never adds to it and never counts as it.
 
 A group whose adder names, in its roster, the nonce this device sent with
-an invite-link request to that adder in the last day (PROTOCOL.md 8.7) is
-accepted after the blocked check, once: the user asked to join that group,
-so the joiner's own `user.group_add` and message requests do not apply.
-The nonce reaches only the link owner's device, so nobody else who saw a
-published link can use it.
+an invite-link request in the last day (PROTOCOL.md 8.7), and whose adding
+device is the one the (version 2) link names for that account, is accepted
+after the blocked check, once: the user asked to join that group, so the
+joiner's own `user.group_add` and message requests do not apply. The nonce
+reaches only the link owner's device, sealed, and the owner comes from the
+link itself, so neither someone else who saw a published link nor the
+server can use it (F-025). A version 1 link's group goes to the request
+inbox.
 
 `user.group_add` takes the option `contacts` (default) or `nobody`;
 `user.read_receipts` released also hides receipts stored earlier
@@ -247,12 +276,12 @@ padded sizes, as for any message).
 | Feature | Rule |
 | --- | --- |
 | Pinned messages (`chat.pins`) | `pin_message(group, id, ttl)` with the choices 24 h, 7 days, 30 days, until unpinned (`PIN_CHOICES`), `unpin_message`, `pins` (newest first), `may_pin`. Shared state: every device applies the same `pin` messages in the server's order, checking the sender (admin, or a chat of two members), `chat.pins`, and that the message is in its history and not deleted. At most 10 per chat: the sender refuses an eleventh, a receiver that would hold more drops the oldest. Expiry is counted from arrival on each device's own clock; expired pins drop off when read. A member who joins later does not learn earlier pins (no history sharing yet) |
-| Polls (`chat.polls`) | `create_poll` (question, 2-10 options, single or multiple choice, anonymous or not, optional close time), `vote` (the whole vote; empty takes it back), `retract_vote`, `close_poll` (creator only), `poll` (tally). Each device counts from the authenticated MLS votes it received: one vote state per member, the latest wins; votes that do not fit the poll or arrive after it closed on this device are dropped; members who left are not counted. **Anonymous** only means the apps do not show who voted for what: every vote is still an MLS message authenticated as its sender and delivered to every member's device, so each device (and a modified app) knows who voted for what. The server sees ciphertext only |
+| Polls (`chat.polls`) | `create_poll` (question, 2-10 options, single or multiple choice, anonymous or not, optional close time), `vote` (the whole vote; empty takes it back), `retract_vote`, `close_poll` (creator only), `poll` (tally). Each device counts from the authenticated MLS votes it received: one vote state per person, the latest wins (the devices of one account count once where this device knows them as that account: its own linked devices, devices pinned for a contact; devices it cannot tie to an account count each on their own, so counts can differ between devices, F-030); votes that do not fit the poll or arrive after it closed on this device are dropped; members who left are not counted. **Anonymous** only means the apps do not show who voted for what: every vote is still an MLS message authenticated as its sender and delivered to every member's device, so each device (and a modified app) knows who voted for what. The server sees ciphertext only |
 | Scheduled messages | `schedule_text(group, text, at, silent)`, `scheduled`, `edit_scheduled`, `cancel_scheduled`. Kept on this device only (`sched/<id>`) until the time; then the text enters the outbox (PROTOCOL.md 6.13) and is sealed, franked and sent like any message. The server never holds the plaintext and does not schedule: the app must be running at that time, or the next sync after it sends the message (late). Not in the history until sent. If it cannot be sent when due (left the chat, a setting forbids it) sync reports `SendFailed` with the schedule id. Texts only, at most a year ahead |
 | Forwarding (`chat.forwarding`) | `forward(from, id, to)` sends a text, or a file reference (the same encrypted attachment, not view-once), as a new message with `fwd`, sent by the forwarding member; the original sender is not named. While the source chat released `chat.forwarding` the client refuses, and the apps hide forward, save and copy for its messages (`forwarding_allowed`). This binds honest apps only: a modified app, a screenshot or a camera cannot be prevented, and the destination cannot tell where a forwarded message came from |
 | Reminders | `remind_me(group, id, at)`, `reminders`, `cancel_reminder`, `due_reminders` (each due reminder once; the app shows a local notification). Device only (`remind/<id>`); the message text is read when the reminder fires, never copied |
 | Chat export (`chat.export`) | `export_chat` (plain text and JSON), `export_chat_to(group, prefix)` writes `<prefix>.txt` and `<prefix>.json`; any member may export while applied, refused while released. The files are not encrypted; franking records, keys and file contents are not exported. The setting is changed by the chat's admins, as every chat key (PROTOCOL.md 6.11) |
-| Storage clean-up (`user.storage_clean`) | `download_to_cache(file, dir)` opens a file into the app's media folder and records it (`media/<attachment id>`); while the setting is applied (option: duration 1 s to 365 days, default `90d`, the apps offer 30 days, 90 days, a year), every sync (at most once an hour) and `clean_storage` delete cached files downloaded longer ago, and their records. Message texts and file references stay (a file can be downloaded again while the server keeps the blob, 30 days); files the user saved elsewhere are never touched. Released (default): nothing is deleted |
+| Storage clean-up (`user.storage_clean`) | `download_to_cache(file, dir)` opens a file into the app's media folder and records it (`media/<attachment id>/<sha256>`, checked against the hash before it is handed out again, F-029); while the setting is applied (option: duration 1 s to 365 days, default `90d`, the apps offer 30 days, 90 days, a year), every sync (at most once an hour) and `clean_storage` delete cached files downloaded longer ago, and their records. Message texts and file references stay (a file can be downloaded again while the server keeps the blob, 30 days); files the user saved elsewhere are never touched. Released (default): nothing is deleted |
 
 ## 7. What the client stores
 
@@ -268,7 +297,7 @@ In the same encrypted database as the core (`tree_app` table, SCHEMA.md):
 | `announce/<group hex>` | present until the own profile was sent |
 | `held/<20-digit counter>` | a held message body |
 | `accounts/<group hex>` | JSON member id -> account id |
-| `contact/<account id>` | JSON: pinned member ids, verified, accepted (chosen by the user), blocked, unconfirmed (key changes only a roster claimed) |
+| `contact/<account id>` | JSON: member ids seen for the account (`members`, all covered by the safety number), verified, accepted (chosen by the user), blocked, unconfirmed (devices only a roster claimed; pinned = members minus unconfirmed) |
 | `gstatus/<group hex>` | request (with adder account) or declined; absent = accepted |
 | `feature/<key>` | the user's setting: applied or released, option |
 | `profile/username` | the own @username |
@@ -301,14 +330,14 @@ both are deleted when done and with the account.
 | `poll/<group hex>/<poll id>` | the votes counted on this device (member id -> option indexes) and whether the creator closed it; the poll itself is a history message of kind `poll` |
 | `sched/<id>` | a scheduled message: group, text, time, silent (until sent) |
 | `remind/<id>` | a reminder: group, message id, time |
-| `media/<attachment id>` | a downloaded file in the app's media folder: path, when, size (`user.storage_clean`) |
+| `media/<attachment id>/<sha256>` | a downloaded file in the app's media folder: path, content hash, when, size (`user.storage_clean`) |
 | `media_clean/last` | when the storage clean-up last ran |
-| `stickerpack/<manifest id>`, `stickermanifest/<id>`, `stickerref/<id>`, `stickerimg/<id>/<index>` | installed packs; manifests seen; pack references learned from messages; cached sticker images (8.1) |
+| `stickerpack/<manifest id>`, `stickermanifest/<id>/<sha256>`, `stickerref/<id>`, `stickercand/<id>`, `stickerimg/<id>/<index>` | installed packs; manifests seen (raw, checked against the hash on read); the reference that opened the pack (never replaced by a message); references named by messages while none has worked (at most 8); cached sticker images (checked against the item's hash) (8.1, F-029) |
 | `liveout/<group hex>/<id>` | a live location this device shares: end, last update, coordinates waiting for the 30 s interval (8.3) |
 | `location/min_interval` | only in tests: a shorter live-update interval |
 | `profile/photo` | the own profile photo: blob reference, type, upload time, the image (to upload it again) (8.6) |
 | `photoshared/<group hex>` | what the group was last sent: photo attachment id ("" = removed), per-chat or not, the members then |
-| `photo/<group hex>/<member hex>`, `photocache/<attachment id>` | a member's photo reference in the group; the fetched photo |
+| `photo/<group hex>/<member hex>`, `photocache/<attachment id>/<sha256>` | a member's photo reference in the group; the fetched photo (checked against the hash on read) |
 | `chatprofile/<group hex>` | the own name and photo for this chat only (8.7) |
 | table `tree_messages` | message history with franking records (SCHEMA.md 1.2); also `left` / `removed` lines about members who went (6.1); kinds `sticker`, `location`, `event` keep their state in `data` (8) |
 | table `tree_outbox` | messages being sent: sealed bytes, recipients, idempotency key, state (SCHEMA.md 1.2) |
@@ -400,8 +429,9 @@ attaches a short video file and shows a placeholder to save and play it.
 The photo (an image of at most 2 MiB) is uploaded as an encrypted blob;
 the reference goes only inside MLS in `profile_photo`, to the chats the
 setting allows: `chats` (default: every accepted chat), `contacts` (chats
-whose other members are all contacts the user chose and has not blocked,
-each device vouched for as in 5), `nobody` (or released). Every sync
+whose other members are all this account's own linked devices or devices
+pinned for contacts the user chose and has not blocked, as in 5; a roster
+label alone, also one naming the user's own account, never counts), `nobody` (or released). Every sync
 compares what each chat should have with what it was last sent and sends the
 difference: the photo, or "removed" where it was removed or is no longer
 allowed, and again when members were added. Receivers keep the reference per

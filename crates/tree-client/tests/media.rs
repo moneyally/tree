@@ -126,7 +126,7 @@ fn env(tag: &str) -> Env {
 fn pair(env: &Env, via: &str) -> (Session, Session, Vec<u8>) {
     let mut alice = Session::create(&env.profile("alice"), "alice passphrase", "alice", via, 8).unwrap();
     let mut bob = env.device("bob");
-    bob.add_contact(alice.account_id()).unwrap();
+    bob.confirm_contact(alice.account_id()).unwrap();
     let g = alice.create_group().unwrap();
     alice.invite(&g, bob.account_id()).unwrap();
     bob.sync(0).unwrap();
@@ -446,8 +446,8 @@ fn auto_download_rules() {
     let mut bob = env.device("bob");
     let mut carol = env.device("carol");
     // bob knows alice; carol is a stranger to bob (alice's contact only).
-    bob.add_contact(alice.account_id()).unwrap();
-    carol.add_contact(alice.account_id()).unwrap();
+    bob.confirm_contact(alice.account_id()).unwrap();
+    carol.confirm_contact(alice.account_id()).unwrap();
     let g = alice.create_group().unwrap();
     alice.invite(&g, bob.account_id()).unwrap();
     alice.invite(&g, carol.account_id()).unwrap();
@@ -493,6 +493,6 @@ fn auto_download_rules() {
     assert_eq!(bob.apply_feature("user.auto_download", None).unwrap().option.as_deref(), Some("wifi:20m"));
     assert!(check(&mut alice, &mut bob, plain(), 10));
     // Once bob makes carol a contact, her files download too.
-    bob.add_contact(carol.account_id()).unwrap();
+    bob.confirm_contact(carol.account_id()).unwrap();
     assert!(check(&mut carol, &mut bob, plain(), 10));
 }

@@ -140,7 +140,8 @@ async fn concurrent_retries_deliver_once() {
 }
 
 /// At most MAX_IDEMPOTENCY_KEYS records per device (the oldest go), and
-/// the purge removes records older than the message TTL.
+/// the purge removes records once their tag key is forgotten (after the
+/// day after).
 #[tokio::test]
 async fn records_are_bounded_and_purged() {
     let ts = boot(|c| c.max_idempotency_keys = 3).await;
@@ -163,13 +164,15 @@ async fn records_are_bounded_and_purged() {
     // Only the day is stored.
     let day = count(&ts, "SELECT MAX(created_day) FROM idempotency_keys").await;
     assert_eq!(day, now() / 86_400);
-    // Young records survive a purge; after the TTL they are gone.
+    // Young records survive a purge, also on the next day; the day after
+    // that they are gone (their tag key is forgotten).
     tree_server::purge_expired(&ts.server.state, now()).await.unwrap();
+    tree_server::purge_expired(&ts.server.state, now() + 86_400).await.unwrap();
     assert_eq!(count(&ts, "SELECT COUNT(*) FROM idempotency_keys").await, 3);
-    let ttl = ts.server.state.cfg.message_ttl_secs as i64;
-    tree_server::purge_expired(&ts.server.state, now() + ttl + 86_400).await.unwrap();
+    tree_server::purge_expired(&ts.server.state, now() + 2 * 86_400).await.unwrap();
     assert_eq!(count(&ts, "SELECT COUNT(*) FROM idempotency_keys").await, 0);
-    // After the purge the key is new again (and the message long expired).
+    // After the purge the key is new again: a very late retry is delivered
+    // again, and the receivers drop the second copy (its keys are used up).
     let (_, v) = send_keyed(api, &a, &[&b.device_id], &app(&[4]), &[14; 16]).await;
     assert_eq!(v["replayed"], false);
 
@@ -198,5 +201,51 @@ async fn commit_retries_are_idempotent_by_hash() {
     assert_eq!(st, StatusCode::OK, "{again}");
     assert_eq!((again["id"].clone(), again["delivered"].as_i64()), (first["id"].clone(), Some(0)));
     assert_eq!(api.fetch(&b, 0).await.len(), 1);
+    ts.stop().await;
+}
+
+/// F-023: the record cannot be joined with the stored body. It holds a key
+/// id and an HMAC under a key that exists only in the server's memory, not
+/// the SHA-256 of the request that anyone with the database (and the body
+/// in `blobs`) could recompute to learn which device sent which message.
+#[tokio::test]
+async fn records_do_not_link_the_sender_to_a_stored_body() {
+    use sha2::{Digest, Sha256};
+    let ts = boot(|_| {}).await;
+    let api = &ts.api;
+    let a = api.signup().await;
+    let b = api.signup().await;
+    let body = app(b"who sent me?");
+    let (st, _) = send_keyed(api, &a, &[&b.device_id], &body, &[5u8; 16]).await;
+    assert_eq!(st, StatusCode::OK);
+    let stored: Vec<u8> = sqlx::query_scalar("SELECT request_hash FROM idempotency_keys").fetch_one(&ts.server.state.db).await.unwrap();
+    let blob: Vec<u8> = sqlx::query_scalar("SELECT body FROM blobs").fetch_one(&ts.server.state.db).await.unwrap();
+    assert_eq!(blob, body);
+    // What the old record was: SHA-256 over label, body and recipients.
+    let lp = |h: &mut Sha256, x: &[u8]| {
+        h.update((x.len() as u32).to_be_bytes());
+        h.update(x);
+    };
+    let mut h = Sha256::new();
+    lp(&mut h, b"tree/send-request/v1");
+    lp(&mut h, &blob);
+    h.update(1u32.to_be_bytes());
+    lp(&mut h, b.device_id.as_bytes());
+    let old: [u8; 32] = h.finalize().into();
+    assert_eq!(stored.len(), 40, "key id and tag");
+    assert!(!stored.windows(32).any(|w| w == old), "the record is not the recomputable hash");
+    // Nor is it a plain SHA-256 of the body under any of the labels.
+    assert!(!stored.windows(32).any(|w| w == <[u8; 32]>::from(Sha256::digest(&blob))));
+
+    // A record made under a key the server no longer holds (it restarted)
+    // cannot be compared: it is answered as the retry it almost surely is.
+    sqlx::query("UPDATE idempotency_keys SET request_hash = randomblob(40)").execute(&ts.server.state.db).await.unwrap();
+    let (_, v) = send_keyed(api, &a, &[&b.device_id], &body, &[5u8; 16]).await;
+    assert_eq!(v["replayed"], true);
+    assert_eq!(api.fetch(&b, 0).await.len(), 1);
+    // Records in the old format are purged at once.
+    sqlx::query("UPDATE idempotency_keys SET request_hash = ?").bind(old.to_vec()).execute(&ts.server.state.db).await.unwrap();
+    tree_server::purge_expired(&ts.server.state, now()).await.unwrap();
+    assert_eq!(count(&ts, "SELECT COUNT(*) FROM idempotency_keys").await, 0);
     ts.stop().await;
 }

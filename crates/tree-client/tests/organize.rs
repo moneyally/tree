@@ -10,7 +10,7 @@ fn receipts_typing_notes_labels_folders() {
     let env = Env::new("organize");
     let mut alice = env.device("alice");
     let mut bob = env.device("bob");
-    bob.add_contact(alice.account_id()).unwrap();
+    bob.confirm_contact(alice.account_id()).unwrap();
     let g = alice.create_group().unwrap();
     alice.invite(&g, bob.account_id()).unwrap();
     bob.sync(0).unwrap();
@@ -64,7 +64,7 @@ fn receipts_typing_notes_labels_folders() {
     bob.release_feature("user.group_add").unwrap();
     let g3 = carol.create_group().unwrap();
     let mut dave = env.device("dave");
-    dave.add_contact(carol.account_id()).unwrap();
+    dave.confirm_contact(carol.account_id()).unwrap();
     carol.invite(&g3, dave.account_id()).unwrap();
     carol.invite(&g3, bob.account_id()).unwrap();
     let ev = bob.sync(0).unwrap();
@@ -99,7 +99,7 @@ fn link_previews_and_last_seen() {
     let env = Env::new("preview");
     let mut alice = env.device("alice");
     let mut bob = env.device("bob");
-    bob.add_contact(alice.account_id()).unwrap();
+    bob.confirm_contact(alice.account_id()).unwrap();
     let g = alice.create_group().unwrap();
     alice.invite(&g, bob.account_id()).unwrap();
     bob.sync(0).unwrap();

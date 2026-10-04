@@ -1,7 +1,8 @@
-(* Tree Protocol v1 -- model (i'), negative control for device_link.pv:
-   the person confirms on both devices without comparing the codes (a QR
-   code alone links). Expected: the new device can be given data the
-   relay chose (property 1 fails).
+(* Tree Protocol v1 -- model (i'''), negative control for device_link.pv:
+   the new device reveals the nonce and key packages before the offer
+   arrives. Expected: the relay then picks the offer toward N so that N's
+   code equals E's (property 1 fails): the commitment helps only if
+   everything the relay picks is fixed before the reveal.
 
    Original model (i): device linking with a two-sided code.
 
@@ -139,9 +140,9 @@ let newDevice(qr: channel, show: channel, ok: channel) =
   let inv = (l, spk(skN), pk(skNe), h((n, kps))) in
   out(qr, inv);
   out(c, inv);
+  out(c, (n, kps));
   in(c, offer: bitstring) [precise];
   let (a: bitstring, kE: spkey, eE: pkey) = offer in
-  out(c, (n, kps));
   let t = ht((inv, offer, n, kps)) in
   out(show, t);
   in(ok, =t);
@@ -177,7 +178,7 @@ let existingDevice(qr: channel, show: channel, ok: channel) =
 let person(showN: channel, okN: channel, showE: channel, okE: channel) =
   in(showN, tN: bitstring);
   in(showE, tE: bitstring);
-  (out(okN, tN) | out(okE, tE)).
+  if code(tN) = code(tE) then (out(okN, tN) | out(okE, tE)).
 
 (* The server's check before it adds a device to the account. *)
 let server =

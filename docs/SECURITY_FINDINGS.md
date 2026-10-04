@@ -289,7 +289,8 @@ Issues found by testing Tree's own design. Each one has a regression test.
   request; only the owner's device gets it from the server and names it in
   the roster. Residual: trust on first use. A device that claims an account
   the user has no pinned device for (a contact added by hand, or none) is
-  taken as that account; key transparency (stage 4) closes this.
+  taken as that account; key transparency (stage 4) closes this. (Closed
+  for roster claims by F-021: they never pin; F-025 binds the link owner.)
 - **Test:** `requests::tests::a_device_claiming_a_contacts_account_is_a_stranger`,
   `requests::tests::a_public_link_does_not_let_others_pull_the_joiner_in`.
 
@@ -315,3 +316,301 @@ Issues found by testing Tree's own design. Each one has a regression test.
 - **Test:** `crates/tree-client/tests/feature_switches.rs`,
   `a_pending_release_is_reported_until_the_server_drops_the_key`,
   `locked_keys_and_bad_options_in_settings_rejected`, `options_are_validated`.
+
+## F-020: a relay could grind the device-link code through the key packages (fixed)
+
+- **Found:** 2026-10-04, security review of wave 2.
+- **What:** the device-link invitation committed to the nonce only. The new
+  device's key packages travelled in the reveal and entered the transcript,
+  but nothing bound them, so a relay that had seen the reveal could serve
+  the existing device the same nonce with N's own key packages reordered or
+  repeated (about 9^9 lists, any number from 1 to 9 accepted) and search,
+  in milliseconds, for one whose code equals the code the new device shows
+  for an offer of the relay's own. The person then saw equal codes, the new
+  device joined the relay's account and trusted its device as its own.
+- **Severity:** high (defeats the code comparison toward the new device).
+- **Fix:** invitation version 2: the new device makes its key packages
+  before showing the invitation, which carries its member id and commits to
+  `SHA-256(lp("tree/link/commit/v2", nonce, kp_digest))`. The existing
+  device shows no code unless the reveal matches the commitment and the key
+  packages are exactly 9, distinct, valid, all naming the invitation's
+  member id, with only the last one last-resort. PROTOCOL.md 8.11 lists
+  every field a relay could change toward either device and why none can
+  be ground. The ProVerif model now has the key packages and grinding
+  equations for the code; negative controls find the attack without the
+  key-package commitment and when the reveal comes first.
+- **Test:** `link::tests::a_relay_cannot_grind_the_reveal_after_seeing_it`
+  (over 20,000 reorderings, repeats, substitutions, removals and additions:
+  all refused before a code exists; the old commitment accepted every
+  reordering), `link::tests::key_packages_are_checked_one_by_one`,
+  `a_reordered_repeated_or_substituted_key_package_list_is_refused`
+  (through a real server), `formal/device_link_kp_uncommitted.pv`.
+
+## F-021: a contact with no pinned device vouched for any device (fixed)
+
+- **Found:** 2026-10-04, security review of wave 2.
+- **What:** `Contact::vouches_for` was true for every device when no device
+  was pinned for the contact. A contact added by hand or by username link has
+  none, so a stranger who put that account next to its own device in a group
+  roster skipped message requests and `user.group_add`, and its device was
+  pinned as the contact's first device without a warning (the residual
+  first-use gap of F-018, made easy to reach by username links).
+- **Severity:** high (consent and identity: a stranger is shown as a contact).
+- **Fix:** roster claims never pin and never count as the contact. A device
+  is pinned only when the server names it in a key-package claim this device
+  made (invite, or the new `confirm_contact`), when it comes with a
+  confirmed device link, or when the user verifies a safety number covering
+  it; roster-claimed devices are recorded as unconfirmed (in the safety
+  number, warned about for a known account). `vouches_for` is false for an
+  empty contact; the roster handler, `decide_request`, auto-download and
+  photo visibility all go through it. Accepting a request does not pin.
+  Consequence: a contact added by hand or by link, until the server names its
+  devices or the safety number is verified, adds the user to chats as a
+  request.
+- **Test:** `requests::tests::a_contact_without_pinned_devices_vouches_for_nobody`
+  (fails before: the stranger's group was accepted), `tests::pinning_rules`.
+
+## F-022: roster account labels from any member were trusted (fixed)
+
+- **Found:** 2026-10-04, security review of wave 2.
+- **What:** every roster overwrote the receiver's member-to-account map
+  for every member. A blocked member relabelled its device as a fresh
+  account and its messages passed the block; any member labelled its device
+  with the receiver's own account and was then treated as one of the
+  receiver's devices (its files downloaded by themselves, a "contacts only"
+  profile photo was sent to its chats); a member could move another member
+  to its own account.
+- **Severity:** medium.
+- **Fix:** a label is taken only for a current member other than this
+  device, never for this device's own account unless the member is in
+  `own/members` (from a confirmed device link), only as the member's first
+  label, and from the sender for itself or for others only if the sender is
+  trusted (own device or pinned). Blocking also matches by member id: a
+  device ever seen for a blocked account stays blocked. Auto-download and
+  photo visibility use `own/members` and `vouches_for`, never a label.
+- **Test:** `requests::tests::relabelling_does_not_escape_a_block`,
+  `requests::tests::claiming_the_receivers_own_account_gets_nothing` (both
+  fail before the fix).
+
+## F-023: idempotency records linked the sender to the stored message (fixed)
+
+- **Found:** 2026-10-04, security review of wave 2.
+- **What:** the idempotency record stored the sending device with
+  `SHA-256(label, body, sorted recipients)`. The body is in `blobs` and the
+  recipients in `deliveries` until acknowledged (up to 30 days), so anyone
+  with a copy of the database could recompute the hash for every stored
+  message and learn its sender, which the server otherwise never stores.
+  SERVER_API said the records hold "never recipients", which was not true
+  in effect.
+- **Severity:** medium (metadata privacy against a database copy).
+- **Fix:** the record holds a key id and an HMAC-SHA-256 of the request
+  under a random per-day key held only in the server's memory; keys are
+  forgotten after the next day and their records purged (lifetime one to
+  two days, down from 30); records in the old format are purged at once; a
+  record whose key is gone (restart) is answered as a replay. What remains
+  (documented in PROTOCOL.md 8.10): the running process can link while it
+  holds the key.
+- **Test:** `records_do_not_link_the_sender_to_a_stored_body` (fails before:
+  the stored value was the recomputable hash), `records_are_bounded_and_purged`.
+
+## F-024: network sends inside the crash-safe receive batch (fixed)
+
+- **Found:** 2026-10-04, security review of wave 2.
+- **What:** a received message is handled inside one database savepoint
+  (F-016), but a handler that declined a group sent the leave request
+  through the outbox at once, and the outbox then sent every due item of
+  every group, all before the savepoint was released. A crash after the
+  server took a request but before the release rolled back the key state
+  that sealed it: the message was received again, and the leave request
+  sealed again with the same MLS generation for other bytes; other items
+  sent in that pass could go twice or be lost.
+- **Severity:** medium (durability; a key reused for a second ciphertext,
+  mostly saved by the MLS reuse guard).
+- **Fix:** `Api` knows when a receive batch is open; inside it the outbox
+  only seals (when no server call is needed) and enqueues, ephemeral
+  signals are skipped, and nothing is driven; `sync` drives the outbox
+  after the mailbox loop. Every request asserts (debug builds) that no
+  receive batch is open; the whole client test suite runs with it.
+- **Test:** `requests::tests::a_decline_is_only_queued_inside_the_receive_batch`
+  (fails before: the request is made inside the batch).
+
+## F-025: the server decided invite-link consent (fixed)
+
+- **Found:** 2026-10-04, security review of wave 2.
+- **What:** the joiner took the link owner's account from the server's
+  answer, and its consent nonce crossed the server in the clear. A
+  malicious server could answer with any account and hand the nonce to that
+  account's device, which then pulled the joiner into any group of its
+  choice past message requests, `user.group_add` and stranger blocking.
+- **Severity:** medium (consent, against a malicious server).
+- **Fix:** invite links version 2 carry the owner's account and member id
+  (out of band); the joiner stops if the server names another owner, and
+  accepts without a request only a group whose adding device is the one the
+  link names and whose roster names its nonce. The nonce is sealed with
+  AES-256-GCM under `HKDF(secret, "tree/invite/nonce-key/v2")` (associated
+  data: the joiner's account), and the server receives
+  `HKDF(secret, "tree/invite/proof/v2")` instead of the secret, so it can
+  read neither. Version 1 links still work; their groups arrive as requests.
+  No migration (the nonce column stays a BLOB).
+- **Test:** `requests::tests::the_invite_link_names_its_owner_and_the_server_never_sees_the_nonce`,
+  `requests::tests::an_old_link_still_works_but_arrives_as_a_request`,
+  `invite::tests::nonce_round_trip_and_binding`.
+
+## F-026: attachments could fill the server's disk (fixed)
+
+- **Found:** 2026-10-04, security review of wave 2.
+- **What:** uploads were bounded only per account per day (20 GiB) and kept
+  30 days, with no cap on what an account holds and no check of the disk;
+  a handful of cheap accounts could fill it. Any size from 1 byte was
+  accepted, so one account could create about 1.7 million tiny files a day
+  (database rows and inodes).
+- **Severity:** medium (availability of the whole server).
+- **Fix:** only sizes the attachment format produces are accepted (the
+  smallest is 1072 bytes; the server's copy of the bucket rule is checked
+  against the client's); `MAX_LIVE_BYTES_PER_ACCOUNT` (default 5 GiB) caps
+  the bytes an account started within the attachment lifetime (the daily
+  counters are now kept that long); uploads get `507` when the attachment
+  file system would keep less than `MIN_FREE_DISK_BYTES` (default 1 GiB,
+  read with statvfs) after the upload and all unfinished ones, or, where
+  free space cannot be read, beyond `MAX_TOTAL_ATTACHMENT_BYTES`.
+- **Test:** `sizes_holdings_and_disk_are_bounded`,
+  `attachments::tests::valid_sizes_are_exactly_the_formats`,
+  `size_limit_and_daily_quota`.
+
+## F-027: relay server-side request forgery through host names (fixed)
+
+- **Found:** 2026-10-04, security review of wave 2.
+- **What:** the GIF and map relays refused IP literals and `localhost` but
+  fetched any other host name the provider returned, whatever it resolved
+  to: a name pointing at 10/8, 169.254.169.254, ::1 or fc00::/7 (or one
+  rebinding between check and connection) was fetched, and image or video
+  answers were passed back to the device.
+- **Severity:** low to medium (needs a malicious or compromised provider, or
+  one returning user-supplied URLs).
+- **Fix:** the relay's HTTP client resolves names with its own resolver that
+  keeps only public addresses (also judging IPv4 inside IPv4-mapped,
+  compatible, NAT64 and 6to4 IPv6) and connects to exactly those, with no
+  proxy.
+- **Test:** `relay::tests::a_name_resolving_inside_is_refused` (a name
+  resolving to 127.0.0.1 is refused at connection time),
+  `relay::tests::only_public_addresses`.
+
+## F-032: one device could flush every relay media id (fixed)
+
+- **Found:** 2026-10-04, security review of wave 2.
+- **What:** when 50,000 media ids existed, the relay cleared the whole map,
+  so one device searching at its rate limit could repeatedly invalidate
+  every other user's GIF ids.
+- **Severity:** low (denial of service for GIFs).
+- **Fix:** at most 1,000 ids per device (its own oldest go first), and
+  beyond 50,000 in all the oldest go one by one.
+- **Test:** `relay::tests::one_device_cannot_flush_everyone_elses_media_ids`.
+
+## F-031: a slow part retry could cut off a later part (fixed)
+
+- **Found:** 2026-10-04, security review of wave 2.
+- **What:** writing upload part `i` first cut the file to `i` parts. A slow
+  retry of part `i` that read the upload state before part `i + 1` was
+  written cut part `i + 1` away after it was counted, and the finished
+  blob was corrupt (only the uploader's own upload; clients check
+  integrity, so the effect was a lost upload).
+- **Severity:** low.
+- **Fix:** parts of one upload are handled one at a time (a lock per
+  upload id), and writing a part no longer cuts the file; the length is set
+  once, when the upload finishes.
+- **Test:** `attachments::tests::a_late_retry_of_an_earlier_part_cuts_nothing`
+  (fails before), `racing_part_retries_keep_the_file_whole` (a stress test;
+  it did not catch the race before the fix, the unit test does).
+
+## F-028: waiting outbox items went to members removed after the seal (fixed)
+
+- **Found:** 2026-10-04, security review of wave 2.
+- **What:** an outbox item kept the recipients of the moment it was sealed.
+  A message queued while offline (or waiting for a retry) still went to a
+  member the user removed meanwhile, who could read it with the old epoch's
+  secrets.
+- **Severity:** low to medium.
+- **Fix:** each attempt sends only to the sealed recipients still in the
+  roster; a `409 IDEMPOTENCY_KEY_REUSE` for the smaller set means an earlier
+  attempt went out, and the item is done. Residual (PROTOCOL.md 6.13): the
+  ciphertext is of the old epoch; a malicious server that kept it could
+  still forward it to the removed device.
+- **Test:** `a_waiting_item_never_goes_to_a_removed_member` (fails before:
+  the server stored a delivery for the removed device).
+
+## F-029: caches keyed by id only; a member could break another pack (fixed)
+
+- **Found:** 2026-10-04, security review of wave 2.
+- **What:** profile photos (`photocache/<id>`), sticker manifests and the
+  media cache (`media/<id>`) were keyed by blob or attachment id only, so a
+  later reference with the same id but another key or hash got the cached
+  bytes. The pack reference `stickerref/<id>` was overwritten by any sticker
+  message, so a member who named a pack with a wrong key broke it for the
+  receiver. A reference with another file-name extension left an orphaned
+  plaintext file the clean-up never deleted.
+- **Severity:** low.
+- **Fix:** caches are keyed by id and content hash and checked against the
+  hash on read (photos, manifests, sticker images, downloaded media; the
+  cached file name carries the hash too). A sticker message only adds a
+  candidate reference while none has worked; the one that opens the pack
+  becomes the pack's reference and is never replaced by a message.
+- **Test:** `a_wrong_pack_reference_does_not_break_the_pack`,
+  `the_media_cache_is_bound_to_the_content` (both fail before).
+
+## F-030: poll votes were counted per device (fixed)
+
+- **Found:** 2026-10-04, security review of wave 2.
+- **What:** votes were keyed by MLS member id, so a person with k linked
+  devices cast k votes, and linking a device is cheap.
+- **Severity:** low.
+- **Fix:** a vote counts for the account when the counting device ties the
+  member to one it trusts (`own/members`, or a device pinned for a
+  contact; never a roster label alone); the newest vote of an account
+  replaces its other devices' votes, and the tally counts each account
+  once. Devices that cannot be tied to an account still count on their
+  own, so counts can differ between devices (documented).
+- **Test:** `a_person_with_two_devices_votes_once` (alice's device counted
+  3 voters before).
+
+## F-033: the `user.username` switch did nothing (fixed)
+
+- **Found:** 2026-10-04, security review of wave 2.
+- **What:** `user.username` was in the registry (released by default) but
+  never read: a name could be registered while it showed released, and
+  releasing it kept the name on the server.
+- **Severity:** low (a switch that did not do what it said).
+- **Fix:** the switch is whether the account has a @username: choosing one
+  applies it, releasing it releases the name on the server and the device
+  (and its link), applying it without a name is refused.
+- **Test:** `username_switch_releases_the_name`.
+
+## F-034: plaintext files outside the database were not documented or cleaned (fixed)
+
+- **Found:** 2026-10-04, security review of wave 2.
+- **What:** decrypted files in the media cache, `<dest>.tree-part`
+  temporary files and chat exports are plaintext outside SQLCipher, and
+  THREAT_MODEL.md did not say so. A `.tree-part` file stayed behind if the
+  process died while writing it.
+- **Severity:** low (documentation, local privacy).
+- **Fix:** THREAT_MODEL.md lists every plaintext location and how it goes
+  away (storage clean-up for the cache; exports are the user's files).
+  Temporary files are noted in `<profile>.media/partial/` while written,
+  deleted on error or cancel, and any left by a crash are deleted when the
+  profile is opened; only `.tree-part` files are ever deleted that way.
+- **Test:** `media::tests::partial_files_left_by_a_crash_are_deleted`.
+
+## F-035: strangers could evict genuine held messages (fixed)
+
+- **Found:** 2026-10-04, security review of wave 2 (marked uncertain there;
+  confirmed: any registered device that knows a device id can send it
+  envelopes for made-up group ids).
+- **What:** held envelopes (unknown group, future epoch) were capped at 256
+  with the oldest evicted first, so a flood of envelopes for random group
+  ids pushed out genuine messages waiting for their welcome.
+- **Severity:** low (message loss for a targeted device).
+- **Fix:** at most 32 held per group id; when 256 are held, envelopes older
+  than a day go first, and otherwise the new envelope is dropped, never an
+  older one. Residual (PROTOCOL.md 6.7): a sustained flood delays new
+  genuine envelopes for unknown groups.
+- **Test:** `requests::tests::a_flood_of_unreadable_messages_keeps_the_genuine_held_one`
+  (fails before: the genuine message was evicted).

@@ -46,6 +46,11 @@ impl ApiError {
         self
     }
 
+    /// `507`: the server is short of disk space.
+    pub fn insufficient_storage(message: impl Into<Cow<'static, str>>) -> Self {
+        Self::new(StatusCode::INSUFFICIENT_STORAGE, "INSUFFICIENT_STORAGE", message)
+    }
+
     pub fn forbidden(code: &'static str, message: impl Into<Cow<'static, str>>) -> Self {
         Self::new(StatusCode::FORBIDDEN, code, message)
     }

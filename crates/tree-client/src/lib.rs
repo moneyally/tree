@@ -102,6 +102,10 @@ pub const LAST_RESORT_ROTATE: i64 = 7 * 86400;
 pub const KEY_PACKAGE_CHECK: i64 = 3600;
 /// Messages for unknown groups or future epochs kept for a retry (PROTOCOL.md 6.7).
 pub const MAX_HELD: usize = 256;
+/// Held messages per group id (F-035).
+pub const MAX_HELD_PER_GROUP: usize = 32;
+/// A held message older than this is dropped when room is needed.
+pub const HELD_MAX_AGE: i64 = 86400;
 
 /// Something the user should see after a sync.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -277,7 +281,9 @@ fn contact_key(account: &str) -> String {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Contact {
     pub account: String,
-    /// Member ids (hex) of the account's devices seen so far.
+    /// Member ids (hex) of the account's devices seen so far: the pinned
+    /// ones and the `unconfirmed` ones. The safety number covers all of
+    /// them, so comparing it confirms or exposes every claimed device.
     pub members: Vec<String>,
     /// The user compared the safety number for exactly these devices.
     pub verified: bool,
@@ -286,10 +292,12 @@ pub struct Contact {
     pub accepted: bool,
     #[serde(default)]
     pub blocked: bool,
-    /// Devices (member ids, hex) that appeared after the first ones and
-    /// were only claimed for this account by a group roster, not named by
-    /// the server: a key change the user has not confirmed. They do not
-    /// count as this contact for message requests and `user.group_add`.
+    /// Devices (member ids, hex) that only a group roster claimed for this
+    /// account: not named by the server in a key-package claim this device
+    /// made, and not covered by a safety number the user verified. They do
+    /// not count as this contact for anything (message requests,
+    /// `user.group_add`, auto-download, photo visibility), also when they
+    /// are the only devices seen for the account (F-021).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unconfirmed: Vec<String>,
 }
@@ -299,10 +307,18 @@ impl Contact {
         self.members.iter().filter_map(|m| MemberId::from_hex(m)).collect()
     }
 
-    /// Does this device count as this contact? Yes if it is pinned and not
-    /// an unconfirmed key change, or if no device is pinned yet (first use).
+    /// Does this device count as this contact? Only if it is pinned: named
+    /// by the server in a key-package claim this device made, carried from
+    /// the account's own device by a confirmed device link, or covered by a
+    /// verified safety number. A contact with no pinned device vouches for
+    /// nobody (F-021): before, it vouched for any device that claimed it.
     pub fn vouches_for(&self, member: &str) -> bool {
-        self.members.is_empty() || (self.members.iter().any(|m| m == member) && !self.unconfirmed.iter().any(|m| m == member))
+        self.members.iter().any(|m| m == member) && !self.unconfirmed.iter().any(|m| m == member)
+    }
+
+    /// The pinned devices: seen and not unconfirmed.
+    pub fn pinned(&self) -> Vec<String> {
+        self.members.iter().filter(|m| !self.unconfirmed.contains(m)).cloned().collect()
     }
 }
 
@@ -319,19 +335,19 @@ pub struct MemberInfo {
     pub account: Option<String>,
 }
 
-/// Pinning rule (trust on first use): the first set of devices of an account
-/// is taken as it is; afterwards every member id not seen before is a key
-/// change, reported, and clears "verified". Returns the updated contact if
-/// anything changed.
+/// Pinning rule: devices the server names for an account in a key-package
+/// claim this device made (`confirmed`) are pinned, the first time without
+/// a warning (trust on first use of the server's answer); afterwards every
+/// member id not seen before is a key change, reported, and clears
+/// "verified". Returns the updated contact if anything changed.
 ///
-/// `confirmed`: the server named these devices as the account's (a
-/// key-package claim). Devices that only a group roster claims for an
-/// account that already had devices stay `unconfirmed`: they get the
-/// warning but none of the contact's trust (F-018) until the user verifies
-/// the safety number or invites the account.
+/// Devices that only a group roster claims for the account are never
+/// pinned, whether or not the account had devices before (F-018, F-021):
+/// they are recorded as `unconfirmed` (so the safety number covers them),
+/// get the warning if the account was known, and none of the contact's
+/// trust until the user verifies the safety number or the server names them.
 fn merge_pins(old: Option<Contact>, account: &str, members: &[MemberId], confirmed: bool) -> Option<(Contact, Option<Event>)> {
     let first = old.is_none();
-    let had_pins = old.as_ref().is_some_and(|c| !c.members.is_empty());
     let mut c = old.unwrap_or_else(|| Contact { account: account.to_string(), ..Default::default() });
     let mut new: Vec<MemberId> = members.iter().filter(|m| !c.members.contains(&m.to_hex())).copied().collect();
     new.sort();
@@ -348,7 +364,7 @@ fn merge_pins(old: Option<Contact>, account: &str, members: &[MemberId], confirm
     }
     if confirmed {
         c.unconfirmed.retain(|m| !hex.contains(m));
-    } else if had_pins {
+    } else {
         c.unconfirmed.extend(new.iter().map(MemberId::to_hex));
     }
     c.members.extend(new.iter().map(MemberId::to_hex));
@@ -443,6 +459,8 @@ impl Session {
         let seed: [u8; 32] = seed.as_slice().try_into().map_err(|_| Error::Protocol("bad auth key".into()))?;
         let creds = Creds { account_id: text(K_ACCOUNT)?, device_id: text(K_DEVICE)?, key: SigningKey::from_bytes(&seed) };
         let mut s = Self::from_parts(client, api, creds, path);
+        // Plaintext temporary files a crash left behind (F-034).
+        media::clean_partials(&s.media.dir);
         s.load_transfers()?;
         let mut outcomes = Vec::new();
         for gid in s.client.group_ids()? {
@@ -763,6 +781,40 @@ impl Session {
             events.extend(ev);
         }
         Ok(())
+    }
+
+    /// Is `m` this device or another device of this account? Only devices
+    /// learned through a confirmed device link (`own/members`, PROTOCOL.md
+    /// 8.11) count: a roster's account label never makes a device "mine".
+    pub(crate) fn is_own_device(&self, m: &MemberId) -> Result<bool, Error> {
+        Ok(*m == self.member_id() || self.own_members()?.contains(&m.to_hex()))
+    }
+
+    /// The account `from` belongs to as far as this device trusts it: this
+    /// account for its own devices ([`Session::is_own_device`]), otherwise
+    /// the account the group's roster names for it, but only if that
+    /// account's contact has the device pinned ([`Contact::vouches_for`]).
+    /// `None`: a stranger, whatever it claims.
+    pub(crate) fn vouched_account(&self, gid: &[u8], from: &MemberId) -> Result<Option<String>, Error> {
+        if self.is_own_device(from)? {
+            return Ok(Some(self.creds.account_id.clone()));
+        }
+        let Some(a) = self.map(&accounts_key(gid))?.get(&from.to_hex()).cloned() else { return Ok(None) };
+        Ok(self.contact(&a)?.filter(|c| c.vouches_for(&from.to_hex())).map(|_| a))
+    }
+
+    /// Is `from` a device of a blocked account? Matched by the account the
+    /// roster names for it and also by member id: a device ever seen for a
+    /// blocked account (pinned or only claimed) stays blocked whatever label
+    /// a later roster gives it (F-022).
+    pub(crate) fn blocked_sender(&self, gid: &[u8], from: &MemberId) -> Result<bool, Error> {
+        if let Some(a) = self.map(&accounts_key(gid))?.get(&from.to_hex()) {
+            if self.is_blocked(a)? {
+                return Ok(true);
+            }
+        }
+        let hex = from.to_hex();
+        Ok(self.contacts()?.iter().any(|c| c.blocked && c.members.contains(&hex)))
     }
 
     /// The safety number shared with `account` (60 digits), from this
@@ -1147,11 +1199,9 @@ impl Session {
                 | Payload::Rsvp { .. }
                 | Payload::ProfilePhoto { .. }),
             ) => {
-                if let Some(a) = self.map(&accounts_key(gid))?.get(&from.to_hex()) {
-                    if self.is_blocked(a)? {
-                        events.push(Event::Dropped { reason: "from a blocked account".into() });
-                        return Ok(());
-                    }
+                if self.blocked_sender(gid, &from)? {
+                    events.push(Event::Dropped { reason: "from a blocked account".into() });
+                    return Ok(());
                 }
                 if rich_media::is_rich_media(&p) {
                     self.on_rich_media(gid, from, p, franking, events)?;
@@ -1185,40 +1235,62 @@ impl Session {
                     known.insert(from.to_hex(), n);
                 }
                 self.save_names(gid, &known)?;
-                // Remember and pin the devices of each named account.
+                // Account labels (PROTOCOL.md 5.4, F-022). A label is a
+                // claim, never trust: it is only taken
+                // - for a current member other than this device, and never
+                //   for this device's own account unless the member is one
+                //   of its own linked devices (`own/members`);
+                // - as the first label for that member: a later roster never
+                //   relabels a member (so nobody escapes a block, or moves
+                //   another member to an account, by relabelling);
+                // - for the sender itself (its own word), or for another
+                //   member only if the sender is trusted (one of this
+                //   account's devices, or pinned for its account).
                 let mut known_accounts = self.map(&accounts_key(gid))?;
+                let own = self.own_members()?;
+                let usable = |m: &str, a: &str| members.iter().any(|x| x == m) && m != me && (a != self.creds.account_id || own.iter().any(|o| o == m));
                 let mut by_account: BTreeMap<String, Vec<MemberId>> = BTreeMap::new();
-                for (m, a) in accounts {
-                    if let (true, Some(id)) = (members.contains(&m) && m != me, MemberId::from_hex(&m)) {
-                        known_accounts.insert(m, a.clone());
-                        by_account.entry(a).or_default().push(id);
+                let sender = from.to_hex();
+                if let Some(a) = accounts.get(&sender) {
+                    if usable(&sender, a) && !known_accounts.contains_key(&sender) {
+                        known_accounts.insert(sender.clone(), a.clone());
+                        by_account.entry(a.clone()).or_default().push(from);
+                    }
+                }
+                let adder = known_accounts.get(&sender).cloned();
+                // The sender counts as its account only if this device has
+                // it pinned for that account (a key-package claim this
+                // device made, a verified safety number, or a confirmed
+                // device link). A device that only claims an account, also
+                // one with no pinned device yet, is judged as a stranger,
+                // so nobody gets past message requests or `user.group_add`
+                // by naming one of the user's contacts (F-018, F-021).
+                let vouched = match &adder {
+                    Some(a) if *a == self.creds.account_id => own.contains(&sender),
+                    Some(a) => self.contact(a)?.is_some_and(|c| c.vouches_for(&sender)),
+                    None => false,
+                };
+                if vouched || own.contains(&sender) {
+                    for (m, a) in &accounts {
+                        if let (true, false, Some(id)) = (usable(m, a), known_accounts.contains_key(m), MemberId::from_hex(m)) {
+                            known_accounts.insert(m.clone(), a.clone());
+                            by_account.entry(a.clone()).or_default().push(id);
+                        }
                     }
                 }
                 self.save_map(&accounts_key(gid), &known_accounts)?;
-                // The sender's account is its own claim. It counts as that
-                // account only if the sender is a device already pinned for
-                // it and not an unconfirmed key change (or nothing is pinned
-                // yet: trust on first use, PROTOCOL.md 5.4). A new device
-                // claiming a contact's account is judged as a stranger, so
-                // nobody gets past message requests or `user.group_add` by
-                // naming one of the user's contacts (F-018).
-                let adder = known_accounts.get(&from.to_hex()).cloned();
-                let vouched = match &adder {
-                    Some(a) => self.contact(a)?.is_none_or(|c| c.vouches_for(&from.to_hex())),
-                    None => false,
-                };
                 for (a, ids) in by_account {
                     self.pin(&a, &ids, false, events)?;
                 }
                 // The roster's sender added us if we are still a request.
                 // Another device of this account (known from a confirmed
                 // device link, PROTOCOL.md 8.11) adds us to its own groups.
-                if self.own_members()?.contains(&from.to_hex()) {
+                if own.contains(&sender) {
                     if matches!(self.group_status(gid)?, GroupStatus::Request { .. }) {
                         self.set_group_status(gid, &GroupStatus::Accepted)?;
                     }
                 } else if let Some(adder) = adder {
-                    self.decide_request(gid, &adder, vouched, link.as_deref(), events)?;
+                    self.decide_request(gid, &adder, &from, vouched, link.as_deref(), events)?;
                 }
                 events.push(Event::RosterUpdated { group: gid.to_vec() });
             }
@@ -1265,15 +1337,42 @@ impl Session {
         Ok(())
     }
 
+    /// Keeps a message that cannot be read yet for a retry. Anyone who knows
+    /// this device's id can send such messages, so a flood must not push
+    /// out the genuine ones waiting for their welcome (F-035): at most
+    /// [`MAX_HELD_PER_GROUP`] per group id, at most [`MAX_HELD`] in all;
+    /// when full, messages older than [`HELD_MAX_AGE`] go first, and
+    /// otherwise the new message is dropped, never an older one.
     fn hold(&mut self, body: &[u8], events: &mut Vec<Event>, may_hold: bool, why: &str) -> Result<bool, Error> {
         if !may_hold {
             return Err(Error::Protocol(format!("still held: {why}")));
         }
-        let keys = self.client.app_data_keys("held/")?;
+        // Keys: `held/<20 digits>`, the arrival time in seconds times a
+        // million plus a sequence number, so they sort by age (older
+        // counters from before sort first, as the oldest).
+        let now = messages::now();
+        let group = |b: &[u8]| match peek(b) {
+            Some(Peek::Envelope { group_id, .. }) => Some(group_id),
+            _ => None,
+        };
+        let mine = group(body);
+        let mut keys = self.client.app_data_keys("held/")?;
         if keys.len() >= MAX_HELD {
-            self.client.set_app_data(&keys[0], None)?;
+            for k in keys.iter().filter(|k| k[5..].parse::<u64>().map_or(true, |n| (n / 1_000_000) as i64 + HELD_MAX_AGE < now)) {
+                self.client.set_app_data(k, None)?;
+            }
+            keys = self.client.app_data_keys("held/")?;
         }
-        let next = keys.last().and_then(|k| k[5..].parse::<u64>().ok()).map_or(0, |n| n + 1);
+        let same_group = keys
+            .iter()
+            .filter(|k| self.client.app_data(k).ok().flatten().is_some_and(|b| group(&b) == mine))
+            .count();
+        if keys.len() >= MAX_HELD || same_group >= MAX_HELD_PER_GROUP {
+            events.push(Event::Dropped { reason: format!("not readable yet ({why}) and no room to hold it") });
+            return Ok(false);
+        }
+        let base = (now.max(0) as u64) * 1_000_000;
+        let next = keys.last().and_then(|k| k[5..].parse::<u64>().ok()).map_or(base, |n| (n + 1).max(base));
         self.client.set_app_data(&format!("held/{next:020}"), Some(body))?;
         events.push(Event::Held);
         Ok(false)
@@ -1283,9 +1382,19 @@ impl Session {
     /// the stored message land together, so a crash in between cannot use
     /// up a message's keys without keeping the message. The server copy is
     /// acknowledged only after this returns.
+    ///
+    /// No network request goes out inside the batch (F-024): whatever the
+    /// handler sends (a decline's leave request, a roster, a profile) is
+    /// only sealed and queued in the outbox, in the same batch, and the
+    /// outbox is driven after the batch is committed (`sync` does it).
+    /// Otherwise a crash after the server took a request but before the
+    /// batch committed would roll back the keys used to seal it, and the
+    /// next attempt would seal different bytes with the same keys.
     fn handle_durably(&mut self, body: &[u8], events: &mut Vec<Event>, may_hold: bool) -> Result<bool, Error> {
         self.client.begin_batch()?;
+        self.api.set_receiving(true);
         let r = self.handle(body, events, may_hold);
+        self.api.set_receiving(false);
         self.end_batch()?;
         r
     }
@@ -1306,7 +1415,9 @@ impl Session {
             let Some(body) = self.client.app_data(&key)? else { continue };
             let mut ev = Vec::new();
             self.client.begin_batch()?;
+            self.api.set_receiving(true);
             let r = self.handle(&body, &mut ev, false);
+            self.api.set_receiving(false);
             let r = match r {
                 Ok(m) => self.client.set_app_data(&key, None).map(|_| m).map_err(Error::from),
                 e => e,
@@ -1350,10 +1461,14 @@ mod tests {
 
     #[test]
     fn pinning_rules() {
-        // first contact: trusted as is, no warning
-        let (c, ev) = merge_pins(None, "acc", &[id(1), id(1)], false).unwrap();
+        // first contact named by the server: pinned as is, no warning
+        let (c, ev) = merge_pins(None, "acc", &[id(1), id(1)], true).unwrap();
         assert_eq!((c.members.len(), c.verified, ev), (1, false, None));
         assert!(c.vouches_for(&id(1).to_hex()));
+        // first contact only claimed by a roster: seen, not pinned (F-021)
+        let (r, ev) = merge_pins(None, "acc", &[id(1)], false).unwrap();
+        assert_eq!(ev, None);
+        assert!(!r.vouches_for(&id(1).to_hex()) && r.pinned().is_empty());
         // same devices again: nothing to do
         assert!(merge_pins(Some(c.clone()), "acc", &[id(1)], false).is_none());
         // a device missing from a claim (no key packages left) is no change
@@ -1372,10 +1487,18 @@ mod tests {
         // unverified change is reported too
         let (_, ev) = merge_pins(Some(c2), "acc", &[id(3)], true).unwrap();
         assert!(matches!(ev, Some(Event::KeyChanged { was_verified: false, .. })));
-        // a contact added by hand has no devices yet: first use
+        // a contact added by hand has no devices yet: it vouches for nobody,
+        // and a roster claim does not pin its first device (F-021)
         let hand = Contact { account: "acc".into(), accepted: true, ..Default::default() };
-        assert!(hand.vouches_for(&id(9).to_hex()));
-        let (c4, _) = merge_pins(Some(hand), "acc", &[id(9)], false).unwrap();
-        assert!(c4.vouches_for(&id(9).to_hex()));
+        assert!(!hand.vouches_for(&id(9).to_hex()));
+        let (c4, ev) = merge_pins(Some(hand.clone()), "acc", &[id(9)], false).unwrap();
+        assert!(!c4.vouches_for(&id(9).to_hex()) && c4.pinned().is_empty());
+        assert!(matches!(ev, Some(Event::KeyChanged { .. })), "warned");
+        // the server naming it (a key-package claim this device made) pins it
+        let (c5, _) = merge_pins(Some(c4), "acc", &[id(9)], true).unwrap();
+        assert!(c5.vouches_for(&id(9).to_hex()));
+        // so does a key-package claim on the empty contact directly
+        let (c6, _) = merge_pins(Some(hand), "acc", &[id(9)], true).unwrap();
+        assert!(c6.vouches_for(&id(9).to_hex()));
     }
 }

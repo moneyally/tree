@@ -32,8 +32,8 @@ fn link_id(link: &str) -> String {
 fn setup(env: &Env) -> (Session, Session, Vec<u8>) {
     let mut alice = env.device("alice");
     let mut bob = env.device("bob");
-    alice.add_contact(bob.account_id()).unwrap();
-    bob.add_contact(alice.account_id()).unwrap();
+    alice.confirm_contact(bob.account_id()).unwrap();
+    bob.confirm_contact(alice.account_id()).unwrap();
     let g = alice.create_group().unwrap();
     alice.invite(&g, bob.account_id()).unwrap();
     bob.sync(0).unwrap();
@@ -155,6 +155,46 @@ fn a_swapped_reveal_breaks_the_commitment() {
     assert_eq!(alice.devices().unwrap().len(), 1);
 }
 
+/// F-020: the key packages are committed in the invitation. A server that
+/// reorders, repeats or substitutes them after the reveal (to steer the
+/// existing device's code toward the one the new device shows for an offer
+/// of its own) gets the link cancelled before any code is shown.
+#[test]
+fn a_reordered_repeated_or_substituted_key_package_list_is_refused() {
+    type Tamper = fn(&mut Vec<serde_json::Value>, serde_json::Value);
+    let tamper: [(&str, Tamper); 4] = [
+        ("swap", |k, _| k.swap(0, 1)),
+        ("repeat", |k, _| k[1] = k[0].clone()),
+        ("substitute", |k, other| k[2] = other),
+        ("drop", |k, _| {
+            k.remove(3);
+        }),
+    ];
+    for (what, f) in tamper {
+        let env = Env::new(&format!("link-kps-{what}"));
+        let (mut alice, _bob, _g) = setup(&env);
+        // Another device's valid key package, for the substitution.
+        let other = tree_core::Client::new("other").unwrap();
+        let foreign = json!(tree_core::link::b64url(&other.key_package().unwrap()));
+        let mut nd = start(&env, "alice-desktop");
+        let text = nd.link();
+        alice.scan_link(&text).unwrap();
+        assert!(matches!(nd.poll().unwrap(), LinkStatus::Code { .. }));
+        let id = link_id(&text);
+        let reveal = env.sql_blob("SELECT reveal FROM link_sessions WHERE link_id = ?", &id).unwrap();
+        let mut v: serde_json::Value = serde_json::from_slice(&reveal).unwrap();
+        let mut kps = v["key_packages"].as_array().unwrap().clone();
+        assert_eq!(kps.len(), 9, "8 one-time key packages and the last-resort one");
+        f(&mut kps, foreign);
+        v["key_packages"] = json!(kps);
+        env.sql_set_blob("UPDATE link_sessions SET reveal = ? WHERE link_id = ?", &serde_json::to_vec(&v).unwrap(), &id);
+        let st = alice.link_status().unwrap();
+        assert!(matches!(&st, LinkStatus::Cancelled { reason } if reason.contains("does not match")), "{what}: {st:?}");
+        assert!(matches!(nd.poll().unwrap(), LinkStatus::Cancelled { .. }), "{what}");
+        assert_eq!(alice.devices().unwrap().len(), 1, "{what}");
+    }
+}
+
 #[test]
 fn refusing_on_either_device_links_nothing() {
     let env = Env::new("link-refuse");
@@ -182,6 +222,37 @@ fn refusing_on_either_device_links_nothing() {
     assert!(matches!(nd.poll().unwrap(), LinkStatus::Cancelled { .. }));
     assert_eq!(alice.devices().unwrap().len(), 1);
     assert!(matches!(alice.link_status(), Err(Error::Usage(_))));
+}
+
+/// F-030: a person with two linked devices votes once. alice's phone and
+/// desktop both vote; alice's devices count one vote (own/members), and so
+/// does bob once the server named the desktop as alice's (a key-package
+/// claim); while it is only roster-claimed bob counts it on its own.
+#[test]
+fn a_person_with_two_devices_votes_once() {
+    let env = Env::new("link-votes");
+    let (mut alice, mut bob, g) = setup(&env);
+    let (mut desk, _) = link(&mut alice, start(&env, "alice-desktop"));
+    desk.sync(0).unwrap();
+    bob.sync(0).unwrap();
+    alice.sync(0).unwrap();
+    let opts: Vec<String> = ["park", "cafe"].iter().map(|s| s.to_string()).collect();
+    let p = alice.create_poll(&g, "Where?", &opts, &tree_client::polls::PollOptions::default()).unwrap();
+    desk.sync(0).unwrap();
+    bob.sync(0).unwrap();
+    alice.vote(&g, &p, &[0]).unwrap();
+    desk.vote(&g, &p, &[1]).unwrap();
+    bob.vote(&g, &p, &[1]).unwrap();
+    for s in [&mut alice, &mut desk, &mut bob] {
+        s.sync(0).unwrap();
+    }
+    let v = alice.poll(&g, &p).unwrap().unwrap();
+    assert_eq!((v.voters, v.counts.iter().sum::<u32>()), (2, 2), "alice once, bob once: {v:?}");
+    assert_eq!(desk.poll(&g, &p).unwrap().unwrap().voters, 2);
+    // bob: the desktop is only roster-claimed for alice until the server names it.
+    assert_eq!(bob.poll(&g, &p).unwrap().unwrap().voters, 3);
+    bob.confirm_contact(alice.account_id()).unwrap();
+    assert_eq!(bob.poll(&g, &p).unwrap().unwrap().voters, 2);
 }
 
 #[test]

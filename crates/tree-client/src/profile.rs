@@ -35,7 +35,7 @@ use tree_core::MemberId;
 
 use crate::messages::now;
 use crate::payload::{BlobRef, Payload};
-use crate::{accounts_key, Error, Event, GroupStatus, Session};
+use crate::{Error, Event, GroupStatus, Session};
 
 /// Largest photo.
 pub const MAX_PHOTO_BYTES: u64 = 2 * 1024 * 1024;
@@ -122,6 +122,11 @@ fn check_photo(bytes: &[u8], mime: &str) -> Result<(), Error> {
     Ok(())
 }
 
+/// Where a received photo's bytes are cached: by blob id and content hash.
+fn photo_cache_key(b: &crate::payload::BlobRef) -> String {
+    format!("photocache/{}/{}", b.id, b.pt_sha256)
+}
+
 impl Session {
     fn new_photo(&self, bytes: &[u8], mime: &str) -> Result<OwnPhoto, Error> {
         check_photo(bytes, mime)?;
@@ -157,9 +162,14 @@ impl Session {
             return self.profile_photo();
         }
         let Some(r) = self.app_get::<Received>(&format!("photo/{}/{}", g(gid), member.to_hex()))? else { return Ok(None) };
-        let cache = format!("photocache/{}", r.blob.id);
+        // Cached by blob id and content hash, and checked on read (F-029):
+        // another reference with the same id never gets these bytes.
+        let cache = photo_cache_key(&r.blob);
         if let Some(b) = self.client.app_data(&cache)? {
-            return Ok(Some(Photo { bytes: b, mime: r.mime }));
+            if crate::payload::sha256_hex(&b) == r.blob.pt_sha256 {
+                return Ok(Some(Photo { bytes: b, mime: r.mime }));
+            }
+            self.client.set_app_data(&cache, None)?;
         }
         let b = self.download_blob(&r.blob, MAX_PHOTO_BYTES)?;
         self.client.set_app_data(&cache, Some(&b))?;
@@ -223,7 +233,7 @@ impl Session {
     }
 
     /// May the main photo go to this group under the visibility setting?
-    fn photo_allowed(&mut self, gid: &[u8]) -> Result<bool, Error> {
+    pub(crate) fn photo_allowed(&mut self, gid: &[u8]) -> Result<bool, Error> {
         let st = self.feature(VISIBILITY)?;
         if st.state != tree_core::features::State::Applied {
             return Ok(false);
@@ -231,19 +241,17 @@ impl Session {
         match st.option.as_deref().unwrap_or("chats") {
             "chats" => Ok(true),
             "contacts" => {
-                let me = self.member_id();
-                let accounts = self.map(&accounts_key(gid))?;
                 for m in self.group(gid)?.members() {
-                    if m == me {
-                        continue;
-                    }
-                    let Some(a) = accounts.get(&m.to_hex()) else { return Ok(false) };
-                    if a == self.account_id() {
-                        continue; // another device of this account
-                    }
-                    match self.contact(a)? {
-                        Some(c) if c.accepted && !c.blocked && c.vouches_for(&m.to_hex()) => {}
-                        _ => return Ok(false),
+                    // This device and its own linked devices (own/members,
+                    // never a roster label naming this account: F-022), or
+                    // a device pinned for an accepted, unblocked contact.
+                    match self.vouched_account(gid, &m)? {
+                        Some(a) if a == self.account_id() => {}
+                        Some(a) => match self.contact(&a)? {
+                            Some(c) if c.accepted && !c.blocked => {}
+                            _ => return Ok(false),
+                        },
+                        None => return Ok(false),
                     }
                 }
                 Ok(true)
@@ -337,7 +345,8 @@ impl Session {
         let key = format!("photo/{}/{}", g(gid), from.to_hex());
         if let Some(old) = self.app_get::<Received>(&key)? {
             if photo.as_ref().is_none_or(|p| p.id != old.blob.id) {
-                self.client.set_app_data(&format!("photocache/{}", old.blob.id), None)?;
+                self.client.set_app_data(&photo_cache_key(&old.blob), None)?;
+                self.client.set_app_data(&format!("photocache/{}", old.blob.id), None)?; // the old form
             }
         }
         match photo {

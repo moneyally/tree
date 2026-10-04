@@ -279,7 +279,7 @@ CREATE TABLE account_recovery (
 
 ```sql
 CREATE TABLE invites (
-    token_hash BLOB PRIMARY KEY,            -- SHA-256("tree/invite/v1" || secret)
+    token_hash BLOB PRIMARY KEY,            -- SHA-256("tree/invite/v1" || proof) (v2) or || secret (v1)
     owner_account TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
     owner_device  TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
     expires_at INTEGER NOT NULL, max_uses INTEGER NOT NULL, uses INTEGER NOT NULL DEFAULT 0
@@ -293,9 +293,12 @@ CREATE TABLE invite_requests (
 );
 ```
 
-Migration `0010_invite_nonce.sql` adds `invite_requests.nonce` (BLOB, 16
-random bytes from the joining device, returned only to the link owner's
-device; NULL from older clients; PROTOCOL.md 8.7).
+Migration `0010_invite_nonce.sql` adds `invite_requests.nonce` (BLOB,
+returned only to the link owner's device; PROTOCOL.md 8.7): for version 2
+links the joiner's 16-byte nonce sealed to the link's owner (44 bytes,
+AES-256-GCM, the server cannot open it, F-025); 16 bytes in the clear only
+from older clients on version 1 links; NULL if none was sent. The column
+type did not change, so no migration was needed for version 2.
 
 ### 2.7 Push (migration `0008_push.sql`, PROTOCOL.md 8.8)
 
@@ -314,7 +317,7 @@ CREATE TABLE idempotency_keys (
     seq          INTEGER PRIMARY KEY AUTOINCREMENT,      -- age order for the per-device cap
     device_id    TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,  -- sending device
     key          BLOB NOT NULL,                          -- 16..64 bytes chosen by the device
-    request_hash BLOB NOT NULL,                          -- SHA-256 over body and sorted recipients
+    request_hash BLOB NOT NULL,                          -- tag key id (8) || HMAC-SHA-256 under an in-memory key (32)
     delivered    INTEGER NOT NULL,                       -- the first answer's count
     created_day  INTEGER NOT NULL,                       -- day only
     UNIQUE (device_id, key)
@@ -323,9 +326,11 @@ CREATE INDEX idempotency_keys_device ON idempotency_keys(device_id, seq);
 CREATE INDEX idempotency_keys_day ON idempotency_keys(created_day);
 ```
 
-No recipients, body, message id or time of day. Deleted by the purge task
-once the whole day is older than `MESSAGE_TTL_SECS`, with the device, and
-beyond `MAX_IDEMPOTENCY_KEYS` per device (oldest first).
+No recipients, body, message id or time of day; the tag cannot be
+recomputed without a key held only in the server's memory (F-023). Deleted by
+the purge task once its day is before yesterday (the tag key is forgotten
+then; records in the old 32-byte SHA-256 format are deleted at once), with
+the device, and beyond `MAX_IDEMPOTENCY_KEYS` per device (oldest first).
 
 ### 2.9 Device links (migration `0012_device_links.sql`, PROTOCOL.md 8.11)
 
@@ -389,5 +394,8 @@ Parts are written to `.<id>.part` in `ATTACHMENT_DIR` at `index ·
 UPLOAD_CHUNK_BYTES`. With the last part the file is renamed to `<id>`, the
 `uploads` row deleted and an `attachments` row made (no uploader). The purge
 deletes uploads older than 24 hours with their partial files, partial files
-whose upload row is gone (device deleted), and quota rows of past days.
+whose upload row is gone (device deleted), and quota rows older than the
+attachment lifetime (`MESSAGE_TTL_SECS` plus a day): they bound what an
+account holds (`MAX_LIVE_BYTES_PER_ACCOUNT`, F-026), so the account and the
+bytes it started per day stay that long.
 Numbers `0012` and `0013` are reserved for other branches.

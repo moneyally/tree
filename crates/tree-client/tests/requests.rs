@@ -66,7 +66,11 @@ fn requests_blocking_and_group_add() {
     bob.accept_request(&g4).unwrap();
     alice.send_text(&g4, "welcome").unwrap();
     assert_eq!(texts(&bob.sync(0).unwrap()), vec![("welcome".into(), false)]);
-    // alice is now a contact: her next 1:1 chat is accepted directly.
+    // alice is now an accepted contact, but her device counts as alice only
+    // once it is pinned (F-021): here bob compares the safety number with
+    // her. Her next 1:1 chat is then accepted directly.
+    assert!(!bob.contact(alice.account_id()).unwrap().unwrap().vouches_for(&alice.member_id().to_hex()));
+    bob.verify(alice.account_id(), None).unwrap();
     let g5 = alice.create_group().unwrap();
     alice.invite(&g5, bob.account_id()).unwrap();
     let ev = bob.sync(0).unwrap();
@@ -116,8 +120,8 @@ fn admins_through_the_server() {
     let mut alice = env.device("alice");
     let mut bob = env.device("bob");
     let mut carol = env.device("carol");
-    bob.add_contact(alice.account_id()).unwrap();
-    carol.add_contact(alice.account_id()).unwrap();
+    bob.confirm_contact(alice.account_id()).unwrap();
+    carol.confirm_contact(alice.account_id()).unwrap();
     let g = alice.create_group().unwrap();
     alice.invite(&g, bob.account_id()).unwrap();
     alice.invite(&g, carol.account_id()).unwrap();

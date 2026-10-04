@@ -1,13 +1,16 @@
 (* Tree Protocol v1 -- model (i): device linking with a two-sided code.
 
-   Construction (docs/PROTOCOL.md 8.11):
-     N shows inv = (link_id, auth_N, hpke_N, commit = H(nonce))  (QR code)
-     E -> N   offer  = (account, auth_E, hpke_E)                  (relayed)
-     N -> E   reveal = nonce, only after the offer arrived         (relayed)
-     both     T = H(inv, offer, nonce); the person compares code(T)
-     N -> E   Sig_N(confirm, link_id, T)                          (relayed)
+   Construction (docs/PROTOCOL.md 8.11, invitation version 2):
+     N makes its key packages kps first (they name N's member: spk(skN)).
+     N shows inv = (link_id, auth_N, hpke_N, commit = H(nonce, kps))  (QR code)
+     E -> N   offer  = (account, auth_E, hpke_E)                       (relayed)
+     N -> E   reveal = (nonce, kps), only after the offer arrived       (relayed)
+     E        checks H(nonce, kps) = commit and that kps name N
+     both     T = H(inv, offer, nonce, kps); the person compares code(T)
+     N -> E   Sig_N(confirm, link_id, T)                               (relayed)
      E -> srv Sig_E(authorise, link_id, account, auth_N, T),
               HPKE-Auth(hpke_E -> hpke_N, info = T, account data)
+     E        adds N to its groups with kps
      server   adds auth_N to the account iff both signatures verify
               over the same T (E's key is the one registered).
 
@@ -19,7 +22,24 @@
    (3) The server adds a device only after the existing device authorised
        it and the new device confirmed the same transcript.
    (4) The account data stays secret.
+   (5) The existing device adds to its groups only key packages the new
+       device committed to in its invitation.
    Reachability: a link completes.
+
+   The six-digit code. code(T) is a short string, so a relay that controls
+   one input of a transcript after it knows all the others can search that
+   input until the code hits any target it likes. This is modelled by two
+   equations (grinding), one for each input a relay could still choose:
+   - grindk: the key-package list toward E (any reordering of N's own key
+     packages, still naming N), once the relay knows nonce and offer;
+   - grindo: a field of the offer toward N that the relay picks freely
+     (here the account id; in the code also the device id, member id and
+     keys), once the relay knows the nonce and the key packages.
+   Equal transcripts give equal codes; otherwise codes are equal only
+   through these equations (the one-in-a-million chance is not modelled).
+   The negative control device_link_kp_uncommitted.pv keeps the key
+   packages out of the commitment (version 1) and finds the grinding attack
+   on property (1); device_link_no_code.pv has the person not compare codes.
 
    Abstractions:
    - Dolev-Yao attacker is the network and the relay (the server's relay
@@ -28,12 +48,10 @@
    - The QR code is an authentic channel from the new device to the
      existing device; the attacker reads it. The person comparing codes is
      an authentic channel to both screens that lets both continue only if
-     the two transcript hashes are equal. Symbolically, codes are equal
-     exactly when the hashes are equal: the model does not capture the
-     six-digit truncation (one in a million chance of equal codes for
-     different transcripts); the commit-then-reveal order, which keeps a
-     relay from searching for such a collision, is in the protocol and
-     the tests but not proved here.
+     the two codes are equal.
+   - Key packages are one value per device naming its signature key; their
+     MLS checks (signature, count, order, no repeats) are in the Rust code
+     and its tests.
    - Phishing (the person scans an attacker's QR code and confirms a code
      read to them) is outside the model: the person then approves on
      purpose.
@@ -58,7 +76,17 @@ fun hseal(skey, pkey, bitstring, bitstring): bitstring.
 reduc forall s: skey, r: skey, i: bitstring, m: bitstring;
   hopen(r, pk(s), i, hseal(s, pk(r), i, m)) = m.
 
+(* Commitment hash and transcript hash. *)
 fun h(bitstring): bitstring.
+fun ht(bitstring): bitstring.
+(* The six-digit code, and the relay's two searches. *)
+fun code(bitstring): bitstring.
+fun grindk(bitstring, bitstring, bitstring, bitstring, spkey): bitstring.
+fun grindo(bitstring, bitstring, spkey, pkey, bitstring, bitstring): bitstring.
+equation forall cd: bitstring, i: bitstring, o: bitstring, n: bitstring, kN: spkey;
+  code(ht((i, o, n, (kN, grindk(cd, i, o, n, kN))))) = cd.
+equation forall cd: bitstring, i: bitstring, kE: spkey, eE: pkey, n: bitstring, k: bitstring;
+  code(ht((i, (grindo(cd, i, kE, eE, n, k), kE, eE), n, k))) = cd.
 
 const confirmtag: bitstring.
 const authtag: bitstring.
@@ -74,11 +102,13 @@ not attacker(new skEe).
 not attacker(new skNe).
 not attacker(new skN).
 
+event NCommitted(spkey, bitstring).
 event NConfirmed(spkey, bitstring).
 event NLinked(spkey, bitstring, bitstring).
 event NLinkedHonest.
 event EAuthorised(bitstring, spkey, bitstring).
 event ESent(bitstring, spkey, bitstring).
+event EAddsKeyPackages(spkey, bitstring).
 event DeviceAdded(bitstring, spkey).
 
 query kN: spkey, a: bitstring, d: bitstring;
@@ -88,6 +118,8 @@ query a: bitstring, kN: spkey, t: bitstring;
 query a: bitstring, kN: spkey, t: bitstring;
   event(DeviceAdded(a, kN)) ==> event(EAuthorised(a, kN, t)) && event(NConfirmed(kN, t)).
 query attacker(accountData).
+query kN: spkey, k: bitstring;
+  event(EAddsKeyPackages(kN, k)) ==> event(NCommitted(kN, k)).
 query event(NLinkedHonest).
 
 (* The new device. show / ok: its screen and the person's answer. *)
@@ -96,13 +128,16 @@ let newDevice(qr: channel, show: channel, ok: channel) =
   new skNe: skey;
   new l: bitstring;
   new n: bitstring;
-  let inv = (l, spk(skN), pk(skNe), h(n)) in
+  new kpv: bitstring;
+  let kps = (spk(skN), kpv) in
+  event NCommitted(spk(skN), kps);
+  let inv = (l, spk(skN), pk(skNe), h((n, kps))) in
   out(qr, inv);
   out(c, inv);
-  in(c, offer: bitstring);
+  in(c, offer: bitstring) [precise];
   let (a: bitstring, kE: spkey, eE: pkey) = offer in
-  out(c, n);
-  let t = h((inv, offer, n)) in
+  out(c, (n, kps));
+  let t = ht((inv, offer, n, kps)) in
   out(show, t);
   in(ok, =t);
   event NConfirmed(spk(skN), t);
@@ -119,23 +154,25 @@ let existingDevice(qr: channel, show: channel, ok: channel) =
   let (l: bitstring, kN: spkey, eN: pkey, com: bitstring) = inv in
   let offer = (acct, spk(skE), pk(skEe)) in
   out(c, offer);
-  in(c, n: bitstring);
-  if h(n) = com then
-  let t = h((inv, offer, n)) in
+  in(c, (n: bitstring, kps: bitstring));
+  if h((n, kps)) = com then
+  let (=kN, kpv: bitstring) = kps in
+  let t = ht((inv, offer, n, kps)) in
   out(show, t);
   in(ok, =t);
   in(c, sigN: bitstring);
   let (=confirmtag, =l, =t) = checksign(sigN, kN) in
   event EAuthorised(acct, kN, t);
   event ESent(acct, kN, accountData);
-  out(c, (l, kN, t, sign((authtag, l, acct, kN, t), skE), hseal(skEe, eN, t, accountData))).
+  out(c, (l, kN, t, sign((authtag, l, acct, kN, t), skE), hseal(skEe, eN, t, accountData)));
+  event EAddsKeyPackages(kN, kps).
 
 (* The person: continues on both devices only if the codes are equal
    (confirming the code each screen showed). *)
 let person(showN: channel, okN: channel, showE: channel, okE: channel) =
   in(showN, tN: bitstring);
   in(showE, tE: bitstring);
-  if tN = tE then (out(okN, tN) | out(okE, tE)).
+  if code(tN) = code(tE) then (out(okN, tN) | out(okE, tE)).
 
 (* The server's check before it adds a device to the account. *)
 let server =

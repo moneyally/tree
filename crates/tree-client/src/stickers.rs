@@ -14,8 +14,12 @@
 //! emoji too, which older apps and chats with `chat.stickers` released show.
 //!
 //! On this device: installed packs `stickerpack/<manifest id>`, manifests
-//! seen `stickermanifest/<id>`, cached images `stickerimg/<id>/<index>`,
-//! pack references learned from messages `stickerref/<id>`.
+//! seen `stickermanifest/<id>/<sha256>` (the raw manifest, checked against
+//! the hash on read), cached images `stickerimg/<id>/<index>` (checked
+//! against the item's hash on read), the pack reference that opened the
+//! manifest `stickerref/<id>`, and references named by messages but not
+//! tried yet `stickercand/<id>` (F-029: a message never replaces a
+//! reference that works, so a member cannot break another pack).
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -34,6 +38,13 @@ pub const MAX_MANIFEST_BYTES: u64 = 256 * 1024;
 /// Pack title, item name (characters).
 pub const MAX_TITLE: usize = 64;
 const LINK_PREFIX: &str = "tree://stickers/";
+/// References kept per pack id until one opens the pack.
+const MAX_CANDIDATES: usize = 8;
+
+/// Where a manifest is cached: by pack id and content hash.
+fn manifest_key(pack: &BlobRef) -> String {
+    format!("stickermanifest/{}/{}", pack.id, pack.pt_sha256)
+}
 
 /// One item of a pack.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -161,33 +172,79 @@ impl Session {
         }
         let manifest = Manifest { v: 1, title: title.trim().to_string(), emoji_pack, items: list };
         manifest.check().map_err(|_| Error::Usage(format!("a pack needs a title of at most {MAX_TITLE} characters")))?;
-        let pack = self.upload_blob(&serde_json::to_vec(&manifest).expect("JSON"))?;
+        let raw = serde_json::to_vec(&manifest).expect("JSON");
+        let pack = self.upload_blob(&raw)?;
         for (n, i) in items.iter().enumerate() {
             self.client.set_app_data(&format!("stickerimg/{}/{n}", pack.id), Some(&i.bytes))?;
         }
-        self.keep_pack(&pack, &manifest, true)?;
+        self.keep_pack(&pack, &raw, &manifest, true)?;
         Ok(StickerPack { id: pack.id.clone(), link: pack_link(&pack), manifest })
     }
 
-    fn keep_pack(&self, pack: &BlobRef, manifest: &Manifest, install: bool) -> Result<(), Error> {
+    /// Keeps a pack whose manifest (`raw`) opened with `pack`: that
+    /// reference becomes the one used for the pack id.
+    fn keep_pack(&self, pack: &BlobRef, raw: &[u8], manifest: &Manifest, install: bool) -> Result<(), Error> {
         self.app_put(&format!("stickerref/{}", pack.id), Some(pack))?;
-        self.app_put(&format!("stickermanifest/{}", pack.id), Some(manifest))?;
+        self.client.set_app_data(&format!("stickercand/{}", pack.id), None)?;
+        self.client.set_app_data(&manifest_key(pack), Some(raw))?;
         if install {
             self.app_put(&format!("stickerpack/{}", pack.id), Some(&Installed { pack: pack.clone(), manifest: manifest.clone() }))?;
         }
         Ok(())
     }
 
-    /// The manifest of a pack: cached, or fetched and checked.
+    /// The manifest of a pack: cached (checked against its hash), or
+    /// fetched and checked.
     fn manifest(&self, pack: &BlobRef) -> Result<Manifest, Error> {
-        if let Some(m) = self.app_get::<Manifest>(&format!("stickermanifest/{}", pack.id))? {
-            return Ok(m);
+        let parse = |b: &[u8]| -> Result<Manifest, Error> {
+            let m: Manifest = serde_json::from_slice(b).map_err(|_| Error::Protocol("sticker pack: damaged manifest".into()))?;
+            m.check()?;
+            Ok(m)
+        };
+        if let Some(raw) = self.client.app_data(&manifest_key(pack))? {
+            if crate::payload::sha256_hex(&raw) == pack.pt_sha256 {
+                return parse(&raw);
+            }
         }
         let bytes = self.download_blob(pack, MAX_MANIFEST_BYTES)?;
-        let m: Manifest = serde_json::from_slice(&bytes).map_err(|_| Error::Protocol("sticker pack: damaged manifest".into()))?;
-        m.check()?;
-        self.keep_pack(pack, &m, false)?;
+        let m = parse(&bytes)?;
+        self.keep_pack(pack, &bytes, &m, false)?;
         Ok(m)
+    }
+
+    /// A reference a message named for a pack: kept as a candidate only
+    /// while no reference for that pack id has worked (at most
+    /// [`MAX_CANDIDATES`], the newest), never replacing one that did.
+    fn note_pack_ref(&self, pack: &BlobRef) -> Result<(), Error> {
+        if self.client.app_data(&format!("stickerref/{}", pack.id))?.is_some() {
+            return Ok(());
+        }
+        let k = format!("stickercand/{}", pack.id);
+        let mut c: Vec<BlobRef> = self.app_get(&k)?.unwrap_or_default();
+        c.retain(|r| r != pack);
+        c.push(pack.clone());
+        if c.len() > MAX_CANDIDATES {
+            c.remove(0);
+        }
+        self.app_put(&k, Some(&c))
+    }
+
+    /// The reference that opens pack `id`: the one that worked before, or
+    /// the newest candidate that does now.
+    fn pack_ref(&self, id: &str) -> Result<(BlobRef, Manifest), Error> {
+        if let Some(r) = self.app_get::<BlobRef>(&format!("stickerref/{id}"))? {
+            let m = self.manifest(&r)?;
+            return Ok((r, m));
+        }
+        let cands: Vec<BlobRef> = self.app_get(&format!("stickercand/{id}"))?.unwrap_or_default();
+        let mut last = Error::Usage("unknown sticker pack".into());
+        for r in cands.iter().rev() {
+            match self.manifest(r) {
+                Ok(m) => return Ok((r.clone(), m)),
+                Err(e) => last = e,
+            }
+        }
+        Err(last)
     }
 
     /// Opens a pack link: fetches the manifest and every image (so the pack
@@ -195,10 +252,12 @@ impl Session {
     pub fn install_sticker_pack(&mut self, link: &str) -> Result<StickerPack, Error> {
         let pack = parse_pack_link(link)?;
         let manifest = self.manifest(&pack)?;
+        // The user chose this link: its reference is the pack's from now on.
+        let raw = self.client.app_data(&manifest_key(&pack))?.unwrap_or_default();
+        self.keep_pack(&pack, &raw, &manifest, true)?;
         for n in 0..manifest.items.len() {
             self.sticker_image(&pack.id, n as u32)?;
         }
-        self.keep_pack(&pack, &manifest, true)?;
         Ok(StickerPack { id: pack.id.clone(), link: pack_link(&pack), manifest })
     }
 
@@ -226,14 +285,14 @@ impl Session {
     /// The image of item `index` of a pack this device knows (installed,
     /// or named by a message it received): cached, or fetched with its key.
     pub fn sticker_image(&self, pack_id: &str, index: u32) -> Result<Vec<u8>, Error> {
+        let (_, m) = self.pack_ref(pack_id)?;
+        let item = m.items.get(index as usize).ok_or_else(|| Error::Protocol("no such sticker in the pack".into()))?;
         let key = format!("stickerimg/{pack_id}/{index}");
         if let Some(b) = self.client.app_data(&key)? {
-            return Ok(b);
+            if crate::payload::sha256_hex(&b) == item.file.pt_sha256 {
+                return Ok(b);
+            }
         }
-        let pack: BlobRef =
-            self.app_get(&format!("stickerref/{pack_id}"))?.ok_or_else(|| Error::Usage("unknown sticker pack".into()))?;
-        let m = self.manifest(&pack)?;
-        let item = m.items.get(index as usize).ok_or_else(|| Error::Protocol("no such sticker in the pack".into()))?;
         let bytes = self.download_blob(&item.file, MAX_STICKER_BYTES)?;
         self.client.set_app_data(&key, Some(&bytes))?;
         Ok(bytes.to_vec())
@@ -292,7 +351,7 @@ impl Session {
         if !self.chat_feature(gid, "chat.stickers")?.0 || st.pack.id.is_empty() || st.pack.id.len() > 64 || st.pack.size > MAX_MANIFEST_BYTES {
             return Ok(None);
         }
-        self.app_put(&format!("stickerref/{}", st.pack.id), Some(&st.pack))?;
+        self.note_pack_ref(&st.pack)?;
         Ok(Some(custom_emoji_key(&st.pack.id, st.index)))
     }
 
@@ -321,7 +380,7 @@ impl Session {
             events.push(Event::Dropped { reason: "duplicate message id".into() });
             return Ok(());
         }
-        self.app_put(&format!("stickerref/{}", pack.id), Some(&pack))?;
+        self.note_pack_ref(&pack)?;
         self.on_new_message(gid, false)?;
         let name = self.names(gid)?.get(&from.to_hex()).cloned();
         let request = self.is_request(gid)?;

@@ -392,16 +392,23 @@ the second half is its own fingerprint and the first the one it holds for the
 contact (`crates/tree-core/src/safety.rs`). About 100 bits per side: a
 substituted key would have to match 30 decimal digits.
 
-Pinning (`tree-client`): the first set of devices learned for an account
-(from a key-package claim, or from a roster inside a group) is trusted as it
-is; any later member id not seen before for that account raises a key-change
-warning (`user.key_change_warning`, permanently on) and clears "verified".
-A new member id that only a group roster claimed (not the server, in a
-key-package claim) stays *unconfirmed* until the user verifies the safety
-number or invites the account: it is warned about but does not count as the
-contact when deciding requests (APP_PROTOCOL.md 5, F-018).
-This is trust on first use; key transparency (stage 4) removes the first-use
-gap. Today a person's side contains only the devices the other side has
+Pinning (`tree-client`): a device is *pinned* for an account only when
+(a) the server named it in a key-package claim this device made (inviting
+the account, or `confirm_contact`), (b) it came with the account data of a
+confirmed device link (8.11), or (c) the user verified a safety number that
+covers it. The first set the server names is pinned as it is (trust on first
+use of the server's answer); any later member id not seen before for that
+account raises a key-change warning (`user.key_change_warning`, permanently
+on) and clears "verified". A member id that only a group roster claimed is
+recorded but stays *unconfirmed*, whether or not the account had pinned
+devices before: it is part of the safety number (so comparing it confirms
+or exposes it), is warned about for a known account, and never counts as
+the contact (requests, `user.group_add`, auto-download, photo visibility:
+APP_PROTOCOL.md 5, F-018, F-021). A contact with no pinned device (added by
+hand or by username link) vouches for nobody. Roster account labels never
+make a device one of this account's own (only `own/members` from a device
+link does), never relabel a member, and do not escape a block (F-022).
+Key transparency (stage 4) removes the first-use gap of (a). Today a person's side contains only the devices the other side has
 seen; with several devices per person (stage 3) the safety number changes
 whenever a device is added, which is the intended warning.
 
@@ -567,9 +574,14 @@ An envelope sealed with `K_{N+1}` that arrives before the commit creating
 this does not normally happen: an accepted commit (and its welcome) is
 inserted into every recipient's mailbox before any message of the new epoch
 can be sent, and mailboxes are delivered in insertion order. As a safety net
-a client SHOULD hold up to 64 such envelopes per group (and per unknown group
-id, for a device waiting for its welcome) for up to 7 days and retry them
-after each merged commit or join **(in progress)**.
+the client holds such envelopes (and envelopes for an unknown group id, for
+a device waiting for its welcome) and retries them after each merged commit
+or join: at most 32 per group id and 256 in all. Anyone who knows the
+device id can send envelopes for made-up group ids, so a full store never
+evicts an older held envelope for a newer one (F-035): when full, envelopes
+held longer than a day go first, and otherwise the new one is dropped.
+Residual: a sender that keeps the store full delays new genuine envelopes
+for unknown groups (they are dropped, not held), never ones already held.
 
 ### 6.8 Padding
 
@@ -848,6 +860,24 @@ States: `queued -> sending -> sent | retry -> sending ... | failed`.
    needs the server; if the server cannot be reached for the tag, the
    encoded payload waits in the outbox and the first attempt that obtains
    the tag seals it, once. The unsealed payload is erased when sealed.
+   **No network inside a receive (F-024).** A received message is handled
+   in one database batch (F-016). Anything its handling sends (a decline's
+   `leave`, a roster, a profile) is sealed and enqueued inside that batch
+   and nothing else: no server call (a chat message that needs a franking
+   tag is enqueued unsealed), and the outbox is driven only after the batch
+   committed (`sync` does it after the mailbox loop). Otherwise a crash
+   after the server took a request but before the batch committed would
+   roll back the keys that sealed it, and the next attempt would seal other
+   bytes with the same keys. Debug builds assert this in every request.
+   **Recipients at send time (F-028).** Every attempt sends to the
+   recipients stored at the seal that are still in the group's roster now:
+   a device removed after the seal gets nothing (and the server stores
+   nothing for it). If the server answers `IDEMPOTENCY_KEY_REUSE` to such a
+   smaller set, an earlier attempt already went out (its answer was lost),
+   and the item is done. Residual: the bytes stay sealed in the epoch of the
+   seal, which the removed member knew; a server that kept and forwarded
+   them could let it read them. Re-sealing would break "seal once" when an
+   earlier attempt did reach the server, so it is not done.
 3. **Idempotency key.** Fixed when the item is sealed:
 
    ```text
@@ -1136,6 +1166,11 @@ changes only once the server agreed). A lookup of a hidden name gets the same
 still gets `409 USERNAME_TAKEN` (the name is reserved, the account is not
 revealed). Non-ASCII names are not supported in v1.
 
+`user.username` (user scope, released by default) is whether the account
+has a @username (F-033): choosing a name applies it; releasing it releases
+the name on the server (`/v1/usernames/release`, which also drops the
+username link) and on the device; applying it without a name is refused.
+
 **Username links and QR codes** (`user.username_link`, user scope,
 released by default; `crates/tree-client/src/links.rs`). Applying it makes a
 16-byte random token and the link `tree://u/<base64url token>`; the QR code
@@ -1148,7 +1183,9 @@ stays. Releasing the setting deletes the link; releasing the @username
 deletes it too (and releases the setting on the device). The link does not
 spell the name, so a reset link cannot be traced back by guessing names. A
 device that opens or scans a link adds the account as a contact the user
-chose. What the server learns: that the account has a link, and which
+chose (it has no pinned device until the server names one in a key-package
+claim or the safety number is verified: 5.4, F-021). What the server
+learns: that the account has a link, and which
 accounts look one up (as for name lookups, 10 rate tokens each).
 
 ### 8.5 Reports with message franking, account suspension
@@ -1259,22 +1296,38 @@ backups keyed from the phrase (stage 3).
 `chat.invite_link` (chat scope, admins; released by default). Code:
 `crates/tree-client/src/invites.rs`, `crates/tree-server/src/invites.rs`.
 
-1. An admin device makes a 16-byte random secret; the link is
-   `tree://join/<base64url secret>`. It registers
-   `SHA-256("tree/invite/v1" || secret)` with a lifetime (1 minute to 30
+1. An admin device makes a 16-byte random secret `T`. The link (version 2,
+   F-025) is
+
+   ```text
+   tree://join/ b64u( 0x02 || T(16) || owner member id(32) || owner account id )
+   proof     = HKDF-SHA-256(ikm = T, salt = none, info = "tree/invite/proof/v2")
+   nonce_key = HKDF-SHA-256(ikm = T, salt = none, info = "tree/invite/nonce-key/v2")
+   ```
+
+   (`crates/tree-core/src/invite.rs`). It registers
+   `SHA-256("tree/invite/v1" || proof)` with a lifetime (1 minute to 30
    days) and a use limit (1 to 10,000), and keeps locally which group the
-   link is for. Making a link applies `chat.invite_link` in the group
-   settings (a commit) if it was released.
-2. A device that opens the link sends the secret and a fresh 16-byte random
-   nonce (`POST /v1/invites/join`, 5 rate tokens). The server checks expiry
-   and uses, counts one use per account, queues a join request (with the
-   nonce) for the owner's device and returns the owner's account id. The
-   joining device remembers (for one day) that the user asked to join,
-   keyed by the nonce, with the owner's account.
-3. The owner's device, on sync, fetches its requests and adds the requester
-   through the normal path (key-package claim, commit, welcome, and a roster
-   naming the nonce; the joiner accepts the group without a request only if
-   the nonce is one it sent to that account, once: F-014, F-018) only if the
+   link is for and `nonce_key`. Making a link applies `chat.invite_link` in
+   the group settings (a commit) if it was released. The owner's account and member id
+   travel inside the link, out of band: the server cannot substitute them.
+2. A device that opens the link makes a fresh 16-byte random nonce, seals
+   it for the link's holder (AES-256-GCM under `nonce_key`, a random 12-byte
+   AEAD nonce, associated data `lp("tree/invite/nonce/v2", joiner account
+   id)`) and sends `proof` and the sealed nonce (`POST /v1/invites/join`, 5
+   rate tokens). The server never sees `T` or the nonce. It checks expiry and
+   uses, counts one use per account, queues a join request (with the sealed
+   nonce) for the owner's device and returns the owner's account id; the
+   joiner stops if that is not the account the link names. The joining
+   device remembers (for one day) that the user asked to join, keyed by the
+   nonce, with the owner's account and member id from the link.
+3. The owner's device, on sync, fetches its requests, opens the sealed
+   nonce (a request whose nonce does not open is handled without one) and
+   adds the requester through the normal path (key-package claim, commit,
+   welcome, and a roster naming the nonce; the joiner accepts the group
+   without a request only if the nonce is one it sent for a link naming that
+   account, the roster's sender is the device the link names, once: F-014,
+   F-018, F-025) only if the
    link is still in its store, the group's settings still apply
    `chat.invite_link`, the device is still an admin, and the requester is not
    blocked. Otherwise it drops the request. Requests are acknowledged
@@ -1288,10 +1341,18 @@ Consent, in both directions (F-018):
   blocked list still applies. The exemption covers exactly one group: the
   one the owner's device adds for that request.
 - **Nobody else can use the exemption.** Everyone who saw a published link
-  knows its secret and hash, so neither identifies the owner. The nonce does:
-  only the owner's device receives it, from the server, with the request. A
-  stranger who claims the owner's account in a roster without the nonce is
-  judged as any stranger (APP_PROTOCOL.md 5).
+  knows its secret, so the secret does not identify the owner. Two things
+  do: the roster must come from the owner's device as the link names it
+  (the MLS-authenticated sender), and must name the nonce, which reaches
+  only the owner's device and only sealed. Before F-025 the owner's account
+  came from the server's answer and the nonce crossed the server in the
+  clear, so a malicious server could name any owner and hand the nonce to
+  that owner's device. A stranger who claims the owner's account in a
+  roster is judged as any stranger (APP_PROTOCOL.md 5).
+- **Version 1 links** (`tree://join/<b64u(T)>`, the bare secret, made by
+  older clients) still work: the joiner sends `T` and no nonce, the owner is
+  only the server's word, and the group arrives in the request inbox (not
+  accepted, not declined by `user.group_add`).
 - **The owner** publishes the link and adds only accounts that asked to
   join through it; nobody is put into a group on the owner's side, so
   `user.group_add` (a setting about being added) has nothing to decide
@@ -1304,8 +1365,9 @@ Consent, in both directions (F-018):
    `chat.invite_link` for the group, which makes every admin device refuse
    requests for its links too.
 
-The server never learns the group: only the hash of the secret, the owner
-account and device, the limits, and which accounts asked. Whoever holds the
+The server never learns the group: only the hash of the proof (version 1:
+of the secret), the owner account and device, the limits, which accounts
+asked, and the sealed nonces. Whoever holds the
 link can ask to join; the limits and the admin's control of the setting
 bound that. The joiner sees the members once it is in (and contacts' key
 changes as usual); it cannot learn anything about the group before. Expired
@@ -1357,36 +1419,58 @@ bytes; the client sends the 32-byte key of 6.13). In the same database
 transaction as the delivery the server keeps the record
 
 ```text
-(sending device id, key) -> request hash, delivered count, day
-request hash = SHA-256( lp("tree/send-request/v1") || lp(body)
-                        || uint32 n || lp(r_1) ... lp(r_n) )
+(sending device id, key) -> key_id || tag, delivered count, day
+tag = HMAC-SHA-256( K_day, lp("tree/send-request/v2") || lp(body)
+                           || uint32 n || lp(r_1) ... lp(r_n) )
 ```
 
 with `r_1 ... r_n` the recipient ids sorted and de-duplicated (`lp` as in
-6.13), and applies, before anything is delivered:
+6.13). `K_day` is 32 random bytes the server makes for each UTC day on
+first use and holds **only in memory** (never in the database, a log or a
+backup), identified by a random 8-byte `key_id`; it is forgotten once the
+day after its day has passed. The server applies, before anything is
+delivered:
 
 1. no record for (device, key): deliver, store the record;
-2. a record with the same request hash: answer `200` with the stored
-   `delivered` count and `"replayed": true`; nothing is delivered or
-   charged again;
-3. a record with another request hash: `409 IDEMPOTENCY_KEY_REUSE`; nothing
-   is delivered.
+2. a record whose tag equals the tag of this request under the record's
+   key (constant-time compare): answer `200` with the stored `delivered`
+   count and `"replayed": true`; nothing is delivered or charged again;
+3. a record with another tag: `409 IDEMPOTENCY_KEY_REUSE`; nothing is
+   delivered;
+4. a record whose key the server no longer holds (it restarted): it cannot
+   be compared, and is answered as in 2 (the client's key already hashes
+   the body, 6.13, so this is a retry of the same request).
 
 The lookup and the delivery are one `BEGIN IMMEDIATE` transaction, so
 concurrent copies of one request deliver once. Keys are scoped per sending
 device: the same key bytes from another device are another record.
 Duplicate recipient ids in one request are delivered once (they always were).
 
-Metadata. The record is new metadata: the server keeps, for up to the
-message TTL (30 days), that a device sent a keyed message on a given day,
-with a hash of the request. It does not keep the body, the recipients, the
-message id or the time of day; the replayed answer therefore has empty
-`unknown_devices` / `full_devices` (keeping them would link sender and
-recipients). Once the body is acknowledged and erased, the request hash
-cannot be checked against anything. Records are deleted by the purge task
-after the message TTL, with their device, and beyond `MAX_IDEMPOTENCY_KEYS`
-(default 10,000) per device the oldest are dropped at once, so they cannot
-grow without bound; a client retries within minutes, far inside both.
+Metadata (F-023). The record is new metadata: the server keeps, for one to
+two days, that a device sent a keyed message on a given day. It does not
+keep the body, the recipients, the message id or the time of day; the
+replayed answer therefore has empty `unknown_devices` / `full_devices`.
+Before F-023 the record held a plain SHA-256 of the request, so anyone with
+a copy of the database could recompute it for every stored body (`blobs`)
+and its recipients (`deliveries`) and so learn which device sent which
+message, for as long as the body was stored (up to 30 days). Now:
+
+- a copy of the database (a backup, a seized disk) cannot join a record to
+  a message: the tag needs `K_day`, which is never written down;
+- what remains: the running server process (or whoever can read its
+  memory) can, while `K_day` is held (at most two days), recompute the tag
+  of each stored body for each sending device's records and so link a
+  sender to a message. That process sees the authenticated sender of every
+  request as it arrives anyway; Tree's claim is about what is stored;
+- after `K_day` is forgotten its records are useless and the purge task
+  deletes them (records of days before yesterday; records in the old
+  format at once). Records also go with their device, and beyond
+  `MAX_IDEMPOTENCY_KEYS` (default 10,000) per device the oldest are dropped
+  at once.
+
+A client retries within minutes, far inside the lifetime. A retry after the
+record is gone is delivered again; receivers drop the second copy (its MLS
+keys are used up), so a late duplicate costs only mailbox space.
 
 ### 8.11 Device linking with a two-sided code
 
@@ -1403,17 +1487,23 @@ Notation: `lp(a, b, ...)` is each input preceded by its length as a 4-byte
 big-endian number, concatenated. Every hash and signature input starts with
 its own label. `b64u` is base64url without padding.
 
-**Invitation (N shows it; QR code or text).** N makes its request-signing
-key `auth_N` (Ed25519), an HPKE key pair `hpke_N` (X25519, from a 32-byte
-random seed by RFC 9180 DeriveKeyPair), a random 16-byte `link_id` and a
-secret 32-byte `nonce`, and shows
+**Invitation (N shows it; QR code or text).** N creates its encrypted
+profile first (it holds N's MLS identity, member id `member_N`, 5.2) and
+makes its key packages **before** anything is shown: 8 one-time ones, then
+its last-resort one (`kp_1 ... kp_9`, exactly 9). It makes its
+request-signing key `auth_N` (Ed25519), an HPKE key pair `hpke_N` (X25519,
+from a 32-byte random seed by RFC 9180 DeriveKeyPair), a random 16-byte
+`link_id` and a secret 32-byte `nonce`, and shows
 
 ```text
-tree://link/ b64u( 0x01 || link_id(16) || auth_N(32) || hpke_N(32) || commit(32) )
-commit = SHA-256(lp("tree/link/commit/v1", nonce))
+tree://link/ b64u( 0x02 || link_id(16) || auth_N(32) || hpke_N(32)
+                   || member_N(32) || commit(32) )
+kp_digest = SHA-256(lp("tree/link/key-packages/v1", kp_1, ..., kp_9))
+commit    = SHA-256(lp("tree/link/commit/v2", nonce, kp_digest))
 ```
 
-N also creates its encrypted profile now (it holds N's MLS identity).
+Version 1 invitations (commitment over the nonce only) are refused: a link
+lives 10 minutes, so none needs to keep working.
 
 **Offer (E → N, relayed).** E reads the invitation and makes a fresh HPKE
 key pair `hpke_E` (X25519). It opens a link session (`POST /v1/links`,
@@ -1422,19 +1512,26 @@ authenticated as E) with `link_id`, `auth_N` and the offer, JSON:
 b64u(hpke_E)}` (`member_id`: E's MLS member id, hex).
 
 **Reveal (N → E, relayed).** Only after it fetched the offer, N reveals:
-`{nonce: b64u, key_packages: [b64u ...]}` with 8 one-time MLS key packages
-and its last-resort key package last (at most 9). Requests of N carry no
+`{nonce: b64u, key_packages: [b64u ...]}` with exactly the 9 key packages
+it committed to, in the committed order (8 one-time, the last-resort one
+last). Requests of N carry no
 device id and are signed with `auth_N` exactly as in 8.1; the server checks
 them against the `auth_N` E registered for the session.
 
-**Transcript and code (each device computes its own).** E first checks
-`SHA-256(lp("tree/link/commit/v1", nonce)) = commit` and that all key
-packages name one member; on failure it cancels.
+**Transcript and code (each device computes its own).** Before it shows
+any code, E checks (and otherwise cancels, showing nothing):
+
+- `SHA-256(lp("tree/link/commit/v2", nonce, kp_digest)) = commit`, with
+  `kp_digest` over the revealed list in the order received (constant-time
+  compare);
+- exactly 9 key packages, no two equal, each a valid MLS key package
+  (signature, ciphersuite, basic credential equal to the signature key, as
+  for any add), each naming `member_N` from the invitation, only the last
+  one marked last-resort.
 
 ```text
-kp_digest = SHA-256(lp("tree/link/key-packages/v1", kp_1, ..., kp_n))
-H = SHA-256(lp("tree/link/transcript/v1", link_id, auth_N, hpke_N, commit,
-               account_id, device_id_E, member_id_E, auth_E, hpke_E,
+H = SHA-256(lp("tree/link/transcript/v2", link_id, auth_N, hpke_N, member_N,
+               commit, account_id, device_id_E, member_id_E, auth_E, hpke_E,
                nonce, kp_digest))
 d = SHA-256(lp("tree/link/code/v1", H))
 code = (first 8 bytes of d as a big-endian u64) mod 1 000 000, shown "123 456"
@@ -1442,15 +1539,35 @@ code = (first 8 bytes of d as a big-endian u64) mod 1 000 000, shown "123 456"
 
 The server relays every message but never computes or chooses the code; it
 cannot, as N's inputs to H come from the invitation (out of band) and E's
-check of the nonce against `commit` binds the reveal.
+check of the reveal against `commit` binds everything N reveals.
 
 **Why a commitment.** A six-digit code alone could be ground: a relay that
-replaces `hpke_E` toward N could try a million keys until N's code equals
-E's. Here everything the relay could change toward N (the offer) must be
-fixed before N reveals `nonce`, and toward E it cannot change the nonce
-(the commitment came out of band). So a relay that changed anything sees
-matching codes with probability 10^-6, once: a link id is used once. This
-is the usual commit-then-reveal short authentication string.
+can still choose any input of one side's transcript after it knows all the
+others can try a million values until that side's code equals the other's.
+Commit-then-reveal holds only if every input the relay can influence is
+either fixed out of band or fixed before the other side reveals. Every
+field, toward each device:
+
+| Field | Toward | Relay can change it? | Why that gives no grinding |
+| --- | --- | --- | --- |
+| `link_id`, `auth_N`, `hpke_N`, `member_N`, `commit` | E | no | invitation, out of band (QR code) |
+| offer: `account_id`, `device_id_E`, `member_id_E`, `auth_E`, `hpke_E` | N | yes (any offer of its own) | N takes one offer, once, and only then reveals: the relay fixes it without knowing `nonce`, so N's H is unpredictable to it |
+| offer | E | no | E uses its own offer, not a relayed copy |
+| reveal: `nonce` | E | no | in `commit` |
+| reveal: key packages (content, order, count, repeats) | E | no | in `commit` through `kp_digest` (F-020: in version 1 they were not, and reordering N's own 9 key packages gave about 9^9 transcripts to search) |
+| extra JSON fields in offer or reveal | both | yes | ignored; not in H |
+| N's `H` and confirmation signature | E | only to something E refuses | E compares with its own H and verifies with `auth_N` from the invitation |
+| sealed account data | N | only to something N refuses | HPKE Auth from the `hpke_E` of the offer N saw, `info` = N's H |
+| `device_id` of N (server reply to N and E) | both | yes | assigned by the server, not in H; a wrong id only misroutes N's own mailbox, which the server controls anyway |
+| state (`offered`, `confirmed`, `linked`, ...) | both | yes | only timing; each device acts on its own H and checks |
+
+So a relay that changed anything sees matching codes with probability
+10^-6, once: a link id is used once. `formal/device_link.pv` models the
+code with grinding equations for the two inputs a relay could still choose
+(key packages toward E, an offer field toward N) and proves the properties;
+its negative controls find the attack when the key packages are not
+committed (`device_link_kp_uncommitted.pv`) and when N reveals before the
+offer (`device_link_reveal_first.pv`).
 
 **Confirmation.** When its person confirms, N signs
 `lp("tree/link/confirm/v1", link_id, H)` with `auth_N` and posts it with
@@ -1501,7 +1618,7 @@ acknowledges it, on cancel, and on expiry; rows are purged an hour after
 expiry. `POST /v1/devices` (adding a device with an existing device's
 signature alone) is gone (`410 LINK_REQUIRED`).
 
-**What the server sees.** The link id, `auth_N`, the offer (account and
+**What the server sees.** The link id, `auth_N`, `member_N`, the offer (account and
 device id, member id, public keys), the reveal (nonce, N's key packages),
 `H`, both signatures, the size of the sealed account data, timing, and that
 the account gained a device. It does not see the account data, cannot
@@ -1536,10 +1653,17 @@ exist.
 Rules: only signed requests of registered devices are relayed, each costs
 rate tokens; a search is 1 to 100 characters and returns at most 50 results;
 only URLs the provider itself returned are fetched, through opaque ids kept
-in memory for an hour; https only, no credentials in URLs, no IP literals
-or localhost, no redirects, a 10 s timeout, answers only `image/*` or
-`video/*` (tiles: `image/*`) of at most `RELAY_MAX_BYTES` (8 MiB). Nothing
-is stored: answers are fetched and passed on.
+in memory for an hour (at most 1,000 per device, whose own oldest go first,
+and 50,000 in all, oldest first: F-032); https only, no credentials in URLs,
+no IP literals or localhost, no redirects, no proxy, a 10 s timeout, answers
+only `image/*` or `video/*` (tiles: `image/*`) of at most `RELAY_MAX_BYTES`
+(8 MiB). Host names are resolved by the relay itself and only public
+addresses are used, and the connection goes to exactly those (F-027):
+loopback, private, link-local (cloud metadata), carrier-grade NAT,
+unique-local, multicast, documentation and reserved ranges are refused,
+also inside IPv4-mapped, IPv4-compatible, NAT64 and 6to4 IPv6 addresses, so
+a provider result naming an internal host, or DNS rebinding, reaches
+nothing inside. Nothing is stored: answers are fetched and passed on.
 
 The provider contract (an operator runs an adapter for whatever service it
 uses): `GET <GIF_PROVIDER_URL>?q=<words>&limit=<n>` with `Accept:

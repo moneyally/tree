@@ -149,6 +149,15 @@ impl Api {
         c: &Creds,
         recipients: &[String],
         body: &[u8],
+    ) -> Result<Reply, ClientError> {
+        self.send_with_idempotency(c, recipients, body, None)
+    }
+
+    pub fn send_with_idempotency(
+        &self,
+        c: &Creds,
+        recipients: &[String],
+        body: &[u8],
         idempotency_key: Option<&[u8; 16]>,
     ) -> Result<Reply, ClientError> {
         let request = json!({

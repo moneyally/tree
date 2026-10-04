@@ -28,6 +28,8 @@ enum Command {
     Signup(SignupArgs),
     /// Upload fresh one-time MLS key packages.
     UploadKeys(UploadKeysArgs),
+    /// Revoke every unused one-time MLS key package on the server.
+    RevokeKeys(NetworkArgs),
     /// Print local/server identity information.
     Info(ProfileArgs),
     /// Generate and persist a 24-word recovery phrase locally.
@@ -525,6 +527,22 @@ async fn upload_keys(args: UploadKeysArgs) -> Result<()> {
     Ok(())
 }
 
+async fn revoke_keys(args: NetworkArgs) -> Result<()> {
+    let client = open_profile(&args.profile, &args.passphrase)?;
+    let api = Api::new(&args.server)?;
+    let (status, body) = api
+        .signed(&client, Method::DELETE, "/v1/keypackages", None)
+        .await?;
+    if !status.is_success() {
+        bail!("key package revocation failed ({status}): {body}");
+    }
+    println!(
+        "revoked={}",
+        body.get("revoked").and_then(Value::as_u64).unwrap_or(0)
+    );
+    Ok(())
+}
+
 async fn recovery_generate(args: ProfileArgs) -> Result<()> {
     let client = open_profile(&args.profile, &args.passphrase)?;
     if client.recovery_phrase()?.is_some() {
@@ -907,6 +925,7 @@ async fn main() -> Result<()> {
         Command::Init(args) => init(args).await,
         Command::Signup(args) => signup(args).await,
         Command::UploadKeys(args) => upload_keys(args).await,
+        Command::RevokeKeys(args) => revoke_keys(args).await,
         Command::Info(args) => info(args).await,
         Command::RecoveryGenerate(args) => recovery_generate(args).await,
         Command::RecoverySetup(args) => recovery_setup(args).await,

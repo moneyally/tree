@@ -315,3 +315,32 @@ Issues found by testing Tree's own design. Each one has a regression test.
 - **Test:** `crates/tree-client/tests/feature_switches.rs`,
   `a_pending_release_is_reported_until_the_server_drops_the_key`,
   `locked_keys_and_bad_options_in_settings_rejected`, `options_are_validated`.
+
+## F-020: a relay could grind the device-link code through the key packages (fixed)
+
+- **Found:** 2026-10-04, security review of wave 2.
+- **What:** the device-link invitation committed to the nonce only. The new
+  device's key packages travelled in the reveal and entered the transcript,
+  but nothing bound them, so a relay that had seen the reveal could serve
+  the existing device the same nonce with N's own key packages reordered or
+  repeated (about 9^9 lists, any number from 1 to 9 accepted) and search,
+  in milliseconds, for one whose code equals the code the new device shows
+  for an offer of the relay's own. The person then saw equal codes, the new
+  device joined the relay's account and trusted its device as its own.
+- **Severity:** high (defeats the code comparison toward the new device).
+- **Fix:** invitation version 2: the new device makes its key packages
+  before showing the invitation, which carries its member id and commits to
+  `SHA-256(lp("tree/link/commit/v2", nonce, kp_digest))`. The existing
+  device shows no code unless the reveal matches the commitment and the key
+  packages are exactly 9, distinct, valid, all naming the invitation's
+  member id, with only the last one last-resort. PROTOCOL.md 8.11 lists
+  every field a relay could change toward either device and why none can
+  be ground. The ProVerif model now has the key packages and grinding
+  equations for the code; negative controls find the attack without the
+  key-package commitment and when the reveal comes first.
+- **Test:** `link::tests::a_relay_cannot_grind_the_reveal_after_seeing_it`
+  (over 20,000 reorderings, repeats, substitutions, removals and additions:
+  all refused before a code exists; the old commitment accepted every
+  reordering), `link::tests::key_packages_are_checked_one_by_one`,
+  `a_reordered_repeated_or_substituted_key_package_list_is_refused`
+  (through a real server), `formal/device_link_kp_uncommitted.pv`.

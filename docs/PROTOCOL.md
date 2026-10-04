@@ -1403,17 +1403,23 @@ Notation: `lp(a, b, ...)` is each input preceded by its length as a 4-byte
 big-endian number, concatenated. Every hash and signature input starts with
 its own label. `b64u` is base64url without padding.
 
-**Invitation (N shows it; QR code or text).** N makes its request-signing
-key `auth_N` (Ed25519), an HPKE key pair `hpke_N` (X25519, from a 32-byte
-random seed by RFC 9180 DeriveKeyPair), a random 16-byte `link_id` and a
-secret 32-byte `nonce`, and shows
+**Invitation (N shows it; QR code or text).** N creates its encrypted
+profile first (it holds N's MLS identity, member id `member_N`, 5.2) and
+makes its key packages **before** anything is shown: 8 one-time ones, then
+its last-resort one (`kp_1 ... kp_9`, exactly 9). It makes its
+request-signing key `auth_N` (Ed25519), an HPKE key pair `hpke_N` (X25519,
+from a 32-byte random seed by RFC 9180 DeriveKeyPair), a random 16-byte
+`link_id` and a secret 32-byte `nonce`, and shows
 
 ```text
-tree://link/ b64u( 0x01 || link_id(16) || auth_N(32) || hpke_N(32) || commit(32) )
-commit = SHA-256(lp("tree/link/commit/v1", nonce))
+tree://link/ b64u( 0x02 || link_id(16) || auth_N(32) || hpke_N(32)
+                   || member_N(32) || commit(32) )
+kp_digest = SHA-256(lp("tree/link/key-packages/v1", kp_1, ..., kp_9))
+commit    = SHA-256(lp("tree/link/commit/v2", nonce, kp_digest))
 ```
 
-N also creates its encrypted profile now (it holds N's MLS identity).
+Version 1 invitations (commitment over the nonce only) are refused: a link
+lives 10 minutes, so none needs to keep working.
 
 **Offer (E → N, relayed).** E reads the invitation and makes a fresh HPKE
 key pair `hpke_E` (X25519). It opens a link session (`POST /v1/links`,
@@ -1422,19 +1428,26 @@ authenticated as E) with `link_id`, `auth_N` and the offer, JSON:
 b64u(hpke_E)}` (`member_id`: E's MLS member id, hex).
 
 **Reveal (N → E, relayed).** Only after it fetched the offer, N reveals:
-`{nonce: b64u, key_packages: [b64u ...]}` with 8 one-time MLS key packages
-and its last-resort key package last (at most 9). Requests of N carry no
+`{nonce: b64u, key_packages: [b64u ...]}` with exactly the 9 key packages
+it committed to, in the committed order (8 one-time, the last-resort one
+last). Requests of N carry no
 device id and are signed with `auth_N` exactly as in 8.1; the server checks
 them against the `auth_N` E registered for the session.
 
-**Transcript and code (each device computes its own).** E first checks
-`SHA-256(lp("tree/link/commit/v1", nonce)) = commit` and that all key
-packages name one member; on failure it cancels.
+**Transcript and code (each device computes its own).** Before it shows
+any code, E checks (and otherwise cancels, showing nothing):
+
+- `SHA-256(lp("tree/link/commit/v2", nonce, kp_digest)) = commit`, with
+  `kp_digest` over the revealed list in the order received (constant-time
+  compare);
+- exactly 9 key packages, no two equal, each a valid MLS key package
+  (signature, ciphersuite, basic credential equal to the signature key, as
+  for any add), each naming `member_N` from the invitation, only the last
+  one marked last-resort.
 
 ```text
-kp_digest = SHA-256(lp("tree/link/key-packages/v1", kp_1, ..., kp_n))
-H = SHA-256(lp("tree/link/transcript/v1", link_id, auth_N, hpke_N, commit,
-               account_id, device_id_E, member_id_E, auth_E, hpke_E,
+H = SHA-256(lp("tree/link/transcript/v2", link_id, auth_N, hpke_N, member_N,
+               commit, account_id, device_id_E, member_id_E, auth_E, hpke_E,
                nonce, kp_digest))
 d = SHA-256(lp("tree/link/code/v1", H))
 code = (first 8 bytes of d as a big-endian u64) mod 1 000 000, shown "123 456"
@@ -1442,15 +1455,35 @@ code = (first 8 bytes of d as a big-endian u64) mod 1 000 000, shown "123 456"
 
 The server relays every message but never computes or chooses the code; it
 cannot, as N's inputs to H come from the invitation (out of band) and E's
-check of the nonce against `commit` binds the reveal.
+check of the reveal against `commit` binds everything N reveals.
 
 **Why a commitment.** A six-digit code alone could be ground: a relay that
-replaces `hpke_E` toward N could try a million keys until N's code equals
-E's. Here everything the relay could change toward N (the offer) must be
-fixed before N reveals `nonce`, and toward E it cannot change the nonce
-(the commitment came out of band). So a relay that changed anything sees
-matching codes with probability 10^-6, once: a link id is used once. This
-is the usual commit-then-reveal short authentication string.
+can still choose any input of one side's transcript after it knows all the
+others can try a million values until that side's code equals the other's.
+Commit-then-reveal holds only if every input the relay can influence is
+either fixed out of band or fixed before the other side reveals. Every
+field, toward each device:
+
+| Field | Toward | Relay can change it? | Why that gives no grinding |
+| --- | --- | --- | --- |
+| `link_id`, `auth_N`, `hpke_N`, `member_N`, `commit` | E | no | invitation, out of band (QR code) |
+| offer: `account_id`, `device_id_E`, `member_id_E`, `auth_E`, `hpke_E` | N | yes (any offer of its own) | N takes one offer, once, and only then reveals: the relay fixes it without knowing `nonce`, so N's H is unpredictable to it |
+| offer | E | no | E uses its own offer, not a relayed copy |
+| reveal: `nonce` | E | no | in `commit` |
+| reveal: key packages (content, order, count, repeats) | E | no | in `commit` through `kp_digest` (F-020: in version 1 they were not, and reordering N's own 9 key packages gave about 9^9 transcripts to search) |
+| extra JSON fields in offer or reveal | both | yes | ignored; not in H |
+| N's `H` and confirmation signature | E | only to something E refuses | E compares with its own H and verifies with `auth_N` from the invitation |
+| sealed account data | N | only to something N refuses | HPKE Auth from the `hpke_E` of the offer N saw, `info` = N's H |
+| `device_id` of N (server reply to N and E) | both | yes | assigned by the server, not in H; a wrong id only misroutes N's own mailbox, which the server controls anyway |
+| state (`offered`, `confirmed`, `linked`, ...) | both | yes | only timing; each device acts on its own H and checks |
+
+So a relay that changed anything sees matching codes with probability
+10^-6, once: a link id is used once. `formal/device_link.pv` models the
+code with grinding equations for the two inputs a relay could still choose
+(key packages toward E, an offer field toward N) and proves the properties;
+its negative controls find the attack when the key packages are not
+committed (`device_link_kp_uncommitted.pv`) and when N reveals before the
+offer (`device_link_reveal_first.pv`).
 
 **Confirmation.** When its person confirms, N signs
 `lp("tree/link/confirm/v1", link_id, H)` with `auth_N` and posts it with
@@ -1501,7 +1534,7 @@ acknowledges it, on cancel, and on expiry; rows are purged an hour after
 expiry. `POST /v1/devices` (adding a device with an existing device's
 signature alone) is gone (`410 LINK_REQUIRED`).
 
-**What the server sees.** The link id, `auth_N`, the offer (account and
+**What the server sees.** The link id, `auth_N`, `member_N`, the offer (account and
 device id, member id, public keys), the reveal (nonce, N's key packages),
 `H`, both signatures, the size of the sealed account data, timing, and that
 the account gained a device. It does not see the account data, cannot

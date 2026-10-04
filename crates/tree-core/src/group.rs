@@ -691,7 +691,7 @@ fn settings_extensions_ok(ext: &Extensions<GroupContext>) -> bool {
 
 /// Tree credentials carry nothing but the signature key (F-009): any other
 /// content would be readable by the server in key packages.
-fn credential_is_key(leaf: &LeafNode) -> bool {
+pub(crate) fn credential_is_key(leaf: &LeafNode) -> bool {
     leaf.credential().credential_type() == CredentialType::Basic
         && leaf.credential().serialized_content() == leaf.signature_key().as_slice()
 }

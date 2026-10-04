@@ -155,6 +155,45 @@ fn a_swapped_reveal_breaks_the_commitment() {
     assert_eq!(alice.devices().unwrap().len(), 1);
 }
 
+/// F-020: the key packages are committed in the invitation. A server that
+/// reorders, repeats or substitutes them after the reveal (to steer the
+/// existing device's code toward the one the new device shows for an offer
+/// of its own) gets the link cancelled before any code is shown.
+#[test]
+fn a_reordered_repeated_or_substituted_key_package_list_is_refused() {
+    let tamper: [(&str, fn(&mut Vec<serde_json::Value>, serde_json::Value)); 4] = [
+        ("swap", |k, _| k.swap(0, 1)),
+        ("repeat", |k, _| k[1] = k[0].clone()),
+        ("substitute", |k, other| k[2] = other),
+        ("drop", |k, _| {
+            k.remove(3);
+        }),
+    ];
+    for (what, f) in tamper {
+        let env = Env::new(&format!("link-kps-{what}"));
+        let (mut alice, _bob, _g) = setup(&env);
+        // Another device's valid key package, for the substitution.
+        let other = tree_core::Client::new("other").unwrap();
+        let foreign = json!(tree_core::link::b64url(&other.key_package().unwrap()));
+        let mut nd = start(&env, "alice-desktop");
+        let text = nd.link();
+        alice.scan_link(&text).unwrap();
+        assert!(matches!(nd.poll().unwrap(), LinkStatus::Code { .. }));
+        let id = link_id(&text);
+        let reveal = env.sql_blob("SELECT reveal FROM link_sessions WHERE link_id = ?", &id).unwrap();
+        let mut v: serde_json::Value = serde_json::from_slice(&reveal).unwrap();
+        let mut kps = v["key_packages"].as_array().unwrap().clone();
+        assert_eq!(kps.len(), 9, "8 one-time key packages and the last-resort one");
+        f(&mut kps, foreign);
+        v["key_packages"] = json!(kps);
+        env.sql_set_blob("UPDATE link_sessions SET reveal = ? WHERE link_id = ?", &serde_json::to_vec(&v).unwrap(), &id);
+        let st = alice.link_status().unwrap();
+        assert!(matches!(&st, LinkStatus::Cancelled { reason } if reason.contains("does not match")), "{what}: {st:?}");
+        assert!(matches!(nd.poll().unwrap(), LinkStatus::Cancelled { .. }), "{what}");
+        assert_eq!(alice.devices().unwrap().len(), 1, "{what}");
+    }
+}
+
 #[test]
 fn refusing_on_either_device_links_nothing() {
     let env = Env::new("link-refuse");

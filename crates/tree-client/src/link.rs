@@ -87,14 +87,14 @@ fn remove_profile(path: &str) {
     }
 }
 
-/// The member id all key packages of a reveal share (one device).
-fn member_of(kps: &[Vec<u8>]) -> Result<MemberId, Error> {
-    let mut ids = kps.iter().map(|k| MemberId::of_key_package(k)).collect::<Result<Vec<_>, _>>()?;
-    ids.dedup();
-    match ids.as_slice() {
-        [one] => Ok(*one),
-        _ => Err(Error::Protocol("the new device's key packages name different members".into())),
-    }
+/// The new device's checks of a reveal, on the existing device: the
+/// commitment (inside [`core::transcript_hash`]), then every key package
+/// (exactly 9, no repeats, valid, naming the invitation's member id, the
+/// last-resort one last). Returns the transcript hash.
+fn check_reveal(client: &Client<StoredProvider>, inv: &Invitation, offer: &Offer, reveal: &Reveal) -> Result<[u8; 32], Error> {
+    let h = core::transcript_hash(inv, offer, reveal)?;
+    core::check_key_packages(inv, &reveal.key_packages()?, |k| client.check_key_package(k).map(|(m, lr)| (*m.as_bytes(), lr)))?;
+    Ok(h)
 }
 
 /// A new device while it is being linked. Its encrypted profile exists
@@ -126,8 +126,24 @@ impl NewDevice {
         getrandom::getrandom(&mut seed[..]).map_err(protocol)?;
         let key = SigningKey::from_bytes(&seed);
         let client = Client::create(path, passphrase, name)?;
+        // The key packages are made before the invitation is shown, and the
+        // invitation commits to them (F-020): nothing revealed later can be
+        // changed by the relay.
+        let made = (|| -> Result<NewDeviceLink, Error> {
+            let mut kps = (0..LINK_KEY_PACKAGES).map(|_| client.key_package()).collect::<Result<Vec<_>, _>>()?;
+            kps.push(client.last_resort_key_package()?);
+            Ok(NewDeviceLink::new(key.verifying_key().to_bytes(), *client.member_id().as_bytes(), kps)?)
+        })();
+        let link = match made {
+            Ok(l) => l,
+            Err(e) => {
+                drop(client);
+                remove_profile(path);
+                return Err(e);
+            }
+        };
         Ok(Self {
-            link: NewDeviceLink::new(key.verifying_key().to_bytes()),
+            link,
             api,
             key,
             seed,
@@ -190,10 +206,10 @@ impl NewDevice {
     fn on_offer(&mut self, v: &Value) -> Result<(), Error> {
         let raw = unb64(v["offer"].as_str().unwrap_or(""))?;
         let offer: Offer = serde_json::from_slice(&raw).map_err(|_| Error::Protocol("damaged link offer".into()))?;
-        let client = self.client.as_ref().ok_or_else(|| Error::Usage("link closed".into()))?;
-        let mut kps = (0..LINK_KEY_PACKAGES).map(|_| client.key_package()).collect::<Result<Vec<_>, _>>()?;
-        kps.push(client.last_resort_key_package()?);
-        let reveal = self.link.reveal(&kps);
+        if self.client.is_none() {
+            return Err(Error::Usage("link closed".into()));
+        }
+        let reveal = self.link.reveal();
         let hash = core::transcript_hash(&self.link.invitation, &offer, &reveal)?;
         self.step(json!({ "action": "reveal", "reveal": b64(&serde_json::to_vec(&reveal).expect("JSON")) }))?;
         self.status = LinkStatus::Code { code: core::code(&hash) };
@@ -352,15 +368,13 @@ impl Session {
                 Ok(r) => r,
                 Err(_) => return Ok(self.end_link("damaged reply from the new device")),
             };
-            let checked = core::transcript_hash(&l.inv, &l.offer, &reveal)
-                .map_err(Error::from)
-                .and_then(|h| member_of(&reveal.key_packages()?).map(|_| h));
-            match checked {
+            // No code is shown unless the whole reveal is the committed one.
+            match check_reveal(&self.client, &l.inv, &l.offer, &reveal) {
                 Ok(h) => {
                     l.hash = Some(h);
                     l.reveal = Some(reveal);
                 }
-                // A nonce that misses the commitment: someone in the middle.
+                // A reveal that misses the commitment: someone in the middle.
                 Err(_) => return Ok(self.end_link("the new device's reply does not match its link: nothing was linked")),
             }
         }
@@ -415,7 +429,7 @@ impl Session {
         let v = ok(reply)?;
         let device_id = v["device_id"].as_str().ok_or_else(|| Error::Protocol("server reply lacks device_id".into()))?.to_string();
         let kps = l.reveal.as_ref().expect("revealed").key_packages()?;
-        let member = member_of(&kps)?;
+        let member = MemberId(l.inv.member_id);
         self.add_own_member(&member)?;
         let missed_groups = self.add_linked_device(&device_id, member, &kps)?;
         Ok(LinkStatus::Linked { device_id, missed_groups })

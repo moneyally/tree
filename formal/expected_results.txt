@@ -9,12 +9,28 @@ RESULT event(NLinked(kN_2,a_1,d_1)) ==> event(ESent(a_1,kN_2,d_1)) is true.
 RESULT event(EAuthorised(a_1,kN_2,t_3)) ==> event(NConfirmed(kN_2,t_3)) is true.
 RESULT event(DeviceAdded(a_1,kN_2)) ==> event(EAuthorised(a_1,kN_2,t_3)) && event(NConfirmed(kN_2,t_3)) is true.
 RESULT not attacker(accountData[]) is true.
+RESULT event(EAddsKeyPackages(kN_2,k)) ==> event(NCommitted(kN_2,k)) is true.
+RESULT not event(NLinkedHonest) is false.
+== device_link_kp_uncommitted.pv
+RESULT event(NLinked(kN_2,a_1,d_1)) ==> event(ESent(a_1,kN_2,d_1)) is false.
+RESULT event(EAuthorised(a_1,kN_2,t_3)) ==> event(NConfirmed(kN_2,t_3)) is true.
+RESULT event(DeviceAdded(a_1,kN_2)) ==> event(EAuthorised(a_1,kN_2,t_3)) && event(NConfirmed(kN_2,t_3)) is true.
+RESULT not attacker(accountData[]) is true.
+RESULT event(EAddsKeyPackages(kN_2,k)) ==> event(NCommitted(kN_2,k)) is true.
 RESULT not event(NLinkedHonest) is false.
 == device_link_no_code.pv
 RESULT event(NLinked(kN_2,a_1,d_1)) ==> event(ESent(a_1,kN_2,d_1)) is false.
 RESULT event(EAuthorised(a_1,kN_2,t_3)) ==> event(NConfirmed(kN_2,t_3)) is true.
 RESULT event(DeviceAdded(a_1,kN_2)) ==> event(EAuthorised(a_1,kN_2,t_3)) && event(NConfirmed(kN_2,t_3)) is true.
 RESULT not attacker(accountData[]) is true.
+RESULT event(EAddsKeyPackages(kN_2,k)) ==> event(NCommitted(kN_2,k)) is true.
+RESULT not event(NLinkedHonest) is false.
+== device_link_reveal_first.pv
+RESULT event(NLinked(kN_2,a_1,d_1)) ==> event(ESent(a_1,kN_2,d_1)) is false.
+RESULT event(EAuthorised(a_1,kN_2,t_3)) ==> event(NConfirmed(kN_2,t_3)) is true.
+RESULT event(DeviceAdded(a_1,kN_2)) ==> event(EAuthorised(a_1,kN_2,t_3)) && event(NConfirmed(kN_2,t_3)) is true.
+RESULT not attacker(accountData[]) is true.
+RESULT event(EAddsKeyPackages(kN_2,k)) ==> event(NCommitted(kN_2,k)) is true.
 RESULT not event(NLinkedHonest) is false.
 == envelope_seal.pv
 RESULT event(Accepted(g_1,es_5,m_4)) ==> event(Sealed(g_1,es_5,m_4)) || event(Leaked(g_1,es_5)) is true.

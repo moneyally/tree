@@ -254,6 +254,24 @@ impl<P: TreeProvider> Client<P> {
         })
     }
 
+    /// Checks someone else's key package as [`crate::Group::add`] would
+    /// (signature, ciphersuite, basic credential equal to the signature
+    /// key) and returns the member id it names and whether it is marked
+    /// last-resort.
+    pub fn check_key_package(&self, key_package: &[u8]) -> Result<(MemberId, bool), TreeError> {
+        let kp = KeyPackageIn::tls_deserialize_exact(key_package)
+            .map_err(|e| TreeError::Malformed(format!("{e:?}")))?
+            .validate(self.provider.crypto(), ProtocolVersion::Mls10)
+            .map_err(|e| TreeError::InvalidKeyPackage(format!("{e:?}")))?;
+        if kp.ciphersuite() != self.ciphersuite {
+            return Err(TreeError::InvalidKeyPackage("ciphersuite mismatch".into()));
+        }
+        if !crate::group::credential_is_key(kp.leaf_node()) {
+            return Err(TreeError::InvalidKeyPackage("credential must be the signature key (F-009)".into()));
+        }
+        Ok((MemberId::of(kp.leaf_node().signature_key().as_slice()), kp.last_resort()))
+    }
+
     /// Deletes the private part of one of this device's key packages (given
     /// as published), so a welcome made from it can no longer be opened.
     pub fn forget_key_package(&self, key_package: &[u8]) -> Result<(), TreeError> {

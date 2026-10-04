@@ -109,11 +109,7 @@ pub trait TreeProvider: OpenMlsProvider {
         Ok(())
     }
 
-    fn mark_outbox_failed(
-        &self,
-        _local_id: [u8; 16],
-        _error_code: &str,
-    ) -> Result<(), TreeError> {
+    fn mark_outbox_failed(&self, _local_id: [u8; 16], _error_code: &str) -> Result<(), TreeError> {
         Ok(())
     }
 

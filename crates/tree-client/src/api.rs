@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::{b64, Error as ClientError};
+use crate::Error as ClientError;
 
 #[derive(Clone)]
 pub struct Creds {

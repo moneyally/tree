@@ -79,8 +79,11 @@ class DeviceSafety internal constructor(private val model: AppModel) {
      * `user.app_lock` to `pin`.
      */
     suspend fun enablePin(path: String, passphrase: String, pin: String, deviceSecret: ByteArray?): Boolean {
-        if (!model.setFeature("user.app_lock", true, "pin")) return false
-        return guarded { uniffi.tree_ffi.enablePinUnlock(path, passphrase, pin, deviceSecret) } != null
+        guarded { uniffi.tree_ffi.enablePinUnlock(path, passphrase, pin, deviceSecret) } ?: return false
+        // After the PIN file exists: choosing another option would wipe it.
+        if (model.setFeature("user.app_lock", true, "pin")) return true
+        guarded { uniffi.tree_ffi.disablePinUnlock(path) }
+        return false
     }
 
     /** Back to the passphrase (the PIN file is wiped). */

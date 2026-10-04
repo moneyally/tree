@@ -1049,8 +1049,11 @@ impl Session {
         // Live locations due for an update, profile photos and per-chat
         // profiles the groups should have (`rich_media.rs`).
         self.rich_sync()?;
-        // Settings changed here go to the account's other devices (`self_sync.rs`).
-        self.push_settings()?;
+        // Settings changed here go to the account's other devices
+        // (`self_sync.rs`); a refusal must not stop the rest of the sync.
+        if let Err(e) = self.push_settings() {
+            events.push(Event::Dropped { reason: format!("settings sync: {e}") });
+        }
         events.extend(self.send_pending()?);
         Ok(events)
     }

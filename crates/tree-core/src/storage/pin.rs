@@ -242,6 +242,9 @@ pub(crate) fn verified_key(db: &Path, passphrase: &Passphrase) -> Result<DbKey, 
 /// Turns PIN unlock off: the PIN file is overwritten and deleted. The
 /// passphrase is unaffected. Idempotent.
 pub fn disable_pin(db: &Path) -> Result<(), TreeError> {
+    let mut tmp = pin_path(db).into_os_string();
+    tmp.push(".tmp");
+    wipe(Path::new(&tmp))?;
     wipe(&pin_path(db))
 }
 

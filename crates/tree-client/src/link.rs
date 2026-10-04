@@ -401,7 +401,8 @@ impl Session {
         // any other group; changes made here so far go to the devices
         // already in it (`self_sync.rs`).
         self.ensure_self_group()?;
-        self.push_settings()?;
+        // A refused send must not stop the link; the next sync retries.
+        let _ = self.push_settings();
         let l = self.link.as_ref().expect("open");
         let hash = l.hash.expect("set");
         let theirs = v["transcript_hash"].as_str().map(unb64).transpose()?.unwrap_or_default();

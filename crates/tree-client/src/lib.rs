@@ -6,10 +6,7 @@
 
 mod api;
 
-use std::{
-    collections::BTreeMap,
-    path::Path,
-};
+use std::{collections::BTreeMap, path::Path};
 
 use base64::Engine;
 use ed25519_dalek::SigningKey;
@@ -86,11 +83,7 @@ impl Session {
     }
 
     /// Opens a previously registered encrypted profile.
-    pub fn open(
-        path: impl AsRef<Path>,
-        passphrase: &str,
-        server: &str,
-    ) -> Result<Self, Error> {
+    pub fn open(path: impl AsRef<Path>, passphrase: &str, server: &str) -> Result<Self, Error> {
         let client = Client::open(path, passphrase)?;
         let seed = client
             .server_auth_seed()?
@@ -148,7 +141,10 @@ impl Session {
         let group = self.client.create_group()?;
         let gid = group.id();
         let mut roster = BTreeMap::new();
-        roster.insert(self.client.member_id().to_hex(), self.device_id().to_string());
+        roster.insert(
+            self.client.member_id().to_hex(),
+            self.device_id().to_string(),
+        );
         self.save_roster(&gid, &roster)?;
         Ok(gid)
     }
@@ -211,8 +207,9 @@ impl Session {
         gid: &[u8],
         seconds: u32,
     ) -> Result<CommitOutcome, Error> {
-        let pending =
-            self.with_group(gid, |group| group.set_disappearing_seconds(&self.client, seconds))?;
+        let pending = self.with_group(gid, |group| {
+            group.set_disappearing_seconds(&self.client, seconds)
+        })?;
         self.submit_pending(gid, pending, BTreeMap::new(), BTreeMap::new())
     }
 
@@ -267,13 +264,19 @@ impl Session {
         for (server_id, body) in messages {
             match Group::peek_group_id(&body) {
                 Ok(gid) => {
-                    let incoming = self.with_group(&gid, |group| group.receive(&self.client, &body))?;
+                    let incoming =
+                        self.with_group(&gid, |group| group.receive(&self.client, &body))?;
                     if matches!(incoming, Incoming::HeldForRetry { .. }) {
                         held.push((server_id, gid));
                     } else {
                         ack.push(server_id.clone());
                     }
-                    if let Incoming::Message { from, name, ref body } = incoming {
+                    if let Incoming::Message {
+                        from,
+                        name,
+                        ref body,
+                    } = incoming
+                    {
                         let entry = HistoryEntry {
                             group_id: hex::encode(&gid),
                             from: from.to_hex(),

@@ -161,7 +161,8 @@ fn a_swapped_reveal_breaks_the_commitment() {
 /// of its own) gets the link cancelled before any code is shown.
 #[test]
 fn a_reordered_repeated_or_substituted_key_package_list_is_refused() {
-    let tamper: [(&str, fn(&mut Vec<serde_json::Value>, serde_json::Value)); 4] = [
+    type Tamper = fn(&mut Vec<serde_json::Value>, serde_json::Value);
+    let tamper: [(&str, Tamper); 4] = [
         ("swap", |k, _| k.swap(0, 1)),
         ("repeat", |k, _| k[1] = k[0].clone()),
         ("substitute", |k, other| k[2] = other),

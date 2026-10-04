@@ -289,7 +289,8 @@ Issues found by testing Tree's own design. Each one has a regression test.
   request; only the owner's device gets it from the server and names it in
   the roster. Residual: trust on first use. A device that claims an account
   the user has no pinned device for (a contact added by hand, or none) is
-  taken as that account; key transparency (stage 4) closes this.
+  taken as that account; key transparency (stage 4) closes this. (Closed
+  for roster claims by F-021: they never pin; F-025 binds the link owner.)
 - **Test:** `requests::tests::a_device_claiming_a_contacts_account_is_a_stranger`,
   `requests::tests::a_public_link_does_not_let_others_pull_the_joiner_in`.
 

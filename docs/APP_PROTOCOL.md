@@ -180,7 +180,11 @@ user verified. A device that only a roster claimed is *unconfirmed*, also
 when the account has no pinned device at all (a contact added by hand or by
 username link vouches for nobody, F-021). Otherwise the adder is judged as a
 stranger, and for an account this device already knew the key-change
-warning is shown (F-018). Accepting a request does not pin the adder.
+warning is shown (F-018). Accepting a request (`Session::accept_request`)
+does not pin the adder's device. The apps' accept (FFI `accept_request`) and
+add-by-link also ask the server for the account's devices (`confirm_contact`,
+a key-package claim) and pin those: if the adding device only claimed the
+account, the account's real devices are pinned, not it.
 
 Account labels (`accounts/<group>`, from rosters) are claims, never trust
 (F-022). A label is taken only for a current member other than this device;

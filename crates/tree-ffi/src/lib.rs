@@ -1220,8 +1220,23 @@ impl TreeSession {
         Ok(self.s().unblock(&account)?)
     }
 
+    /// Accepts a request; the adder's account becomes a contact and the
+    /// devices the server names for that account now are pinned (a
+    /// key-package claim, best effort). A device that only claimed the
+    /// account stays unconfirmed (F-021): if it was not the account's, the
+    /// account's real devices are pinned, not it.
     pub fn accept_request(&self, group: String) -> R<()> {
-        Ok(self.s().accept_request(&unhex(&group, "group")?)?)
+        let gid = unhex(&group, "group")?;
+        let mut s = self.s();
+        let from = match s.group_status(&gid)? {
+            tree_client::GroupStatus::Request { from } => from,
+            _ => None,
+        };
+        s.accept_request(&gid)?;
+        if let Some(a) = from {
+            let _ = s.confirm_contact(&a);
+        }
+        Ok(())
     }
 
     pub fn decline_request(&self, group: String, block: bool) -> R<()> {

@@ -48,11 +48,11 @@ in section 5.
 | Encrypted device storage (SQLCipher, hardware-wrapped key) | partial | SQLCipher + Argon2id done; hardware key (Secure Enclave / Keystore) needs the apps (`KeySource` is the hook) |
 | Feature registry: apply/release for every feature, permanent locks, layers | done | `features.rs`; server, chat, user, bot layers; `LOCKED_BY_CHAT` |
 | All 34 stage-1 feature keys in the registry | partial | 34 of 34; all stage-1 keys are present in the registry |
-| Behaviour behind the keys (disappearing timer, edit window, view once, ...) | missing | the registry stores the setting; nothing acts on it yet. Chat settings must live in the MLS group context (design: the server never knows them) |
+| Behaviour behind the keys (disappearing timer, edit window, view once, ...) | partial | media view-once/timer is implemented in `media.rs`; the remaining message-level edit/disappearing enforcement is still client/UI work. Chat settings remain MLS state. |
 | Recovery phrase (24 words, 256-bit entropy) | partial | `recovery.rs`: BIP-39 phrase + HKDF-derived recovery key; encrypted local persistence; server recovery API. UI confirmation/screenshot protections and external review still missing |
 | Safety number / QR comparison, key change warning | partial | per-device safety fingerprint helper exists; multi-device/person format remains Q4; UI/pinning not built |
 | Device link with confirmation code on both devices | missing | permanent lock in the registry, no code (multi-device is stage 3) |
-| Per-file encryption for attachments | missing | |
+| Per-file encryption for attachments | done | `media.rs`: per-file key, encrypted manifest, AES-256-GCM chunks, preview key derivation, key commitment, lifecycle state machine; `docs/MEDIA.md` |
 | Message franking for reports | missing | |
 | Admin roles inside the group (admins, kick) | missing | today any member may add or remove (PROTOCOL.md 6.4) |
 | Invite links with expiry / use count | missing | |
@@ -76,7 +76,7 @@ in section 5.
 | Message request inbox for strangers, blocking | partial | server request/accept/reject + block/unblock APIs; client UI and message delivery policy integration remain |
 | Report service (reporter's device submits) | partial | opaque MLS application envelope transport + evidence hash; message franking not implemented |
 | Spam limits for new accounts | partial | per-device rate limits and signup limits exist; no new-account sending limit |
-| File service (encrypted blobs only) | missing | |
+| File service (encrypted blobs only) | done | legacy opaque file endpoint plus Stage 1C resumable `/v1/media` chunk service; encrypted manifest/ciphertext only |
 | Push relay without content | missing | |
 | Docker Compose + Caddy TLS, one region | partial | files in `deploy/`; never deployed (HANDOFF 3.5) |
 | Stateless, partitionable by user-id hash | partial | the server keeps a replay cache and rate limits in memory (Q7) |
@@ -85,7 +85,7 @@ in section 5.
 
 | Requirement | Status | Note |
 | --- | --- | --- |
-| Command-line client through the server | partial | `crates/tree-cli`: signup, key packages, groups, send/receive/ack, roster and recovery flows; CI/local compile not yet verified |
+| Command-line client through the server | partial | `crates/tree-cli`: signup, key packages, groups, send/receive/ack, roster/recovery plus Messenger Core media APIs; UI is not built |
 | UniFFI bindings | missing | |
 | Android app (Kotlin + Compose Multiplatform) | missing | |
 | Desktop app (same code) | missing | |
@@ -164,7 +164,7 @@ Each needs the owner's confirmation; the reasons are in PROTOCOL.md.
 6. Group administration in the MLS group context: admins, kick, invite
    links, chat settings that devices enforce (disappearing, edit window,
    media, ...), the four missing stage-1 keys.
-6. Files: per-file key-committing encryption + encrypted blob service.
+6. **Stage 1C Files/media: implemented.** Per-file key-committing encryption, encrypted manifest, chunked encrypted blob service, preview, view-once/timer lifecycle, zeroizing buffers and multi-device consumption event. Remaining UI rendering is app-layer work.
 7. HANDOFF 3.5 deploy to the owner's server; push relay.
 8. UniFFI bindings, then Android, desktop, iOS apps with registry-driven
    settings, Korean and English, terms screens.

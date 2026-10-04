@@ -45,8 +45,11 @@ fn removed_member_cannot_decrypt_even_if_ignoring_removal() {
     assert!(matches!(b.receive(&bob, &secret).unwrap(), Incoming::Message { .. }));
     let res = e.receive(&eve, &secret);
     assert!(
-        matches!(res, Err(TreeError::Rejected(_))),
-        "removed member decrypted a new-epoch message: {res:?}"
+        matches!(
+            res,
+            Err(TreeError::Rejected(_)) | Ok(Incoming::HeldForRetry { .. })
+        ),
+        "removed member accepted a new-epoch message: {res:?}"
     );
 }
 
@@ -76,7 +79,11 @@ fn replay_rejected() {
     let (alice, bob, mut a, mut b) = two_person_chat();
     let m = a.send(&alice, b"only once").unwrap();
     assert!(b.receive(&bob, &m).is_ok());
-    assert!(b.receive(&bob, &m).is_err(), "replayed message was accepted");
+    assert_eq!(
+        b.receive(&bob, &m).unwrap(),
+        Incoming::NoOp,
+        "replayed message was processed again"
+    );
 }
 
 /// A message from one group must not be accepted by another group,

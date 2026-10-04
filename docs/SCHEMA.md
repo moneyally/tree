@@ -224,27 +224,6 @@ This makes group membership (as device ids) visible in the database; the
 server already sees it through recipient lists (PROTOCOL.md 11). A group's
 rows are deleted by the purge task once none of its devices exists.
 
-### 2.8 Idempotent sends (migration `0011_idempotency.sql`, PROTOCOL.md 8.10)
-
-```sql
-CREATE TABLE idempotency_keys (
-    seq          INTEGER PRIMARY KEY AUTOINCREMENT,      -- age order for the per-device cap
-    device_id    TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,  -- sending device
-    key          BLOB NOT NULL,                          -- 16..64 bytes chosen by the device
-    request_hash BLOB NOT NULL,                          -- SHA-256 over body and sorted recipients
-    delivered    INTEGER NOT NULL,                       -- the first answer's count
-    created_day  INTEGER NOT NULL,                       -- day only
-    UNIQUE (device_id, key)
-);
-CREATE INDEX idempotency_keys_device ON idempotency_keys(device_id, seq);
-CREATE INDEX idempotency_keys_day ON idempotency_keys(created_day);
-```
-
-No recipients, body, message id or time of day. Deleted by the purge task
-once the whole day is older than `MESSAGE_TTL_SECS`, with the device, and
-beyond `MAX_IDEMPOTENCY_KEYS` per device (oldest first). Migration number
-`0010` is left free on purpose.
-
 ### 2.2 Usernames (migration `0003_usernames.sql`)
 
 ```sql
@@ -266,32 +245,6 @@ The ciphertext itself is a file named by the id in `ATTACHMENT_DIR`. Deleted
 with the row after the mailbox TTL. `size` is the padded blob size
 (PROTOCOL.md 6.12).
 
-### 2.9 Uploads (migration `0014_uploads.sql`, PROTOCOL.md 6.12)
-
-```sql
-CREATE TABLE uploads (
-    id         TEXT PRIMARY KEY,               -- becomes the attachment id
-    device_id  TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
-    size       INTEGER NOT NULL,               -- declared blob size
-    received   INTEGER NOT NULL DEFAULT 0,     -- parts received, in order
-    created_at INTEGER NOT NULL                -- minute
-);
-CREATE INDEX uploads_created ON uploads(created_at);
-CREATE TABLE upload_quota (
-    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-    day        INTEGER NOT NULL,
-    bytes      INTEGER NOT NULL,
-    PRIMARY KEY (account_id, day)
-);
-```
-
-Parts are written to `.<id>.part` in `ATTACHMENT_DIR` at `index ·
-UPLOAD_CHUNK_BYTES`. With the last part the file is renamed to `<id>`, the
-`uploads` row deleted and an `attachments` row made (no uploader). The purge
-deletes uploads older than 24 hours with their partial files, partial files
-whose upload row is gone (device deleted), and quota rows of past days.
-Numbers `0012` and `0013` are reserved for other branches.
-
 ### 2.4 Reports (migration `0005_reports.sql`, PROTOCOL.md 8.5)
 
 ```sql
@@ -309,13 +262,16 @@ CREATE TABLE suspensions (account_id TEXT PRIMARY KEY, since_day INTEGER NOT NUL
 
 `server_secrets` is a secret: back it up with the database, never log it.
 
-### 2.7 Push (migration `0008_push.sql`, PROTOCOL.md 8.8)
+### 2.5 Recovery (migration `0006_recovery.sql`, PROTOCOL.md 8.6)
 
 ```sql
-CREATE TABLE push_endpoints (
-    device_id TEXT PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
-    endpoint  TEXT NOT NULL,     -- URL at an allowed gateway host
-    set_day   INTEGER NOT NULL
+CREATE TABLE account_recovery (
+    account_id   TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+    recovery_pub   BLOB UNIQUE,          -- Ed25519 public key from the phrase; NULL = none
+    set_day        INTEGER NOT NULL,
+    pending_action TEXT,                 -- 'replace' | 'release': unsigned change waiting 7 days
+    pending_pub    BLOB,
+    pending_since  INTEGER
 );
 ```
 
@@ -337,33 +293,41 @@ CREATE TABLE invite_requests (
 );
 ```
 
-### 2.5 Recovery (migration `0006_recovery.sql`, PROTOCOL.md 8.6)
+Migration `0010_invite_nonce.sql` adds `invite_requests.nonce` (BLOB, 16
+random bytes from the joining device, returned only to the link owner's
+device; NULL from older clients; PROTOCOL.md 8.7).
+
+### 2.7 Push (migration `0008_push.sql`, PROTOCOL.md 8.8)
 
 ```sql
-CREATE TABLE account_recovery (
-    account_id   TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
-    recovery_pub   BLOB UNIQUE,          -- Ed25519 public key from the phrase; NULL = none
-    set_day        INTEGER NOT NULL,
-    pending_action TEXT,                 -- 'replace' | 'release': unsigned change waiting 7 days
-    pending_pub    BLOB,
-    pending_since  INTEGER
+CREATE TABLE push_endpoints (
+    device_id TEXT PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
+    endpoint  TEXT NOT NULL,     -- URL at an allowed gateway host
+    set_day   INTEGER NOT NULL
 );
 ```
 
-### 2.9 Username links (migration `0013_username_links.sql`, PROTOCOL.md 8.4)
+### 2.8 Idempotent sends (migration `0011_idempotency.sql`, PROTOCOL.md 8.10)
 
 ```sql
-CREATE TABLE username_links (
-    account_id  TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
-    hash        BLOB NOT NULL UNIQUE,        -- SHA-256("tree/ulink/v1" || token)
-    created_day INTEGER NOT NULL
+CREATE TABLE idempotency_keys (
+    seq          INTEGER PRIMARY KEY AUTOINCREMENT,      -- age order for the per-device cap
+    device_id    TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,  -- sending device
+    key          BLOB NOT NULL,                          -- 16..64 bytes chosen by the device
+    request_hash BLOB NOT NULL,                          -- SHA-256 over body and sorted recipients
+    delivered    INTEGER NOT NULL,                       -- the first answer's count
+    created_day  INTEGER NOT NULL,                       -- day only
+    UNIQUE (device_id, key)
 );
+CREATE INDEX idempotency_keys_device ON idempotency_keys(device_id, seq);
+CREATE INDEX idempotency_keys_day ON idempotency_keys(created_day);
 ```
 
-One link per account; a reset replaces the row. Deleted with the account
-and when the account releases its @username.
+No recipients, body, message id or time of day. Deleted by the purge task
+once the whole day is older than `MESSAGE_TTL_SECS`, with the device, and
+beyond `MAX_IDEMPOTENCY_KEYS` per device (oldest first).
 
-### 2.10 Device links (migration `0012_device_links.sql`, PROTOCOL.md 8.11)
+### 2.9 Device links (migration `0012_device_links.sql`, PROTOCOL.md 8.11)
 
 ```sql
 CREATE TABLE link_sessions (
@@ -388,3 +352,42 @@ for the purge. Relayed data is cleared when the session expires, is
 cancelled, or the new device acknowledges it; rows are deleted one hour after
 expiry. On the devices, the linked device ids learned through links are kept
 in app data `own/members` (member ids, hex) of each device's profile.
+
+### 2.10 Username links (migration `0013_username_links.sql`, PROTOCOL.md 8.4)
+
+```sql
+CREATE TABLE username_links (
+    account_id  TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+    hash        BLOB NOT NULL UNIQUE,        -- SHA-256("tree/ulink/v1" || token)
+    created_day INTEGER NOT NULL
+);
+```
+
+One link per account; a reset replaces the row. Deleted with the account
+and when the account releases its @username.
+
+### 2.11 Uploads (migration `0014_uploads.sql`, PROTOCOL.md 6.12)
+
+```sql
+CREATE TABLE uploads (
+    id         TEXT PRIMARY KEY,               -- becomes the attachment id
+    device_id  TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    size       INTEGER NOT NULL,               -- declared blob size
+    received   INTEGER NOT NULL DEFAULT 0,     -- parts received, in order
+    created_at INTEGER NOT NULL                -- minute
+);
+CREATE INDEX uploads_created ON uploads(created_at);
+CREATE TABLE upload_quota (
+    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    day        INTEGER NOT NULL,
+    bytes      INTEGER NOT NULL,
+    PRIMARY KEY (account_id, day)
+);
+```
+
+Parts are written to `.<id>.part` in `ATTACHMENT_DIR` at `index ·
+UPLOAD_CHUNK_BYTES`. With the last part the file is renamed to `<id>`, the
+`uploads` row deleted and an `attachments` row made (no uploader). The purge
+deletes uploads older than 24 hours with their partial files, partial files
+whose upload row is gone (device deleted), and quota rows of past days.
+Numbers `0012` and `0013` are reserved for other branches.

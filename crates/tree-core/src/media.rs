@@ -659,6 +659,8 @@ pub const MEDIA_MESSAGE_MAGIC: &[u8] = b"TREEMEDIA\x01";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MediaEnvelope {
+    pub media_id: String,
+    pub capability: [u8; CAP_BYTES],
     pub manifest: MediaManifest,
     pub file_key: MediaKey,
     pub preview: Option<EncryptedChunk>,
@@ -668,12 +670,20 @@ impl MediaEnvelope {
     pub fn file_key_ref(&self) -> &MediaKey { &self.file_key }
 
     pub fn new(
+        media_id: String,
+        capability: [u8; CAP_BYTES],
         manifest: MediaManifest,
         file_key: MediaKey,
         preview: Option<EncryptedChunk>,
     ) -> Result<Self, TreeError> {
-        let expected = manifest.key_commitment(&file_key)?;
-        let _ = expected;
+        if media_id.is_empty()
+            || media_id.len() > 64
+            || !media_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        {
+            return Err(TreeError::FileCrypto("invalid media id".into()));
+        }
         if let Some(p) = &preview {
             if p.index != u32::MAX {
                 return Err(TreeError::FileCrypto("media preview has invalid index".into()));
@@ -687,6 +697,8 @@ impl MediaEnvelope {
         let key_commitment = self.manifest.key_commitment(&self.file_key)?;
         let mut out = Vec::with_capacity(256 + manifest.len());
         out.extend_from_slice(MEDIA_MESSAGE_MAGIC);
+        put_string_u8(&mut out, &self.media_id)?;
+        out.extend_from_slice(&self.capability);
         put_bytes_u16(&mut out, &manifest)?;
         out.extend_from_slice(self.file_key.as_bytes());
         out.extend_from_slice(&key_commitment);
@@ -710,6 +722,8 @@ impl MediaEnvelope {
         if r.take(MEDIA_MESSAGE_MAGIC.len())? != MEDIA_MESSAGE_MAGIC {
             return Err(TreeError::Malformed("not a Tree media message".into()));
         }
+        let media_id = r.string_u8()?;
+        let capability = r.array::<CAP_BYTES>()?;
         let manifest_bytes = r.bytes_u16(MAX_MANIFEST)?;
         let manifest = MediaManifest::decode(&manifest_bytes)?;
         let file_key = MediaKey::from_bytes(r.take(KEY_LEN)?)?;
@@ -734,7 +748,7 @@ impl MediaEnvelope {
         if !r.0.is_empty() {
             return Err(TreeError::Malformed("trailing media message bytes".into()));
         }
-        Self::new(manifest, file_key, preview)
+        Self::new(media_id, capability, manifest, file_key, preview)
     }
 }
 
@@ -888,7 +902,7 @@ mod tests {
     fn manifest_and_media_envelope_round_trip() {
         let (manifest, key) = sample(5, ViewPolicy::ViewOnce);
         let preview = encrypt_preview(&key, &manifest, b"thumb").unwrap();
-        let envelope = MediaEnvelope::new(manifest.clone(), key.clone(), Some(preview)).unwrap();
+        let envelope = MediaEnvelope::new("media123".into(), [8; CAP_BYTES], manifest.clone(), key.clone(), Some(preview)).unwrap();
         let decoded = MediaEnvelope::decode(&envelope.encode().unwrap()).unwrap();
         assert_eq!(decoded.manifest, manifest);
         assert_eq!(decoded.file_key.as_bytes(), key.as_bytes());

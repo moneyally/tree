@@ -965,7 +965,7 @@ impl Group {
                         .members()
                         .map(|m| MemberId::of(&m.signature_key))
                         .collect::<Vec<_>>();
-                    apply_control_state(
+                    let changed = apply_control_state(
                         &mut self.state,
                         control.seq,
                         from,
@@ -984,6 +984,9 @@ impl Group {
                     self.mark_processed(epoch, hash);
                     self.state.future.retain(|p| sha256(&p.bytes) != hash);
                     self.save(me)?;
+                    if !changed {
+                        return Ok(Incoming::NoOp);
+                    }
                     return Ok(Incoming::SettingsChanged {
                         seq: control.seq,
                         title: self.state.title.clone(),
@@ -1557,13 +1560,16 @@ fn apply_control_state(
     author: MemberId,
     control: &Control,
     current_members: &[MemberId],
-) -> Result<(), TreeError> {
+) -> Result<bool, TreeError> {
     match control {
         Control::SetTitle(title) => {
             let tag = (seq, author);
             if state.title_tag.is_none_or(|old| tag > old) {
                 state.title = title.clone();
                 state.title_tag = Some(tag);
+                Ok(true)
+            } else {
+                Ok(false)
             }
         }
         Control::SetDisappearingSeconds(seconds) => {
@@ -1571,6 +1577,9 @@ fn apply_control_state(
             if state.disappearing_tag.is_none_or(|old| tag > old) {
                 state.disappearing_seconds = *seconds;
                 state.disappearing_tag = Some(tag);
+                Ok(true)
+            } else {
+                Ok(false)
             }
         }
         Control::AddAdmin(target) | Control::RemoveAdmin(target) => {
@@ -1584,7 +1593,7 @@ fn apply_control_state(
                 .find(|(id, _, _)| id == target)
                 .is_none_or(|(_, old_seq, old_author)| tag > (*old_seq, *old_author));
             if !newer {
-                return Ok(());
+                return Ok(false);
             }
             if !state.admins.contains(target)
                 && matches!(control, Control::AddAdmin(_))
@@ -1610,9 +1619,9 @@ fn apply_control_state(
                 }
                 _ => unreachable!(),
             }
+            Ok(true)
         }
     }
-    Ok(())
 }
 
 struct ControlReader<'a>(&'a [u8]);

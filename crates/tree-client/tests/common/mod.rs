@@ -17,8 +17,12 @@ pub struct Env {
 }
 
 impl Env {
-    pub
-    fn new(tag: &str) -> Self {
+    pub fn new(tag: &str) -> Self {
+        Self::with(tag, |_| {})
+    }
+
+    /// A server with a changed configuration (e.g. relays with a fake upstream).
+    pub fn with(tag: &str, tweak: impl FnOnce(&mut Config)) -> Self {
         let dir = std::env::temp_dir().join(format!("tree-e2e-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -31,6 +35,8 @@ impl Env {
             admin_token_sha256: Some(sha2::Digest::finalize(<sha2::Sha256 as sha2::Digest>::new_with_prefix(ADMIN_TOKEN)).into()),
             ..Config::default()
         };
+        let mut cfg = cfg;
+        tweak(&mut cfg);
         let rt = tokio::runtime::Runtime::new().unwrap();
         let server = rt.block_on(tree_server::start(cfg)).unwrap();
         // Test accounts are all new; the server's new-account limits are

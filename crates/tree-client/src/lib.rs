@@ -171,11 +171,7 @@ impl Session {
         self.submit_pending(gid, pending, added, Vec::new())
     }
 
-    pub fn remove_members(
-        &self,
-        gid: &[u8],
-        members: &[MemberId],
-    ) -> Result<CommitOutcome, Error> {
+    pub fn remove_members(&self, gid: &[u8], members: &[MemberId]) -> Result<CommitOutcome, Error> {
         let roster = self.roster(gid)?;
         let removed = members.to_vec();
         let pending = self.with_group(gid, |group| group.remove(&self.client, members))?;
@@ -193,11 +189,7 @@ impl Session {
         self.submit_pending(gid, pending, BTreeMap::new(), BTreeMap::new())
     }
 
-    pub fn set_group_name(
-        &self,
-        gid: &[u8],
-        name: Option<&str>,
-    ) -> Result<CommitOutcome, Error> {
+    pub fn set_group_name(&self, gid: &[u8], name: Option<&str>) -> Result<CommitOutcome, Error> {
         let pending = self.with_group(gid, |group| group.set_title(&self.client, name))?;
         self.submit_pending(gid, pending, BTreeMap::new(), BTreeMap::new())
     }

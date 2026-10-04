@@ -226,6 +226,7 @@ async fn authentication_failures() {
     let api = &ts.api;
     let dev = api.signup().await;
     let other = api.signup().await;
+    api.seed_fake_group(&dev, &[&other.device_id]).await;
     let path = "/v1/keypackages/count";
 
     // Baseline works.
@@ -257,8 +258,10 @@ async fn authentication_failures() {
         Some(&body),
     );
     s.sign_body = Some(
-        serde_json::to_vec(&json!({ "recipients": [other.device_id], "body": b64(&app(b"HELLO")) }))
-            .unwrap(),
+        serde_json::to_vec(
+            &json!({ "recipients": [other.device_id], "body": b64(&app(b"HELLO")) }),
+        )
+        .unwrap(),
     );
     let (st, _) = api.send(&s, &dev.key).await;
     assert_eq!(st, StatusCode::UNAUTHORIZED);
@@ -568,6 +571,11 @@ async fn mailbox_fan_out_fetch_and_ack() {
     let bob1 = api.signup().await;
     let bob2 = api.add_device(&bob1).await;
     let carol = api.signup().await;
+    api.seed_fake_group(
+        &alice,
+        &[&bob1.device_id, &bob2.device_id, &carol.device_id],
+    )
+    .await;
 
     let body = b"opaque ciphertext \x00\x01\x02";
     let (st, v) = api
@@ -654,6 +662,7 @@ async fn fetch_pages_with_more_flag() {
     let api = &ts.api;
     let a = api.signup().await;
     let b = api.signup().await;
+    api.seed_fake_group(&a, &[&b.device_id]).await;
     for i in 0..3 {
         api.send_msg(&a, &[&b.device_id], &[i]).await;
     }
@@ -682,6 +691,7 @@ async fn long_poll_wakes_on_new_message() {
     });
     let a = api.signup().await;
     let b = api.signup().await;
+    api.seed_fake_group(&a, &[&b.device_id]).await;
 
     // Empty mailbox: returns after the wait with nothing.
     let t = Instant::now();
@@ -733,6 +743,7 @@ async fn message_size_recipient_and_mailbox_limits() {
     let api = &ts.api;
     let a = api.signup().await;
     let b = api.signup().await;
+    api.seed_fake_group(&a, &[&b.device_id]).await;
 
     // Body size: exactly 256 KiB is accepted, one byte more is not.
     let max = 256 * 1024;
@@ -799,6 +810,7 @@ async fn old_messages_are_purged() {
     let api = &ts.api;
     let a = api.signup().await;
     let b = api.signup().await;
+    api.seed_fake_group(&a, &[&b.device_id]).await;
     api.send_msg(&a, &[&b.device_id], b"old").await;
     let deadline = Instant::now() + Duration::from_secs(10);
     while blob_count(&ts).await > 0 && Instant::now() < deadline {

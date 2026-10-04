@@ -413,6 +413,23 @@ impl Api {
         .await
     }
 
+    /// Creates the fake group roster used by mailbox tests. Production
+    /// requests must establish this roster through the real MLS commit path.
+    pub async fn seed_fake_group(&self, dev: &Device, recipients: &[&str]) {
+        let body = json!({
+            "group_id": b64(&GROUP),
+            "epoch": 0,
+            "recipients": recipients,
+            "body": b64(&commit(&GROUP, 0, b"test-roster")),
+            "added": [],
+            "welcome": null,
+            "removed": []
+        });
+        let _ = self
+            .call(dev, Method::POST, "/v1/commits", Some(body))
+            .await;
+    }
+
     pub async fn fetch(&self, dev: &Device, wait: u64) -> Vec<Value> {
         let path = if wait > 0 {
             format!("/v1/messages?wait={wait}")

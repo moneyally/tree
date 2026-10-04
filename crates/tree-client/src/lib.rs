@@ -358,6 +358,21 @@ impl Session {
         Ok(DownloadedMediaChunk { index, plaintext: SecureMediaBytes::new(plaintext) })
     }
 
+    pub fn download_media_chunk_from_envelope(
+        &self,
+        envelope: &MediaEnvelope,
+        index: u32,
+    ) -> Result<DownloadedMediaChunk, Error> {
+        let capability = b64(&envelope.capability);
+        self.download_media_chunk(
+            &envelope.media_id,
+            &capability,
+            &envelope.manifest,
+            &envelope.file_key,
+            index,
+        )
+    }
+
     pub fn decrypt_media_preview(
         &self,
         envelope: &MediaEnvelope,

@@ -728,8 +728,8 @@ them encode exactly as before.
 
 All of it counts against the same 16 KiB. Measured
 ([BENCHMARKS.md](BENCHMARKS.md)): 16 roles with 150 assignments take about
-13 KB; with 50 restrictions and 50 community chats on top the value no
-longer fits and the change is refused before anything is sent. Entries
+12 KB; with 50 restrictions and 50 community chats on top (19 KB) the value
+no longer fits and the change is refused before anything is sent. Entries
 about members who left stay in the value until the next settings change
 (which drops them) and are ignored when read (`Group::settings`).
 

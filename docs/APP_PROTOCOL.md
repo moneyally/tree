@@ -495,7 +495,9 @@ every admin:
 | `topics` | create, rename, close and reopen topics | the sender and every receiver (`topics.rs`) |
 
 While `chat.roles` is released roles grant nothing and are not shown (they
-stay in the settings). A payload a permission does not cover is dropped by
+stay in the settings). While `chat.member_adds` is released, a member that
+may not add cannot add its own newly linked device either (PROTOCOL.md 8.11:
+the group is reported as missed); an admin adds it. A payload a permission does not cover is dropped by
 every honest receiver; the tests send such payloads with the sending
 device's own checks bypassed (`send_unchecked`) and with raw MLS commits.
 

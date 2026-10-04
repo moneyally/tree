@@ -27,5 +27,12 @@ Compiled into the binary through `rusqlite` (feature
 | SQLite | Public domain |
 | OpenSSL 3 (via openssl-src, MIT/Apache-2.0) | Apache-2.0 |
 
+Kotlin apps (`apps/desktop`, `apps/android`), QR codes:
+
+| Library | License |
+| --- | --- |
+| ZXing core (`com.google.zxing:core` 3.5.4) | Apache-2.0 |
+| CameraX (`androidx.camera:*` 1.4.2, Android only) | Apache-2.0 |
+
 Transitive dependencies are listed in `Cargo.lock`. A generated, complete notice
 file will be added before the first release.

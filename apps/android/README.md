@@ -34,3 +34,18 @@ cloud backup and device transfer (keys never leave the device; recovery
 uses the phrase). None of these were run on a device here (no emulator):
 they compile and the decisions are tested on the desktop.
 Opening a `tree://join/...` link asks to join that group.
+
+QR codes (APP_PROTOCOL.md 6.5): a new phone shows its device link as a QR
+code on the sign-up screen; settings show the username link's QR code and
+open the scanner for "Link a new device" and "Add friend by QR". The
+scanner uses CameraX (`camera-core`, `camera-camera2`, `camera-lifecycle`,
+`camera-view`) for the preview and frames, and ZXing core to decode the
+Y plane on the phone; no platform recognition service. **Camera
+permission** (`android.permission.CAMERA`, camera hardware not required):
+asked at runtime only when a scanner opens, after a Korean/English
+explanation; frames are read in memory and never stored or sent. Denied:
+the screen says so and the link can still be pasted. Only `tree://link/`
+(device link scanner) and `tree://u/` (friend scanner) texts are used;
+anything else shows "not a Tree code" and is never opened. Not run on a
+device here (no emulator); `gradle testDebugUnitTest` runs the frame
+decoding and scan decisions on the JVM.

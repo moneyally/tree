@@ -336,6 +336,51 @@ Honest limits: timestamps are the writers' clocks, so a device whose clock
 is far ahead wins conflicts until the others pass it. Devices linked before
 this change have no self group until the next link.
 
+### 6.5 QR codes (apps; `apps/shared/.../qr`)
+
+The apps show two kinds of QR code and scan the same two kinds, nothing
+else. The QR code's content is **the link text exactly**, byte for byte:
+no extra prefix, no wrapper, no other encoding.
+
+| Code | Content | Shown by | Scanned by |
+| --- | --- | --- | --- |
+| Device link (PROTOCOL.md 8.11) | `tree://link/` + 194 base64url characters (version 2 invitation, 145 bytes) | the new device, while it waits (sign-up screen, "This is a new device — link to my account") | the existing device: Android "Link a new device (scan QR)"; the desktop takes the text pasted (below) |
+| Username link (PROTOCOL.md 8.4) | `tree://u/` + 22 base64url characters (16-byte token) | settings, while `user.username_link` is applied (desktop: "My QR code" dialog; Android: in settings) | Android "Add friend by QR"; both apps also take the text pasted |
+
+Encoding: ISO/IEC 18004 QR code, byte mode (the texts contain lower-case
+letters), error correction level M, a quiet zone of 4 modules, black on
+white whatever the theme; a device link is version 10 (57 modules), a
+username link version 3. Made and read with the ZXing core library in
+shared Kotlin; the apps draw the module matrix themselves.
+
+Scanner rules (`TreeCodes.parse`, `AppModel.useScanned`, Android
+`ScanFrames`):
+
+- Leading and trailing white space is dropped; nothing else is changed.
+  The text must start with `tree://link/` or `tree://u/` (lower case, exact)
+  followed by exactly the right number of base64url characters
+  (`A-Z a-z 0-9 - _`, no padding). Anything else, including web
+  addresses, other schemes, `tree://join/...` and other Tree links, is
+  "not a Tree code": the app says so and does nothing with it (it never
+  opens a URL from a QR code).
+- Each scanner expects one kind: a username link on the device-link
+  scanner (or the reverse) is refused with a message, so scanning on the
+  wrong screen never adds a friend or starts a link by surprise.
+- A device link only starts the exchange: both devices then show the same
+  six digits (large, monospace) with "confirm only while you hold both
+  devices yourself", one "The digits match on both devices" button and one
+  "Different / I did not start this" button, which cancels. A QR code alone
+  never links (`user.device_link_code` stays applied).
+- A username link adds the person as a contact (8.4) and says so.
+- Android reads camera frames with CameraX (preview and image analysis)
+  and decodes the Y plane on the phone with ZXing; no frame is stored or
+  sent, no platform recognition service is used. The camera permission is
+  asked at runtime with an explanation; without it, the paste field
+  works. A code the server refused is not retried for every frame.
+- The desktop app does not scan: Java has no camera API it can rely on
+  across systems, so the existing-device side on a computer pastes the
+  new device's link text (shown under its QR code with a copy button).
+
 ## 7. What the client stores
 
 In the same encrypted database as the core (`tree_app` table, SCHEMA.md):

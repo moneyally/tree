@@ -18,7 +18,11 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import app.tree.shared.qr.CodeKind
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
@@ -65,7 +69,17 @@ private fun SignIn(model: AppModel, profile: String) {
     var name by remember { mutableStateOf("") }
     var pass by remember { mutableStateOf("") }
     var server by remember { mutableStateOf("https://") }
-    Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    val link = model.state.collectAsState().value.link
+    if (!exists && link != null) {
+        // This phone is being linked to an account: its QR code, then the digits.
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(Strings.t("qr_new_device"), style = MaterialTheme.typography.titleLarge)
+            LinkSteps(model, link, newDevice = true)
+            if (link.state == "cancelled") TextButton(onClick = model::closeLink) { Text(Strings.t("qr_close")) }
+        }
+        return
+    }
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(Strings.t("app"), style = MaterialTheme.typography.headlineMedium)
         if (!exists) {
             OutlinedTextField(name, { name = it }, label = { Text(Strings.t("name")) }, singleLine = true)
@@ -81,6 +95,14 @@ private fun SignIn(model: AppModel, profile: String) {
         }) { Text(if (exists) Strings.t("open") else Strings.t("create")) }
         // App lock with a PIN or biometrics (user.app_lock), when set up here.
         if (exists) UnlockOptions(model, profile) { model.startSyncLoop() }
+        if (!exists) {
+            // A second device of an account used on another phone or computer:
+            // this phone shows a QR code that the other device scans.
+            HorizontalDivider()
+            OutlinedButton(onClick = {
+                scope.launch { if (model.startLinkNewDevice(profile, pass, name, server) != null) model.watchLink { model.startSyncLoop() } }
+            }, modifier = Modifier.fillMaxWidth()) { Text(Strings.t("qr_new_device")) }
+        }
     }
 }
 
@@ -88,6 +110,10 @@ private fun SignIn(model: AppModel, profile: String) {
 private fun Home(model: AppModel, state: UiState) {
     val scope = rememberCoroutineScope()
     var tab by remember { mutableStateOf(0) }
+    var scanning by remember { mutableStateOf<CodeKind?>(null) }
+    // A device link in progress takes the whole screen until it ends.
+    state.link?.let { LinkInProgressScreen(model, it); return }
+    scanning?.let { want -> ScanScreen(model, want) { scanning = null }; return }
     val open = state.chats.firstOrNull { it.id == state.open }
     if (open != null) {
         BackHandler { scope.launch { model.openChat(null) } }
@@ -102,7 +128,7 @@ private fun Home(model: AppModel, state: UiState) {
         }
         when (tab) {
             0, 1 -> ChatList(model, state, requests = tab == 1)
-            else -> SettingsScreen(model, state)
+            else -> SettingsScreen(model, state) { scanning = it }
         }
     }
 }
@@ -235,7 +261,7 @@ private fun ChatScreen(model: AppModel, state: UiState, chat: Chat) {
 }
 
 @Composable
-private fun SettingsScreen(model: AppModel, state: UiState) {
+private fun SettingsScreen(model: AppModel, state: UiState, onScan: (CodeKind) -> Unit) {
     val scope = rememberCoroutineScope()
     var phrase by remember { mutableStateOf<String?>(null) }
     var confirmDelete by remember { mutableStateOf(false) }
@@ -258,6 +284,8 @@ private fun SettingsScreen(model: AppModel, state: UiState) {
                 SelectionContainer { Text(it, style = MaterialTheme.typography.titleMedium) }
             }
             TextButton(onClick = { confirmDelete = true }) { Text(Strings.t("delete_account")) }
+            HorizontalDivider(Modifier.padding(vertical = 8.dp))
+            QrSettings(model, onScan)
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
             AppLockSettings(model, state, (LocalContext.current.applicationContext as TreeApplication).profile)
             HorizontalDivider(Modifier.padding(vertical = 8.dp))

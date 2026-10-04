@@ -49,5 +49,16 @@ class ScreenshotTest {
         alice.syncNow()
         alice.openChat(g)
         shot("02-chat", alice)
+
+        // Linking a computer: its QR code, then the digits on both devices.
+        val desk = AppModel(this, Dispatchers.IO)
+        val text = desk.startLinkNewDevice("$dir/desk.db", "pw", "앨리스", url)!!
+        shot("03-link-qr", desk)
+        alice.useScanned(text, app.tree.shared.qr.CodeKind.DEVICE_LINK)
+        desk.pollNewDevice()
+        shot("04-link-code", desk)
+        desk.confirmNewDevice(false)
+        alice.closeLink()
+        alice.stop(); bob.stop()
     }
 }

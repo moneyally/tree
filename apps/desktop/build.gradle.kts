@@ -41,6 +41,8 @@ dependencies {
     implementation(compose.desktop.currentOs)
     implementation(compose.material3)
     implementation("net.java.dev.jna:jna:5.17.0")
+    // QR codes: made and read in shared code (apps/shared/.../qr).
+    implementation("com.google.zxing:core:3.5.4")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.10.2")
     testImplementation(kotlin("test"))
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")

@@ -49,12 +49,17 @@ the owner holds).
    item 10.
 3. **Contacts** — **built** (`claude/chat-basics`; PROTOCOL.md 8.4).
    Username links and QR codes (reset gives a new link, the name stays),
-   QR friend add (add by link), stranger labels in the UI. The desktop app
-   shows the link text; drawing the QR image waits for a QR library in the
-   app builds.
+   QR friend add (add by link), stranger labels in the UI. QR codes:
+   **built** (branch `claude/qr`, APP_PROTOCOL.md 6.5): the username link
+   drawn as a QR code on desktop and Android, "Add friend by QR" with the
+   Android camera, paste on both.
 4. **Device linking with a two-sided code.** Both devices compute the code
    from their own keys and the link transcript; the server never chooses
-   it. QR alone never links. **built** (PROTOCOL.md 8.11)
+   it. QR alone never links. **built** (PROTOCOL.md 8.11). QR parts
+   **built** (branch `claude/qr`): the new device (computer or phone) shows
+   its link as a QR code, an Android phone scans it with the camera (a
+   computer pastes the text), then both show the six digits large with
+   one "match" and one "different / I did not start this".
 5. **Media.** Chunked encrypted upload and download for large files (2 GB
    free limit per design), resumable; thumbnails made by the sender inside
    the encrypted message; images, video, voice notes, files; view-once;

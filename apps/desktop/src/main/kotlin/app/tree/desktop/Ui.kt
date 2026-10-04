@@ -23,7 +23,10 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
@@ -103,7 +106,17 @@ private fun SignIn(model: AppModel) {
     var name by remember { mutableStateOf("") }
     var pass by remember { mutableStateOf("") }
     var server by remember { mutableStateOf(System.getenv("TREE_URL") ?: "https://") }
-    Column(Modifier.padding(32.dp).width(420.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    val link = model.state.collectAsState().value.link
+    if (!exists && link != null) {
+        // This computer is being linked: only the QR code, then the digits.
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(32.dp).width(460.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(Strings.t("qr_new_device"), style = MaterialTheme.typography.titleLarge)
+            LinkPanel(model, newDevice = true)
+            if (link.state == "cancelled") TextButton(onClick = model::closeLink) { Text(Strings.t("qr_close")) }
+        }
+        return
+    }
+    Column(Modifier.verticalScroll(rememberScrollState()).padding(32.dp).width(420.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(Strings.t("app"), style = MaterialTheme.typography.headlineMedium)
         if (!exists) {
             OutlinedTextField(name, { name = it }, label = { Text(Strings.t("name")) }, singleLine = true)
@@ -127,49 +140,12 @@ private fun SignIn(model: AppModel) {
         // App lock with a PIN (user.app_lock = pin): the PIN file opens it.
         if (exists) PinUnlockRow(model, path) { desktopMedia(model); model.startSyncLoop() }
         if (!exists) {
-            // A second device of an existing account: show a link, compare the code.
-            TextButton(onClick = {
+            // A second device of an existing account: show the QR code (and
+            // its text), then compare the digits on both devices.
+            HorizontalDivider()
+            OutlinedButton(onClick = {
                 scope.launch { if (model.startLinkNewDevice(path, pass, name, server) != null) model.watchLink { model.startSyncLoop() } }
-            }) { Text(Strings.t("link_new")) }
-            LinkPanel(model, newDevice = true)
-        }
-    }
-}
-
-/**
- * A device link in progress: the link to show (new device), the code to
- * compare, and the two answers. Nothing links until both devices confirm.
- */
-@Composable
-private fun LinkPanel(model: AppModel, newDevice: Boolean) {
-    val scope = rememberCoroutineScope()
-    val state by model.state.collectAsState()
-    val link = state.link ?: return
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        link.text?.let {
-            Text(Strings.t("link_show"))
-            SelectionContainer { Text(it, style = MaterialTheme.typography.bodySmall) }
-        }
-        when (link.state) {
-            "code" -> {
-                Text(Strings.t("link_code"))
-                Text(link.code ?: "", style = MaterialTheme.typography.headlineMedium)
-                Row {
-                    Button(onClick = {
-                        scope.launch { if (newDevice) model.confirmNewDevice(true) else model.confirmLink(true) }
-                    }) { Text(Strings.t("link_match")) }
-                    Spacer(Modifier.width(8.dp))
-                    TextButton(onClick = {
-                        scope.launch { if (newDevice) model.confirmNewDevice(false) else model.confirmLink(false) }
-                    }) { Text(Strings.t("link_differ")) }
-                }
-            }
-            "confirmed", "waiting" -> {
-                link.code?.let { Text(it, style = MaterialTheme.typography.headlineMedium) }
-                Text(Strings.t("link_wait"))
-            }
-            "linked" -> Text(Strings.t("link_done"))
-            else -> Text(Strings.t("link_cancelled") + (link.reason?.let { ": $it" } ?: ""))
+            }, modifier = Modifier.fillMaxWidth()) { Text(Strings.t("qr_new_device")) }
         }
     }
 }
@@ -515,7 +491,6 @@ private fun Settings(model: AppModel, state: UiState) {
     var phrase by remember { mutableStateOf<String?>(null) }
     var username by remember { mutableStateOf("") }
     var confirmDelete by remember { mutableStateOf(false) }
-    var newLink by remember { mutableStateOf("") }
     remember { scope.launch { model.loadDevices() } }
     if (confirmDelete) {
         AlertDialog(
@@ -533,13 +508,12 @@ private fun Settings(model: AppModel, state: UiState) {
             OutlinedTextField(username, { username = it }, label = { Text(Strings.t("username")) }, singleLine = true)
             TextButton(onClick = { scope.launch { model.setUsername(username) } }) { Text("✓") }
         }
-        // Username link and QR code (user.username_link below turns it on).
-        // The QR image is drawn from this text; until a QR library is part of
-        // the build, the link itself is shown to copy.
+        // Username link and its QR code (user.username_link below turns it on).
         state.usernameLink?.let { l ->
             Text(Strings.t("username_link"), style = MaterialTheme.typography.bodySmall)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 SelectionContainer { Text(l) }
+                UsernameQrButton(model)
                 TextButton(onClick = { scope.launch { model.resetUsernameLink() } }) { Text(Strings.t("reset_link")) }
             }
         }
@@ -556,12 +530,9 @@ private fun Settings(model: AppModel, state: UiState) {
         TextButton(onClick = { confirmDelete = true }) { Text(Strings.t("delete_account")) }
         StorageCleanButton(model, state)
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
-        // Linking a new device: paste its link, compare the code on both.
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            OutlinedTextField(newLink, { newLink = it }, label = { Text(Strings.t("link_scan")) }, singleLine = true)
-            TextButton(onClick = { scope.launch { if (model.scanLink(newLink) != null) { newLink = ""; model.watchLink() } } }) { Text("→") }
-        }
-        LinkPanel(model, newDevice = false)
+        // Linking a new device: paste its link (no camera on a computer),
+        // then compare the digits on both in a dialog.
+        LinkNewDevicePaste(model)
         Text(Strings.t("devices"), style = MaterialTheme.typography.titleSmall)
         state.devices.forEach { d ->
             Row(verticalAlignment = Alignment.CenterVertically) {

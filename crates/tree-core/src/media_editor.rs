@@ -5,6 +5,8 @@
 //! image before the resulting bytes enter the encrypted media pipeline.
 //! No editor operation changes the attachment cryptographic identity.
 
+use serde::{Deserialize, Serialize};
+
 use crate::error::TreeError;
 
 pub const EDITOR_VERSION: u8 = 1;
@@ -12,7 +14,7 @@ pub const MAX_TEXT_LAYERS: usize = 64;
 pub const MAX_DRAW_STROKES: usize = 4096;
 pub const MAX_FILTERS: usize = 16;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Point {
     pub x: f32,
     pub y: f32,
@@ -27,7 +29,7 @@ impl Point {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Rotation {
     Deg0,
     Deg90,
@@ -110,7 +112,7 @@ impl ImageAdjustments {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TextLayer {
     pub text: String,
     /// Position is normalized to the source image [0,1] coordinate space.

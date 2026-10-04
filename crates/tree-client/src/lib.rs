@@ -236,6 +236,7 @@ impl Session {
 
     /// Sends the renderer's final edited bytes. The source bytes never leave
     /// this call; only the final edited plaintext is chunk-encrypted and sent.
+    #[allow(clippy::too_many_arguments)]
     pub fn send_composed_media(
         &self,
         gid: &[u8],
@@ -263,6 +264,7 @@ impl Session {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn send_media(
         &self,
         gid: &[u8],
@@ -287,6 +289,7 @@ impl Session {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn send_media_with_caption(
         &self,
         gid: &[u8],
@@ -313,6 +316,7 @@ impl Session {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn send_media_with_options(
         &self,
         gid: &[u8],

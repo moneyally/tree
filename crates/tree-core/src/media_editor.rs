@@ -145,6 +145,7 @@ impl TextLayer {
 #[derive(Clone, Debug, PartialEq)]
 pub struct DrawStroke {
     pub points: Vec<Point>,
+    pub brush: BrushSettings,
     pub color_rgba: [u8; 4],
     pub width: f32,
     pub opacity: f32,
@@ -152,6 +153,7 @@ pub struct DrawStroke {
 
 impl DrawStroke {
     pub fn validate(&self) -> Result<(), TreeError> {
+        self.brush.validate()?;
         if self.points.is_empty() || self.points.len() > 4096
             || self.width <= 0.0 || !self.width.is_finite()
             || !self.opacity.is_finite() || !(0.0..=1.0).contains(&self.opacity)

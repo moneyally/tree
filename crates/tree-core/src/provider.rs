@@ -83,6 +83,43 @@ pub trait TreeProvider: OpenMlsProvider {
     ) -> Result<(), TreeError> {
         Ok(())
     }
+
+    fn due_outbox(
+        &self,
+        _now: i64,
+        _limit: u32,
+    ) -> Result<Vec<crate::messenger_store::OutboxItem>, TreeError> {
+        Ok(Vec::new())
+    }
+
+    fn mark_outbox_sending(&self, _local_id: [u8; 16], _now: i64) -> Result<bool, TreeError> {
+        Ok(false)
+    }
+
+    fn mark_outbox_sent(&self, _local_id: [u8; 16], _server_id: &str) -> Result<(), TreeError> {
+        Ok(())
+    }
+
+    fn mark_outbox_retry(
+        &self,
+        _local_id: [u8; 16],
+        _error_code: &str,
+        _next_retry_at: i64,
+    ) -> Result<(), TreeError> {
+        Ok(())
+    }
+
+    fn mark_outbox_failed(
+        &self,
+        _local_id: [u8; 16],
+        _error_code: &str,
+    ) -> Result<(), TreeError> {
+        Ok(())
+    }
+
+    fn recover_sending_outbox(&self, _now: i64) -> Result<u32, TreeError> {
+        Ok(0)
+    }
 }
 
 impl TreeProvider for DefaultProvider {}

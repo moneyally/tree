@@ -169,12 +169,23 @@ impl Api {
     }
 
     pub fn fetch(&self, c: &Creds, wait: u64) -> Result<Vec<(String, Vec<u8>)>, ClientError> {
+        Ok(self.fetch_with_cursor(c, wait)?.0)
+    }
+
+    pub fn fetch_with_cursor(
+        &self,
+        c: &Creds,
+        wait: u64,
+    ) -> Result<(Vec<(String, Vec<u8>)>, i64), ClientError> {
         let path = if wait == 0 {
             "/v1/messages".to_string()
         } else {
             format!("/v1/messages?wait={wait}")
         };
         let value = self.call(c, Method::GET, &path, None)?.ok()?;
+        let cursor = value["cursor"]
+            .as_i64()
+            .ok_or_else(|| ClientError::Usage("server returned an invalid inbox cursor".into()))?;
         let mut out = Vec::new();
         for item in value["messages"].as_array().into_iter().flatten() {
             out.push((
@@ -182,7 +193,7 @@ impl Api {
                 unb64(item["body"].as_str().unwrap_or(""))?,
             ));
         }
-        Ok(out)
+        Ok((out, cursor))
     }
 
     pub fn media_init(
@@ -322,14 +333,23 @@ impl Api {
     }
 
     pub fn ack(&self, c: &Creds, ids: &[String]) -> Result<(), ClientError> {
-        if ids.is_empty() {
+        self.ack_with_cursor(c, ids, None)
+    }
+
+    pub fn ack_with_cursor(
+        &self,
+        c: &Creds,
+        ids: &[String],
+        cursor: Option<i64>,
+    ) -> Result<(), ClientError> {
+        if ids.is_empty() && cursor.is_none() {
             return Ok(());
         }
         self.call(
             c,
             Method::POST,
             "/v1/messages/ack",
-            Some(&json!({ "ids": ids })),
+            Some(&json!({ "ids": ids, "cursor": cursor })),
         )?
         .ok()?;
         Ok(())

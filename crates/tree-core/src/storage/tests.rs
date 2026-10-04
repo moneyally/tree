@@ -141,7 +141,6 @@ fn files_on_disk_reveal_nothing() {
     assert_eq!(c.group_ids().unwrap().len(), 1);
 }
 
-
 #[test]
 fn outbox_is_durable_and_restart_recoverable() {
     let dir = TempDir::new("outbox");
@@ -202,7 +201,7 @@ fn outbox_is_durable_and_restart_recoverable() {
         .enqueue_outbox(failed, group, None, 1, envelope, 300)
         .unwrap();
     assert!(c.mark_outbox_sending(failed, 300).unwrap());
-    c.mark_outbox_failed(failed, "PERMANENT",).unwrap();
+    c.mark_outbox_failed(failed, "PERMANENT").unwrap();
     assert!(c.due_outbox(301, 10).unwrap().is_empty());
 }
 

@@ -147,6 +147,7 @@ impl Session {
         if k == DRAFTS && !applied {
             self.delete_drafts()?;
         }
+        self.local_effects(k)?;
         Ok(st)
     }
 

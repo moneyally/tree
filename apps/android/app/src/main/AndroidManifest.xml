@@ -3,7 +3,18 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- Wi-Fi or mobile, for user.auto_download. -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Local notifications after a wake-up (Android 13+ asks the user). -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Biometric app unlock (user.app_lock = bio). -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+    <!-- Finding push distributor apps (open distributor protocol). -->
+    <queries>
+        <intent>
+            <action android:name="org.unifiedpush.android.distributor.REGISTER" />
+        </intent>
+    </queries>
     <application
+        android:name=".TreeApplication"
         android:label="@string/app_name"
         android:allowBackup="false"
         android:dataExtractionRules="@xml/no_backup"
@@ -24,5 +35,16 @@
                 <data android:scheme="tree" android:host="join" />
             </intent-filter>
         </activity>
+        <!-- Push wake-ups: the word "wake" only; the app syncs itself (PROTOCOL.md 8.8). -->
+        <receiver android:name=".PushReceiver" android:exported="true">
+            <intent-filter>
+                <action android:name="org.unifiedpush.android.connector.NEW_ENDPOINT" />
+                <action android:name="org.unifiedpush.android.connector.MESSAGE" />
+                <action android:name="org.unifiedpush.android.connector.UNREGISTERED" />
+                <action android:name="org.unifiedpush.android.connector.REGISTRATION_FAILED" />
+            </intent-filter>
+        </receiver>
+        <!-- Without a push distributor: a periodic check while the profile is open. -->
+        <service android:name=".SyncJob" android:permission="android.permission.BIND_JOB_SERVICE" android:exported="false" />
     </application>
 </manifest>

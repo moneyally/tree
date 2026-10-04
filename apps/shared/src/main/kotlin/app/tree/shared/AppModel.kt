@@ -113,7 +113,7 @@ data class UiState(
  */
 class AppModel(
     private val scope: CoroutineScope,
-    private val io: CoroutineDispatcher = Dispatchers.IO,
+    internal val io: CoroutineDispatcher = Dispatchers.IO,
 ) {
     internal val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
@@ -132,6 +132,13 @@ class AppModel(
     /** Stickers, GIFs, locations, events, video notes, photos, per-chat profiles. */
     val rich = RichChats(this)
 
+    /** App lock (PIN, biometric), search, push wake-ups, notifications (DeviceSafety.kt). */
+    val device = DeviceSafety(this)
+
+    internal fun showError(e: TreeException) = _state.update { it.copy(error = describe(e)) }
+
+    internal fun countNotification() = _state.update { it.copy(notified = it.notified + 1) }
+
     internal suspend fun <T> call(block: (TreeSession) -> T): T? {
         val s = session ?: return null
         return try {
@@ -144,6 +151,8 @@ class AppModel(
 
     private fun describe(e: TreeException): String = when (e) {
         is TreeException.WrongKey -> Strings.t("wrong_pass")
+        is TreeException.WrongPin -> "${Strings.t("wrong_pin")} (${Strings.t("attempts_left")}: ${e.attemptsLeft})"
+        is TreeException.PinUnavailable -> Strings.t("pin_unavailable")
         is TreeException.Server -> "${e.code} (${e.status})"
         is TreeException.Feature -> e.code
         is TreeException.InvalidOption -> "INVALID_OPTION: ${e.reason}"
@@ -168,7 +177,7 @@ class AppModel(
         return true
     }
 
-    private suspend fun signIn(path: String, make: () -> TreeSession): Boolean {
+    internal suspend fun signIn(path: String, make: () -> TreeSession): Boolean {
         val s = try {
             withContext(io) { make() }
         } catch (e: TreeException) {
@@ -281,15 +290,7 @@ class AppModel(
      * Notifies for a new message unless the chat is open, muted, or the
      * message was sent silently (the client decides: `shouldNotify`).
      */
-    private suspend fun maybeNotify(group: String, silent: Boolean, text: String?) {
-        if (group == _state.value.open) return
-        if (call { it.shouldNotify(group, silent) } != true) return
-        _state.update { it.copy(notified = it.notified + 1) }
-        val title = _state.value.chats.firstOrNull { it.id == group }?.title ?: group.take(8)
-        // The text only if the user wants it in notifications.
-        val content = call { s -> s.features().any { it.key == "user.notification_content" && it.applied } } == true
-        notifier?.invoke(title, if (content) text else null)
-    }
+    private suspend fun maybeNotify(group: String, silent: Boolean, text: String?) = device.notify(group, silent, text)
 
     private suspend fun onEvent(e: TreeEvent) {
         when (e) {
@@ -316,6 +317,8 @@ class AppModel(
             is TreeEvent.Sticker -> maybeNotify(e.group, false, e.emoji)
             is TreeEvent.Location -> maybeNotify(e.group, false, Strings.t("location"))
             is TreeEvent.ChatEvent -> maybeNotify(e.group, false, e.title)
+            // Another device of this account changed settings (self group).
+            is TreeEvent.SettingsSynced -> loadFeatures()
             else -> {}
         }
     }

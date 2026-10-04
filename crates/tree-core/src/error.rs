@@ -37,6 +37,14 @@ pub enum TreeError {
     WrongKey,
     #[error("not a valid recovery phrase: {0}")]
     InvalidPhrase(String),
+    /// The PIN was wrong; this many attempts are left before the PIN stops
+    /// working and the passphrase is needed.
+    #[error("wrong PIN ({0} attempts left)")]
+    WrongPin(u8),
+    /// PIN unlock is not set up, or was turned off after too many wrong
+    /// PINs: unlock with the passphrase.
+    #[error("PIN unlock is not available: use the passphrase")]
+    PinUnavailable,
     #[error("local storage: {0}")]
     Storage(String),
 }

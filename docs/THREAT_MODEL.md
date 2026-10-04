@@ -42,7 +42,9 @@ who leaks a conversation can prove it is genuine.
 | Spammer | signup proof of work, per-device and per-IP rate limits, message requests and blocking, reports and suspension | a determined spammer with many accounts still reaches request inboxes, within the new-account and report limits (PROTOCOL.md 8.9) |
 | The operator (moderation) | sees only what a user reports, with the franking result; can suspend accounts | reported messages are readable by the operator by design; a file report hands over that file's key |
 | Removed member with a modified client | new epoch keys after removal | none known for later epochs (attack-scenario tests; formal model `formal/removal_secrecy.pv` under abstractions); can burn keys of messages from epochs it knew while they are in the past-epoch window |
-| Device thief | encrypted local storage (below); (planned) hardware-wrapped keys | an unlocked phone; a weak passphrase until the hardware keystore is used |
+| Device thief | encrypted local storage (below); app lock with passphrase, PIN (10 attempts) or biometric; on Android the PIN's derivation includes a keystore-held secret and the biometric key lives in the keystore | an unlocked phone; a weak passphrase; on a computer, a PIN can be guessed offline from copied files (PROTOCOL.md 8.13) |
+| Another account trying to change a user's settings | settings sync only inside the account's own self group, from its members (PROTOCOL.md 8.14) | a device of the account that was linked by the user (by definition trusted) |
+| Someone looking at the screen or the lock screen | notifications show the chat's name only unless `user.notification_content`; never a request's or screenshot-blocked chat's text; secure window flags and capture exclusion (APP_PROTOCOL.md 6.3) | cameras; systems without a capture-exclusion call (Linux, macOS); keyboards that ignore the no-learning request |
 | Spyware on the device | out of scope | no messenger can protect a compromised OS |
 
 ## Local storage
@@ -80,10 +82,29 @@ Details:
   no message text, compared against an unencrypted control file where the
   same scan does find them.
 
+PIN and biometric unlock (opt-in, `user.app_lock`; PROTOCOL.md 8.13):
+
+| Part | Choice |
+| --- | --- |
+| PIN file | `<db>.pin`: the database key, AES-256-GCM under Argon2id(PIN, salt, device secret); parameters and salt authenticated |
+| Attempt limit | 10; counted before each try; then the file is wiped and only the passphrase opens |
+| Device secret (Android) | 32 random bytes encrypted by a non-exportable keystore key, Argon2's secret input |
+| Biometric (Android 11+) | the database key under a keystore key usable only after a strong biometric check, invalidated by new enrolments |
+
+The PIN does not weaken the passphrase: both unwrap the same key, and the
+passphrase path is unchanged. It does add a second, weaker door. Through
+the app, 10 tries of a million is 1 in 100,000. Offline, with the files
+copied: on Android the keystore secret is missing from the copy, so the
+PIN cannot be tried; on a computer the PIN file falls to 10^6 Argon2id
+guesses (about a day on one core). Users who need protection against that
+should keep the passphrase only on computers; the app says so.
+
 Residual risks:
 
-- The passphrase is the only secret until the hardware keystore wraps the key
-  (`KeySource` is the hook). A short passphrase can be guessed offline.
+- Without PIN or biometric, the passphrase is the only secret (`KeySource`
+  is the hook for a hardware-wrapped key on every unlock). A short
+  passphrase can be guessed offline.
+- A PIN on a computer can be guessed offline from copied files (above).
 - While the app is unlocked, the key and decrypted pages are in process memory
   (SQLCipher's `cipher_memory_security` is off for speed). Spyware on the
   device remains out of scope.
@@ -93,6 +114,10 @@ Residual risks:
 - Losing `<db>.hdr` makes the database unrecoverable (by design; backup is a
   separate feature).
 - File sizes and modification times show roughly how much the device is used.
+- The search index (`user.search_index`) is a second copy of message texts
+  inside the same encrypted file; releasing the setting drops it
+  (`secure_delete` overwrites the freed pages; flash may keep old copies,
+  encrypted like the rest).
 
 ### Plaintext outside the encrypted database (F-034)
 

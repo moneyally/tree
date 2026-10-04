@@ -1,8 +1,10 @@
 package app.tree.android
 
+import android.Manifest
 import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -11,44 +13,68 @@ import androidx.lifecycle.lifecycleScope
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import app.tree.shared.AppModel
-import app.tree.shared.Lang
-import app.tree.shared.Strings
+import app.tree.shared.DeviceProtection
+import app.tree.shared.UiState
 import kotlinx.coroutines.launch
 import uniffi.tree_ffi.NetworkKind
 
 class MainActivity : ComponentActivity() {
     private var pendingLink: String? = null
-    private var model: AppModel? = null
+    private val app get() = application as TreeApplication
+    private val model: AppModel get() = app.model
+    private var inBackground = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        Strings.lang = if (resources.configuration.locales[0].language == "ko") Lang.KO else Lang.EN
         pendingLink = intent?.dataString
-        val profile = filesDir.resolve("profile.db").path
+        val profile = app.profile
         setContent {
-            val scope = rememberCoroutineScope()
-            val model = remember { AppModel(scope).also { this@MainActivity.model = it } }
             val state by model.state.collectAsState()
-            // Screenshots and the app-switcher preview are blocked while a chat
-            // asks for it (chat.screenshot_block) or the user wants it
-            // (user.app_switcher_blur). Honest-app protection only.
-            val secure = state.screenshotBlocked || state.features.any { it.key == "user.app_switcher_blur" && it.applied }
-            LaunchedEffect(secure) {
-                if (secure) window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
-                else window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
-            }
+            // Screenshots and the recent-apps preview (APP_PROTOCOL.md 6.3).
+            LaunchedEffect(state.screenshotBlocked, state.features) { applyWindow(state) }
             LaunchedEffect(state.signedIn) {
                 if (state.signedIn) {
                     model.downloadDir = cacheDir.resolve("downloads")
                     model.setNetwork(networkKind())
                     model.loadFeatures()
-                    pendingLink?.let { link -> scope.launch { model.joinLink(link) }; pendingLink = null }
+                    askForNotifications()
+                    // Push wake-ups: the endpoint the distributor gave earlier, or ask now.
+                    Push.endpoint(this@MainActivity)?.let { model.device.registerPushEndpoint(it) } ?: Push.register(this@MainActivity)
+                    pendingLink?.let { link -> lifecycleScope.launch { model.joinLink(link) }; pendingLink = null }
                 }
             }
-            TreeApp(model, profile)
+            // An unlock method no longer chosen leaves no wrapped key behind.
+            LaunchedEffect(state.signedIn, state.features) {
+                if (state.signedIn && state.features.isNotEmpty()) {
+                    val m = DeviceProtection.lockMethod(state.features)
+                    if (m != "bio") BiometricUnlock.disable(profile)
+                    if (m != "pin") DeviceSecret.forget(profile)
+                }
+            }
+            // user.incognito_keyboard: every text field asks the keyboard not to learn.
+            IncognitoKeyboard(DeviceProtection.incognitoKeyboard(state)) {
+                TreeApp(model, profile)
+            }
+        }
+    }
+
+    /**
+     * `chat.screenshot_block` (or the user's block of the open chat): the
+     * secure flag while that chat is open. `user.app_switcher_blur`: no
+     * content in the recent-apps view; on Android 13+ through the recents
+     * snapshot switch, below that by the secure flag while in the background.
+     */
+    private fun applyWindow(state: UiState) {
+        val w = DeviceProtection.androidWindow(state, inBackground, Build.VERSION.SDK_INT)
+        if (w.secure) window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        else window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        if (Build.VERSION.SDK_INT >= 33) setRecentsScreenshotEnabled(!w.hideFromRecents)
+    }
+
+    private fun askForNotifications() {
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
     }
 
@@ -61,13 +87,23 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        model?.let { m -> lifecycleScope.launch { m.setNetwork(networkKind()) } }
+        inBackground = false
+        applyWindow(model.state.value)
+        lifecycleScope.launch { model.setNetwork(networkKind()) }
+    }
+
+    // Older Android takes the recent-apps snapshot when the app leaves the
+    // foreground: the secure flag must be on by then.
+    override fun onPause() {
+        inBackground = true
+        applyWindow(model.state.value)
+        super.onPause()
     }
 
     // App lock: leaving the app closes the profile when user.app_lock is on.
     override fun onStop() {
         super.onStop()
-        model?.let { m -> lifecycleScope.launch { m.lockIfEnabled() } }
+        lifecycleScope.launch { model.lockIfEnabled() }
     }
 
     override fun onNewIntent(intent: Intent) {

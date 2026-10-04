@@ -124,6 +124,8 @@ private fun SignIn(model: AppModel) {
                 }
             }
         }) { Text(if (exists) Strings.t("open") else Strings.t("create")) }
+        // App lock with a PIN (user.app_lock = pin): the PIN file opens it.
+        if (exists) PinUnlockRow(model, path) { desktopMedia(model); model.startSyncLoop() }
         if (!exists) {
             // A second device of an existing account: show a link, compare the code.
             TextButton(onClick = {
@@ -198,6 +200,7 @@ private fun Chats(model: AppModel, state: UiState, requests: Boolean) {
             if (!requests) {
                 Button(onClick = { scope.launch { model.newChat() } }) { Text(Strings.t("new_group")) }
                 JoinLink(model)
+                SearchBox(model)
                 // Folders: all, user folders, built-in ones.
                 Row {
                     TextButton(onClick = { model.showFolder(null) }) { Text(Strings.t("all")) }
@@ -333,6 +336,7 @@ private fun FeatureRow(model: AppModel, f: uniffi.tree_ffi.Feature, switchable: 
         Column(Modifier.weight(1f)) {
             Text(f.key + (f.option?.let { " ($it)" } ?: ""))
             f.lockedBy?.let { Text("${Strings.t("locked")}: $it", style = MaterialTheme.typography.bodySmall) }
+            platformNote(f.key)?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
             model.pendingNote(f)?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
             if (f.lockedBy == null && f.choices.isNotEmpty()) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -542,6 +546,8 @@ private fun Settings(model: AppModel, state: UiState) {
                 }
             }
         }
+        HorizontalDivider(Modifier.padding(vertical = 8.dp))
+        AppLockPanel(model, state, profilePath())
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
         // Every user setting with apply / release; locked ones say why.
         LazyColumn {

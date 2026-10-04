@@ -385,6 +385,8 @@ pub struct Message {
     pub file: Option<Attachment>,
     /// Forwarded from another chat (shown as "forwarded", no original sender).
     pub forwarded: bool,
+    /// The chat it is in (hex), e.g. to open a search result.
+    pub group: String,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -405,6 +407,7 @@ impl From<tree_client::StoredMessage> for Message {
             silent: meta.silent,
             who: meta.name,
             file,
+            group: hex::encode(&m.group_id),
             id: m.id,
             sender: m.sender,
             received_at: m.received_at,

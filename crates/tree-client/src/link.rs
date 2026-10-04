@@ -256,7 +256,7 @@ impl NewDevice {
             client.set_app_data(crate::LAST_RESORT_CUR, Some(lr))?;
         }
         let creds = Creds { account_id: offer.account_id.clone(), device_id: device_id.clone(), key: self.key.clone() };
-        let mut s = Session::from_parts(client, self.api.clone(), creds);
+        let mut s = Session::from_parts(client, self.api.clone(), creds, &self.path);
         s.set_time(crate::LAST_RESORT_AT, crate::messages::now())?;
         let _ = self.step(json!({ "action": "done" }));
         s.ensure_key_packages()?;

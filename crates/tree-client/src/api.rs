@@ -45,6 +45,35 @@ impl Reply {
     }
 }
 
+/// An upload as the server has it (`POST /v1/uploads` and friends).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UploadStatus {
+    pub id: String,
+    pub size: u64,
+    pub chunk_size: u64,
+    pub chunks: u64,
+    pub received: u64,
+    pub complete: bool,
+}
+
+impl UploadStatus {
+    fn from_json(v: &Value) -> Result<Self, Error> {
+        let n = |k: &str| v[k].as_u64().ok_or_else(|| Error::Protocol(format!("server reply lacks {k}")));
+        let s = UploadStatus {
+            id: field(v, "id")?,
+            size: n("size")?,
+            chunk_size: n("chunk_size")?,
+            chunks: n("chunks")?,
+            received: n("received")?,
+            complete: v["complete"].as_bool().unwrap_or(false),
+        };
+        if s.chunk_size == 0 || s.chunks != s.size.div_ceil(s.chunk_size) || s.received > s.chunks {
+            return Err(Error::Protocol("inconsistent upload status".into()));
+        }
+        Ok(s)
+    }
+}
+
 /// One server.
 #[derive(Clone)]
 pub struct Api {
@@ -303,25 +332,49 @@ impl Api {
         Ok(out)
     }
 
-    /// Uploads an encrypted attachment; returns its id.
-    pub fn upload(&self, c: &Creds, ciphertext: &[u8]) -> Result<String, Error> {
-        let reply = self.request_raw(&c.key, &c.device_id, Method::POST, "/v1/attachments", ciphertext.to_vec())?;
+    /// Starts an upload of `size` ciphertext bytes (PROTOCOL.md 6.12).
+    pub fn upload_create(&self, c: &Creds, size: u64) -> Result<UploadStatus, Error> {
+        UploadStatus::from_json(&self.call(c, Method::POST, "/v1/uploads", Some(&json!({ "size": size })))?.ok()?)
+    }
+
+    /// Where an upload stands (`404` once purged).
+    pub fn upload_status(&self, c: &Creds, id: &str) -> Result<UploadStatus, Error> {
+        UploadStatus::from_json(&self.call(c, Method::GET, &format!("/v1/uploads/{id}"), None)?.ok()?)
+    }
+
+    /// Sends part `index` of an upload.
+    pub fn upload_part(&self, c: &Creds, id: &str, index: u64, bytes: &[u8]) -> Result<UploadStatus, Error> {
+        let path = format!("/v1/uploads/{id}/{index}");
+        let reply = self.request_raw(&c.key, &c.device_id, Method::PUT, &path, bytes.to_vec())?;
         let status = reply.status();
         let v: Value = reply.json().unwrap_or(Value::Null);
         if !status.is_success() {
             return Err(Error::Server { status: status.as_u16(), code: v["code"].as_str().unwrap_or("").into() });
         }
-        field(&v, "id")
+        UploadStatus::from_json(&v)
     }
 
-    pub fn download(&self, c: &Creds, id: &str) -> Result<Vec<u8>, Error> {
-        let path = format!("/v1/attachments/{id}");
+    /// Gives up an unfinished upload.
+    pub fn upload_cancel(&self, c: &Creds, id: &str) -> Result<(), Error> {
+        self.call(c, Method::DELETE, &format!("/v1/uploads/{id}"), None)?.ok()?;
+        Ok(())
+    }
+
+    /// One range of an attachment from byte `offset`: (bytes, total size).
+    pub fn download_range(&self, c: &Creds, id: &str, offset: u64) -> Result<(Vec<u8>, u64), Error> {
+        let path = format!("/v1/attachments/{id}?offset={offset}");
         let reply = self.request_raw(&c.key, &c.device_id, Method::GET, &path, vec![])?;
         let status = reply.status();
         if !status.is_success() {
             return Err(Error::Server { status: status.as_u16(), code: "DOWNLOAD_FAILED".into() });
         }
-        Ok(reply.bytes().map_err(|e| Error::Network(e.to_string()))?.to_vec())
+        let total = reply
+            .headers()
+            .get("x-tree-total")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse().ok())
+            .ok_or_else(|| Error::Protocol("server reply lacks the attachment size".into()))?;
+        Ok((reply.bytes().map_err(|e| Error::Network(e.to_string()))?.to_vec(), total))
     }
 
     /// A signed request with a raw (non-JSON) body; returns the response.

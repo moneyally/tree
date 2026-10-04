@@ -27,10 +27,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tree_core::features::{self, Registry, State};
 use tree_core::storage::messages::StoredMessage;
 use tree_core::MemberId;
-use zeroize::Zeroizing;
 
+use crate::media::{MediaMeta, SendOptions, Source};
 use crate::payload::{FileInfo, Payload};
-use crate::{api, Error, Event, GroupStatus, Session};
+use crate::{Error, Event, GroupStatus, Session};
 
 /// Default edit / delete-for-all window (design: 24 hours).
 pub const DEFAULT_WINDOW: i64 = 24 * 3600;
@@ -83,13 +83,6 @@ fn text_data(formatted: bool, preview: Option<&crate::payload::LinkPreview>, sil
         v["preview"] = serde_json::to_value(p).expect("JSON");
     }
     Some(serde_json::to_vec(&v).expect("JSON"))
-}
-
-/// A stored file reference: which group and message it belongs to.
-#[derive(serde::Serialize, serde::Deserialize)]
-struct StoredFile {
-    group: String,
-    info: FileInfo,
 }
 
 impl Session {
@@ -282,92 +275,19 @@ impl Session {
     /// key inside the group (PROTOCOL.md 6.12). `view_once` needs
     /// `chat.view_once`; every file needs `chat.media`.
     pub fn send_file(&mut self, gid: &[u8], bytes: &[u8], name: &str, mime: &str, view_once: bool) -> Result<FileInfo, Error> {
-        self.send_attachment(gid, bytes, name, mime, view_once, None)
+        let o = SendOptions { view_once, ..Default::default() };
+        self.send_media(gid, Source::Bytes(bytes), name, mime, &o)
     }
 
     /// Sends a voice message (`chat.voice` and `chat.media`).
     pub fn send_voice(&mut self, gid: &[u8], bytes: &[u8], mime: &str, duration_ms: u64) -> Result<FileInfo, Error> {
-        self.send_attachment(gid, bytes, "voice", mime, false, Some(duration_ms))
+        let o = SendOptions { voice: true, meta: MediaMeta { duration_ms: Some(duration_ms), ..Default::default() }, ..Default::default() };
+        self.send_media(gid, Source::Bytes(bytes), "voice", mime, &o)
     }
 
-    fn send_attachment(
-        &mut self,
-        gid: &[u8],
-        bytes: &[u8],
-        name: &str,
-        mime: &str,
-        view_once: bool,
-        voice: Option<u64>,
-    ) -> Result<FileInfo, Error> {
-        if !self.chat_allows(gid, "chat.media")?
-            || (view_once && !self.chat_allows(gid, "chat.view_once")?)
-            || (voice.is_some() && !self.chat_allows(gid, "chat.voice")?)
-        {
-            return Err(Self::locked_by_chat());
-        }
-        let (ct, fk) = tree_core::attachment::encrypt(bytes)?;
-        let id = self.api.upload(&self.creds, &ct)?;
-        let info = FileInfo {
-            msg_id: new_id(),
-            view_once,
-            voice: voice.is_some(),
-            duration_ms: voice,
-            id,
-            key: api::b64(&fk.key[..]),
-            nonce: api::b64(&fk.nonce_prefix),
-            size: fk.size,
-            ct_sha256: hex::encode(fk.ciphertext_sha256),
-            pt_sha256: hex::encode(fk.plaintext_sha256),
-            name: name.to_string(),
-            mime: mime.to_string(),
-        };
-        // The sender keeps no reference to a view-once file.
-        let data = (!view_once).then(|| serde_json::to_vec(&info).expect("JSON"));
-        let me = self.member_id();
-        self.queue_payload(gid, &Payload::File(info.clone()), Some(&info.msg_id), |s| {
-            s.store(gid, &info.msg_id, &me, "file", Some(info.name.clone()), data, None).map(|_| ())
-        })?;
-        Ok(info)
-    }
-
-    /// A file reference received earlier, by attachment id (gone after a
-    /// view-once file was opened).
-    pub fn received_file(&self, id: &str) -> Result<Option<FileInfo>, Error> {
-        Ok(match self.client.app_data(&format!("file/{id}"))? {
-            Some(v) => Some(serde_json::from_slice::<StoredFile>(&v).map_err(|_| Error::Protocol("damaged file reference".into()))?.info),
-            None => None,
-        })
-    }
-
-    /// Downloads and opens an attachment; fails if anything does not match
-    /// the message (tampering, wrong key, different content). A view-once
-    /// file's reference is deleted after it opened once.
-    pub fn download(&self, f: &FileInfo) -> Result<Vec<u8>, Error> {
-        let bad = || Error::Protocol("malformed file reference".into());
-        let key: [u8; 32] = api::unb64(&f.key)?.try_into().map_err(|_| bad())?;
-        let nonce: [u8; 7] = api::unb64(&f.nonce)?.try_into().map_err(|_| bad())?;
-        let ct_h: [u8; 32] = hex::decode(&f.ct_sha256).map_err(|_| bad())?.try_into().map_err(|_| bad())?;
-        let pt_h: [u8; 32] = hex::decode(&f.pt_sha256).map_err(|_| bad())?.try_into().map_err(|_| bad())?;
-        let fk = tree_core::attachment::FileKey {
-            key: Zeroizing::new(key),
-            nonce_prefix: nonce,
-            size: f.size,
-            ciphertext_sha256: ct_h,
-            plaintext_sha256: pt_h,
-        };
-        let ct = self.api.download(&self.creds, &f.id)?;
-        let plain = tree_core::attachment::decrypt(&ct, &fk)?;
-        if f.view_once {
-            if let Some(v) = self.client.app_data(&format!("file/{}", f.id))? {
-                if let Ok(sf) = serde_json::from_slice::<StoredFile>(&v) {
-                    if let Ok(g) = hex::decode(&sf.group) {
-                        self.client.set_message_data(&g, &f.msg_id, None)?;
-                    }
-                }
-            }
-            self.client.set_app_data(&format!("file/{}", f.id), None)?;
-        }
-        Ok(plain)
+    /// The history entry of an own file message.
+    pub(crate) fn store_file_message(&mut self, gid: &[u8], id: &str, me: &MemberId, name: &str, data: Option<Vec<u8>>) -> Result<(), Error> {
+        self.store(gid, id, me, "file", Some(name.to_string()), data, None).map(|_| ())
     }
 
     /// The newest `limit` messages of a group (oldest first), after removing
@@ -466,15 +386,19 @@ impl Session {
                     refuse(events, "view-once files are released in this group (chat.view_once)");
                     return Ok(());
                 }
+                if !file.is_valid() || file.id.is_empty() {
+                    refuse(events, "malformed file reference");
+                    return Ok(());
+                }
                 let data = serde_json::to_vec(&file).expect("JSON");
                 if !self.store(gid, &file.msg_id, &from, "file", Some(file.name.clone()), Some(data), franking)? {
                     refuse(events, "duplicate message id");
                     return Ok(());
                 }
-                let stored = StoredFile { group: hex::encode(gid), info: file.clone() };
-                self.client.set_app_data(&format!("file/{}", file.id), Some(&serde_json::to_vec(&stored).expect("JSON")))?;
+                self.remember_file(gid, &file)?;
                 self.on_new_message(gid, false)?;
-                events.push(Event::File { group: gid.to_vec(), from, name, file, request });
+                let auto_download = self.auto_download_allowed(gid, &from, &file)?;
+                events.push(Event::File { group: gid.to_vec(), from, name, file, request, auto_download });
             }
             _ => refuse(events, "not a message"),
         }

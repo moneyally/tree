@@ -3913,6 +3913,7 @@ dependencies = [
  "ed25519-dalek",
  "getrandom 0.2.17",
  "hkdf 0.12.4",
+ "hmac 0.12.1",
  "hpke-rs",
  "openmls",
  "openmls_basic_credential",
@@ -3935,6 +3936,7 @@ name = "tree-ffi"
 version = "0.1.0"
 dependencies = [
  "hex",
+ "serde_json",
  "thiserror",
  "tree-client",
  "tree-core",

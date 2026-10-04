@@ -19,11 +19,16 @@ pub struct Env {
 impl Env {
     pub
     fn new(tag: &str) -> Self {
+        Self::with(tag, |_| {})
+    }
+
+    /// A server with some settings changed.
+    pub fn with(tag: &str, tweak: impl FnOnce(&mut Config)) -> Self {
         let dir = std::env::temp_dir().join(format!("tree-e2e-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let db = dir.join("server.db");
-        let cfg = Config {
+        let mut cfg = Config {
             database_url: format!("sqlite://{}", db.display()),
             bind_addr: "127.0.0.1:0".parse().unwrap(),
             pow_bits: 8,
@@ -31,6 +36,7 @@ impl Env {
             admin_token_sha256: Some(sha2::Digest::finalize(<sha2::Sha256 as sha2::Digest>::new_with_prefix(ADMIN_TOKEN)).into()),
             ..Config::default()
         };
+        tweak(&mut cfg);
         let rt = tokio::runtime::Runtime::new().unwrap();
         let server = rt.block_on(tree_server::start(cfg)).unwrap();
         // Test accounts are all new; the server's new-account limits are
@@ -87,6 +93,17 @@ impl Env {
             let n = sqlx::query(q).bind(blob).bind(arg).execute(&pool).await.unwrap().rows_affected();
             pool.close().await;
             n
+        })
+    }
+
+    /// One number from the server database (`q` returns one integer row).
+    pub fn sql_i64(&self, q: &'static str, arg: &str) -> i64 {
+        let arg = arg.to_string();
+        self._rt.block_on(async {
+            let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", self.db.display())).await.unwrap();
+            let r: (i64,) = sqlx::query_as(q).bind(arg).fetch_one(&pool).await.unwrap();
+            pool.close().await;
+            r.0
         })
     }
 

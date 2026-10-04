@@ -35,6 +35,20 @@ moderate by default (256 to 512 per property) and can be raised with
 | `robustness.rs` | proptest, see below |
 | `common/mod.rs` | fixtures, including `Insider`: a member built directly on the MLS library that can seal arbitrary bytes, used to reach the code behind the outer seal |
 
+### Media (PROTOCOL.md 6.12)
+
+| Test | What it proves |
+| --- | --- |
+| `tree-core` `attachment::tests::padding_buckets` | the bucket table (1 KiB, powers of two to 1 MiB, Padmé), never smaller than the file, overhead under 4 % above 1 MiB, a bucket pads to itself, few distinct sizes |
+| `attachment::tests::round_trip_sizes_and_streaming` | round trip at chunk boundaries (0, 1, 1 KiB +- 1, 1 MiB +- 1, 2 MiB + 17), streaming reader in small pieces, size must match the input |
+| `attachment::tests::truncation_reorder_and_bit_flips_detected` | truncation, extension, dropped, swapped and repeated chunks, a cut on a chunk boundary (last-chunk flag), changed commitment and bit flips are all refused |
+| `attachment::tests::key_commitment` | another secret fails at the commitment; other content or size claims and non-zero padding are refused |
+| `attachment::tests::fresh_secret_and_separate_keys` | one secret per file; the three HKDF outputs differ from each other and from the secret; the key is never printed |
+| `tree-server` `tests/attachments.rs` | uploads in order, by the uploader only, a lost answer, resume status, ranged download, no uploader stored; size limit and daily quota per account (shared by its devices, reset per day); unfinished uploads purged after 24 h with partial files (also of deleted devices); cost per MiB |
+| `tree-client` `tests/media.rs` | multi-chunk file from disk with metadata and preview, padded size on the server, no plaintext or name there, download into a file, tampering refused; view-once and voice with chunked media; upload resumed after the app stops (slice limit) and after the network goes away (proxy cuts after N parts), nothing sent twice, restart after the server dropped the upload; offline queue in order; refused upload (quota) failed, retried, cancelled; pause / resume / cancel; auto-download rules (contact vs stranger, size, network, view-once, option, release) |
+| desktop `MediaEditTest` | crop, rotate, stroke, blur (detail gone, outside unchanged), text, order of operations, thumbnail size, a JPEG with GPS EXIF exported without it, safe file names |
+| desktop `MediaModelTest` | an edited picture with its preview, auto-download on Wi-Fi only, upload progress in slices, save as, through the model against a real server |
+
 Tests marked **KNOWN LIMITATION** / **KNOWN ISSUE** pin the current behaviour of
 an open finding. When the finding is fixed, the test must be changed to assert
 the fixed behaviour. (None are open in the core after HANDOFF 3.1.)

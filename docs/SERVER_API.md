@@ -334,17 +334,52 @@ group and added again.
 
 ## Attachments
 
-### `POST /v1/attachments` — upload ciphertext
+Ciphertext only, already padded by the client (PROTOCOL.md 6.12). Uploads go
+in parts and resume; downloads go by ranges.
 
-Body: the raw encrypted file (`Content-Type: application/octet-stream`),
-signed like every request (the body hash covers the raw bytes). At most
-`MAX_ATTACHMENT_BYTES` (default 100 MiB); one extra rate-limit token per MiB.
-`201` → `{ "id": "...", "size": 1234 }`. Empty body: `BAD_REQUEST`.
+### `POST /v1/uploads` — start an upload
 
-### `GET /v1/attachments/{id}` — download
+`{ "size": N }`: the blob size in bytes. At most `MAX_ATTACHMENT_BYTES`
+(default 2 GiB + 64 KiB, a 2 GiB file with its encryption overhead), else
+`413 TOO_LARGE` with `max_bytes`; `0` is `BAD_REQUEST`. The size counts
+against the account's `UPLOAD_QUOTA_BYTES_PER_DAY` (UTC day, all devices of
+the account; not given back when an upload is cancelled or dropped): over
+it, `403 QUOTA_EXCEEDED`.
 
-Any registered device that knows the id. `200` with the raw bytes, or
-`404 NOT_FOUND`. Blobs are deleted after `MESSAGE_TTL_SECS`.
+`201` →
+
+```json
+{ "id": "...", "size": N, "chunk_size": 1048576, "chunks": 3,
+  "received": 0, "complete": false }
+```
+
+### `PUT /v1/uploads/{id}/{index}` — one part
+
+Body: raw bytes of part `index` (`0 <= index < chunks`), exactly
+`chunk_size` long except the last. Only the device that started the upload
+(others: `404`). Parts go in order: `index > received` is `409 OUT_OF_ORDER`
+with `received`; `index < received` (a retry after a lost answer) changes
+nothing. One extra rate-limit token per whole MiB. `200` → the status as
+above; after the last part `complete: true` and the blob is downloadable as
+attachment `id`. Wrong length: `BAD_REQUEST`; a body over `chunk_size`:
+`413`.
+
+### `GET /v1/uploads/{id}` — where to resume
+
+The uploader gets the status (`received` parts); once complete, any device
+gets `complete: true`. Unknown or dropped (unfinished for 24 hours): `404`,
+start again.
+
+### `DELETE /v1/uploads/{id}` — give up
+
+The uploader only; the partial file is deleted. `204`.
+
+### `GET /v1/attachments/{id}?offset=N` — download a range
+
+Any registered device that knows the id. `200` with at most
+`UPLOAD_CHUNK_BYTES` from byte `N` (default 0) and header `X-Tree-Total`
+(the blob size); `offset` beyond the size: `BAD_REQUEST`; unknown: `404`.
+Blobs are deleted after `MESSAGE_TTL_SECS`.
 
 ## Usernames
 
@@ -542,7 +577,9 @@ Errors: `UNAUTHORIZED`, `UNKNOWN_FEATURE`.
 | account id, device ids, device authentication public keys | yes |
 | account/device creation date | day only |
 | key packages | until claimed |
-| attachment ciphertext (file named by a random id), its size and upload minute; not the uploader | until the mailbox TTL (30 days) |
+| attachment ciphertext (file named by a random id, padded by the client), its size and upload minute; not the uploader | until the mailbox TTL (30 days) |
+| unfinished uploads: id, uploading device, declared size, parts received, minute started, the partial file | until complete (then only the attachment row), cancelled, or 24 hours |
+| upload quota: bytes declared per account per day | the current day only |
 | username hash per account (if registered), discoverable flag, day registered | until released or the account is deleted |
 | username link: hash of the link token per account, day set | until reset, released, the name is released, or the account is deleted |
 | per group: last accepted epoch, the device ids that may commit next, SHA-256 and id of the last 64 accepted commits | while one of its devices exists |
@@ -576,7 +613,9 @@ Logs contain method, route template, status and latency only.
 | `MAX_MESSAGE_BYTES` / `MAX_RECIPIENTS` / `MAX_MAILBOX_MESSAGES` / `FETCH_LIMIT` | `262144` / `2048` / `10000` / `100` |
 | `MAX_COMMIT_BYTES` / `MAX_WELCOME_BYTES` | `4194304` / `4194304` |
 | `MAX_IDEMPOTENCY_KEYS` (per sending device) | `10000` |
-| `ATTACHMENT_DIR` / `MAX_ATTACHMENT_BYTES` | `attachments` / `104857600` |
+| `ATTACHMENT_DIR` / `MAX_ATTACHMENT_BYTES` | `attachments` / `2147549184` (2 GiB + 64 KiB) |
+| `UPLOAD_CHUNK_BYTES` (part and download range size, 4096 to 16777216) | `1048576` |
+| `UPLOAD_QUOTA_BYTES_PER_DAY` (per account) | `21474836480` (20 GiB) |
 | `RATE_PER_SEC` / `RATE_BURST` (per device) | `20` / `200` |
 | `SIGNUP_PER_HOUR` / `SIGNUP_BURST` (per address, IPv6 per /64) | `20` / `10` |
 | `TRUST_FORWARDED_FOR` | `false` (set `true` only behind a proxy that overwrites `X-Forwarded-For`) |

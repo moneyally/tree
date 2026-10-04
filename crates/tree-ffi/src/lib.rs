@@ -7,7 +7,7 @@
 use std::ops::{Deref, DerefMut};
 use std::sync::{Mutex, MutexGuard};
 
-use tree_client::{CommitOutcome, Event, FileInfo, GroupStatus, LinkStatus, MemberId, NewDevice, OutboxState, Session, TextOptions, Words};
+use tree_client::{CommitOutcome, Event, FileInfo, GroupStatus, LinkStatus, MediaMeta, MemberId, NewDevice, OutboxState, SendOptions, Session, Source, TextOptions, Words};
 
 uniffi::setup_scaffolding!();
 
@@ -50,6 +50,9 @@ impl From<tree_client::Error> for TreeError {
 
 type R<T> = Result<T, TreeError>;
 
+/// Default share of an upload per call (see `TreeSession::set_upload_slice`).
+pub const UPLOAD_SLICE: u64 = 4 << 20;
+
 fn unhex(s: &str, what: &str) -> R<Vec<u8>> {
     hex::decode(s).map_err(|_| TreeError::Usage { reason: format!("{what} must be hex") })
 }
@@ -58,25 +61,34 @@ fn member(s: &str) -> R<MemberId> {
     MemberId::from_hex(s).ok_or_else(|| TreeError::Usage { reason: "member id must be 64 hex characters".into() })
 }
 
-/// An attachment reference (inside an end-to-end encrypted message).
+/// An attachment reference (inside an end-to-end encrypted message), with
+/// what the sender's app said about the file.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct Attachment {
     pub msg_id: String,
     pub view_once: bool,
     pub voice: bool,
     pub duration_ms: Option<u64>,
+    /// Server attachment id (empty while the sender's upload runs).
     pub id: String,
+    /// The file secret (base64).
     pub key: String,
-    pub nonce: String,
+    /// Plaintext size in bytes.
     pub size: u64,
-    pub ct_sha256: String,
     pub pt_sha256: String,
     pub name: String,
     pub mime: String,
+    /// Format version (2).
+    pub version: u32,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    /// The sender's preview picture (JPEG or PNG).
+    pub thumbnail: Option<Vec<u8>>,
 }
 
 impl From<FileInfo> for Attachment {
     fn from(f: FileInfo) -> Self {
+        let thumbnail = f.thumbnail();
         Attachment {
             msg_id: f.msg_id,
             view_once: f.view_once,
@@ -84,12 +96,14 @@ impl From<FileInfo> for Attachment {
             duration_ms: f.duration_ms,
             id: f.id,
             key: f.key,
-            nonce: f.nonce,
             size: f.size,
-            ct_sha256: f.ct_sha256,
             pt_sha256: f.pt_sha256,
             name: f.name,
             mime: f.mime,
+            version: f.v,
+            width: f.width,
+            height: f.height,
+            thumbnail,
         }
     }
 }
@@ -103,14 +117,75 @@ impl From<Attachment> for FileInfo {
             duration_ms: f.duration_ms,
             id: f.id,
             key: f.key,
-            nonce: f.nonce,
             size: f.size,
-            ct_sha256: f.ct_sha256,
             pt_sha256: f.pt_sha256,
             name: f.name,
             mime: f.mime,
+            v: f.version,
+            width: f.width,
+            height: f.height,
+            thumb: f.thumbnail.as_deref().map(tree_client::api::b64),
         }
     }
+}
+
+/// How a file is sent, and what the app knows about it (all of it travels
+/// inside the encrypted message).
+#[derive(Debug, Clone, Default, uniffi::Record)]
+pub struct MediaOptions {
+    pub view_once: bool,
+    pub voice: bool,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub duration_ms: Option<u64>,
+    /// A small preview picture the app made (at most 32 KiB).
+    pub thumbnail: Option<Vec<u8>>,
+}
+
+impl From<MediaOptions> for SendOptions {
+    fn from(o: MediaOptions) -> Self {
+        SendOptions {
+            view_once: o.view_once,
+            voice: o.voice,
+            meta: MediaMeta { width: o.width, height: o.height, duration_ms: o.duration_ms, thumb: o.thumbnail },
+        }
+    }
+}
+
+/// One upload or download as a progress bar shows it.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct Transfer {
+    pub message_id: String,
+    pub upload: bool,
+    /// Bytes moved so far, of `total` (encrypted, padded size).
+    pub done: u64,
+    pub total: u64,
+    /// `queued`, `running`, `paused` or `failed`.
+    pub state: String,
+}
+
+impl From<tree_client::Transfer> for Transfer {
+    fn from(t: tree_client::Transfer) -> Self {
+        use tree_client::TransferState as S;
+        let state = match t.state {
+            S::Queued => "queued",
+            S::Running => "running",
+            S::Paused => "paused",
+            S::Failed => "failed",
+        };
+        Transfer { message_id: t.message_id, upload: t.upload, done: t.done, total: t.total, state: state.into() }
+    }
+}
+
+/// The network the device is on (decides `user.auto_download`).
+#[derive(Debug, Clone, Copy, uniffi::Enum)]
+pub enum NetworkKind {
+    /// Wi-Fi or another unmetered network (wired).
+    Wifi,
+    /// A metered mobile network.
+    Mobile,
+    /// Offline or unknown.
+    None,
 }
 
 /// What a sync reports (tree_client::Event; ids as hex).
@@ -132,7 +207,8 @@ pub enum TreeEvent {
     Edited { group: String, id: String, from: String, text: String },
     Deleted { group: String, id: String, from: String },
     Reaction { group: String, id: String, from: String, emoji: String, remove: bool },
-    File { group: String, from: String, name: Option<String>, file: Attachment, request: bool },
+    /// `auto_download`: fetch it now without a tap (`user.auto_download`).
+    File { group: String, from: String, name: Option<String>, file: Attachment, request: bool, auto_download: bool },
     Request { group: String, from: String, direct: bool },
     Declined { group: String, from: String, reason: String },
     Joined { group: String },
@@ -181,7 +257,9 @@ impl From<Event> for TreeEvent {
             Event::Edited { group, id, from, text } => TreeEvent::Edited { group: h(group), id, from: from.to_hex(), text },
             Event::Deleted { group, id, from } => TreeEvent::Deleted { group: h(group), id, from: from.to_hex() },
             Event::Reaction { group, id, from, emoji, remove } => TreeEvent::Reaction { group: h(group), id, from: from.to_hex(), emoji, remove },
-            Event::File { group, from, name, file, request } => TreeEvent::File { group: h(group), from: from.to_hex(), name, file: file.into(), request },
+            Event::File { group, from, name, file, request, auto_download } => {
+                TreeEvent::File { group: h(group), from: from.to_hex(), name, file: file.into(), request, auto_download }
+            }
             Event::Request { group, from, direct } => TreeEvent::Request { group: h(group), from, direct },
             Event::Declined { group, from, reason } => TreeEvent::Declined { group: h(group), from, reason },
             Event::Joined { group } => TreeEvent::Joined { group: h(group) },
@@ -236,6 +314,9 @@ pub struct Message {
     pub silent: bool,
     /// For `left` / `removed`: the member's name when it went.
     pub who: Option<String>,
+    /// A file message's reference (name, size, preview picture...); none
+    /// for other kinds and for a view-once file already opened.
+    pub file: Option<Attachment>,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -247,9 +328,14 @@ pub struct Reaction {
 impl From<tree_client::StoredMessage> for Message {
     fn from(m: tree_client::StoredMessage) -> Self {
         let meta = tree_client::organize::message_meta(&m);
+        let file = (m.kind == "file")
+            .then(|| m.data.as_deref().and_then(|d| serde_json::from_slice::<FileInfo>(d).ok()))
+            .flatten()
+            .map(Attachment::from);
         Message {
             silent: meta.silent,
             who: meta.name,
+            file,
             id: m.id,
             sender: m.sender,
             received_at: m.received_at,
@@ -488,6 +574,8 @@ pub struct TreeSession {
     /// `None` once the account was deleted.
     inner: Mutex<Option<Session>>,
     waiter: (tree_client::Api, tree_client::Creds),
+    /// Progress of transfers, read without the session lock.
+    transfers: tree_client::Transfers,
 }
 
 /// The session behind the lock (panics if the account was deleted: the app
@@ -508,9 +596,13 @@ impl DerefMut for Live<'_> {
 }
 
 impl TreeSession {
-    fn wrap(s: Session) -> std::sync::Arc<Self> {
+    fn wrap(mut s: Session) -> std::sync::Arc<Self> {
         let waiter = s.waiter();
-        std::sync::Arc::new(Self { inner: Mutex::new(Some(s)), waiter })
+        let transfers = s.transfers();
+        // A long upload gives the session back after every slice; the app's
+        // loop calls `send_pending` again while `uploading` (PROTOCOL.md 6.13).
+        s.set_upload_slice(Some(UPLOAD_SLICE));
+        std::sync::Arc::new(Self { inner: Mutex::new(Some(s)), waiter, transfers })
     }
 
     fn s(&self) -> Live<'_> {
@@ -764,9 +856,74 @@ impl TreeSession {
         Ok(self.s().send_voice(&unhex(&group, "group")?, &bytes, &mime, duration_ms)?.into())
     }
 
-    /// Downloads, checks and decrypts an attachment.
+    /// Sends a file from memory with its details (picture size, length,
+    /// preview picture). The upload continues through `send_pending`.
+    pub fn send_media(&self, group: String, bytes: Vec<u8>, name: String, mime: String, options: MediaOptions) -> R<Attachment> {
+        let o: SendOptions = options.into();
+        Ok(self.s().send_media(&unhex(&group, "group")?, Source::Bytes(&bytes), &name, &mime, &o)?.into())
+    }
+
+    /// Sends the file at `path` (read once while it is encrypted; up to 2 GiB).
+    pub fn send_file_path(&self, group: String, path: String, name: String, mime: String, options: MediaOptions) -> R<Attachment> {
+        let o: SendOptions = options.into();
+        let p = std::path::PathBuf::from(path);
+        Ok(self.s().send_media(&unhex(&group, "group")?, Source::Path(&p), &name, &mime, &o)?.into())
+    }
+
+    /// Downloads, checks and decrypts an attachment into memory. The
+    /// download runs without holding the session.
     pub fn download(&self, file: Attachment) -> R<Vec<u8>> {
-        Ok(self.s().download(&file.into())?)
+        let f: FileInfo = file.into();
+        let d = self.s().downloader();
+        let bytes = d.fetch(&f)?;
+        self.s().opened(&f)?;
+        Ok(bytes)
+    }
+
+    /// Downloads, checks and decrypts an attachment into the file `path`
+    /// (written only when everything matched; an interrupted download
+    /// resumes). Runs without holding the session.
+    pub fn download_to(&self, file: Attachment, path: String) -> R<()> {
+        let f: FileInfo = file.into();
+        let d = self.s().downloader();
+        d.fetch_to(&f, std::path::Path::new(&path))?;
+        Ok(self.s().opened(&f)?)
+    }
+
+    /// Uploads and downloads in progress (without waiting for the session).
+    pub fn transfers(&self) -> Vec<Transfer> {
+        self.transfers.list().into_iter().map(Into::into).collect()
+    }
+
+    /// An upload waits for its next slice: call `send_pending` again.
+    pub fn uploading(&self) -> R<bool> {
+        Ok(self.s().uploading()?)
+    }
+
+    /// Pauses the upload of a file message (later messages of that chat wait).
+    pub fn pause_transfer(&self, message_id: String) -> R<()> {
+        Ok(self.s().pause_transfer(&message_id)?)
+    }
+
+    /// Resumes a paused upload; true if the message went out.
+    pub fn resume_transfer(&self, message_id: String) -> R<bool> {
+        Ok(self.s().resume_transfer(&message_id)?)
+    }
+
+    /// The app reports the network (`user.auto_download`).
+    pub fn set_network(&self, network: NetworkKind) {
+        let n = match network {
+            NetworkKind::Wifi => tree_client::Network::Wifi,
+            NetworkKind::Mobile => tree_client::Network::Mobile,
+            NetworkKind::None => tree_client::Network::None,
+        };
+        self.s().set_network(n);
+    }
+
+    /// Bytes uploaded per call before the session is given back (`None`:
+    /// the whole file in one call).
+    pub fn set_upload_slice(&self, bytes: Option<u64>) {
+        self.s().set_upload_slice(bytes);
     }
 
     /// The user opened the chat and saw these messages (sends a read

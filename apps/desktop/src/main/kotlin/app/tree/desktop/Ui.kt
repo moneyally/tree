@@ -40,7 +40,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.toComposeImageBitmap
+import app.tree.shared.media.Raster
 import kotlinx.coroutines.launch
+import uniffi.tree_ffi.NetworkKind
 import java.io.File
 
 /** Where profiles live: one encrypted database per account on this computer. */
@@ -49,6 +57,16 @@ fun profilePath(): String {
     dir.mkdirs()
     return File(dir, "profile.db").path
 }
+
+/** A computer counts as an unmetered network; files that download by themselves go here. */
+suspend fun desktopMedia(model: AppModel) {
+    model.downloadDir = File(System.getProperty("user.home"), ".tree/downloads")
+    model.setNetwork(NetworkKind.WIFI)
+}
+
+/** A preview picture from the message, decoded for Compose. */
+private fun thumbnailBitmap(bytes: ByteArray): ImageBitmap? =
+    runCatching { org.jetbrains.skia.Image.makeFromEncoded(bytes).toComposeImageBitmap() }.getOrNull()
 
 @Composable
 fun App(model: AppModel) {
@@ -97,7 +115,10 @@ private fun SignIn(model: AppModel) {
         Button(onClick = {
             scope.launch {
                 val ok = if (exists) model.openProfile(path, pass) else model.createAccount(path, pass, name, server)
-                if (ok) model.startSyncLoop()
+                if (ok) {
+                    desktopMedia(model)
+                    model.startSyncLoop()
+                }
             }
         }) { Text(if (exists) Strings.t("open") else Strings.t("create")) }
         if (!exists) {
@@ -345,6 +366,7 @@ private fun ChatView(model: AppModel, state: UiState, chat: Chat) {
     var silent by remember(chat.id) { mutableStateOf(false) }
     var who by remember(chat.id) { mutableStateOf("") }
     var link by remember(chat.id) { mutableStateOf<String?>(null) }
+    var editing by remember(chat.id) { mutableStateOf<Pair<String, Raster>?>(null) }
     Column(Modifier.fillMaxSize().padding(8.dp)) {
         Text(chat.title, style = MaterialTheme.typography.titleLarge)
         // Who this person is to the user (user.stranger_labels), and the mute.
@@ -396,13 +418,8 @@ private fun ChatView(model: AppModel, state: UiState, chat: Chat) {
                     // In a request, files stay closed until the user accepts (design: requests).
                     if (m.kind == "file" && chat.status == "request") {
                         Text(Strings.t("after_accept"), style = MaterialTheme.typography.bodySmall)
-                    } else if (m.kind == "file" && state.files.containsKey(m.id)) {
-                        TextButton(onClick = {
-                            val d = java.awt.FileDialog(null as java.awt.Frame?, Strings.t("save"), java.awt.FileDialog.SAVE)
-                            d.file = m.text ?: "file"
-                            d.isVisible = true
-                            if (d.file != null) scope.launch { model.saveFile(m.id, java.io.File(d.directory, d.file)) }
-                        }) { Text(Strings.t("save")) }
+                    } else if (m.kind == "file") {
+                        FileRow(model, state, m.id)
                     }
                     TextButton(onClick = { scope.launch { model.report(chat.id, listOf(m.id), "user report") } }) {
                         Text(Strings.t("report"))
@@ -410,12 +427,28 @@ private fun ChatView(model: AppModel, state: UiState, chat: Chat) {
                 }
             }
         }
+        editing?.let { (name, picture) ->
+            EditorDialog(picture, onSend = { jpeg, w, h, thumb ->
+                editing = null
+                val sendName = name.substringBeforeLast('.') + ".jpg"
+                scope.launch { model.sendMedia(chat.id, jpeg, sendName, "image/jpeg", AppModel.picture(w, h, thumb)) }
+            }, onCancel = { editing = null })
+        }
         Row(verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = {
                 val d = java.awt.FileDialog(null as java.awt.Frame?, Strings.t("attach"), java.awt.FileDialog.LOAD)
                 d.isVisible = true
                 if (d.file != null) scope.launch { model.sendFile(chat.id, java.io.File(d.directory, d.file)) }
             }) { Text(Strings.t("attach")) }
+            // Pictures go through the editor: the original stays here.
+            TextButton(onClick = {
+                val d = java.awt.FileDialog(null as java.awt.Frame?, Strings.t("photo"), java.awt.FileDialog.LOAD)
+                d.isVisible = true
+                if (d.file != null) {
+                    val f = java.io.File(d.directory, d.file)
+                    DesktopMedia.load(f)?.let { editing = f.name to it }
+                }
+            }) { Text(Strings.t("photo")) }
             OutlinedTextField(draft, { v ->
                 if (draft.isEmpty() != v.isEmpty()) scope.launch { model.typing(chat.id, v.isNotEmpty()) }
                 draft = v
@@ -500,6 +533,44 @@ private fun Settings(model: AppModel, state: UiState) {
                     scope.launch { model.setFeature(f.key, on, option) }
                 }
             }
+        }
+    }
+}
+
+/** A file in the chat: preview picture, name and size, progress, pause / resume, save as. */
+@Composable
+private fun FileRow(model: AppModel, state: UiState, msgId: String) {
+    val scope = rememberCoroutineScope()
+    val f = model.fileOf(msgId) ?: return
+    val t = state.transfers[msgId]
+    Column(Modifier.width(220.dp)) {
+        f.thumbnail?.let { bytes -> thumbnailBitmap(bytes)?.let { Image(it, null, Modifier.size(160.dp)) } }
+        val dims = if (f.width != null && f.height != null) "  ${f.width}x${f.height}" else ""
+        Text("${f.name}  ${f.size.toLong() / 1024} KiB$dims", style = MaterialTheme.typography.bodySmall)
+        if (t != null && t.total > 0u) {
+            val what = when {
+                t.state == "paused" -> Strings.t("paused")
+                t.upload -> Strings.t("uploading")
+                else -> Strings.t("downloading")
+            }
+            LinearProgressIndicator(progress = { (t.done.toDouble() / t.total.toDouble()).toFloat() }, modifier = Modifier.fillMaxWidth())
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("$what ${t.done.toLong() * 100 / t.total.toLong()}%", style = MaterialTheme.typography.bodySmall)
+                if (t.upload && t.state == "paused") {
+                    TextButton(onClick = { scope.launch { model.resumeTransfer(msgId) } }) { Text(Strings.t("resume")) }
+                } else if (t.upload) {
+                    TextButton(onClick = { scope.launch { model.pauseTransfer(msgId) } }) { Text(Strings.t("pause")) }
+                }
+            }
+        }
+        if (msgId in state.downloaded) Text("\u2713 " + Strings.t("downloaded"), style = MaterialTheme.typography.bodySmall)
+        if (f.id.isNotEmpty()) {
+            TextButton(onClick = {
+                val d = java.awt.FileDialog(null as java.awt.Frame?, Strings.t("save_as"), java.awt.FileDialog.SAVE)
+                d.file = AppModel.safeName(f.name)
+                d.isVisible = true
+                if (d.file != null) scope.launch { model.saveFile(msgId, java.io.File(d.directory, d.file)) }
+            }) { Text(Strings.t("save_as")) }
         }
     }
 }

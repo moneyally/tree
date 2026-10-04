@@ -16,11 +16,15 @@
 //! * Passing errors (network, server 5xx, 408, 425, 429) are retried with
 //!   backoff; other refusals fail the item at once. Failed items stay
 //!   until the user retries or cancels them.
+//! * A file item uploads its attachment first ([`crate::media`]); it is
+//!   sealed once the upload is complete. An attempt that moved the upload
+//!   on does not use up the budget of attempts.
 
 use std::collections::{HashMap, HashSet};
 
 use tree_core::storage::outbox::{idempotency_key, OutboxItem, OutboxState};
 
+use crate::media::Up;
 use crate::messages::now;
 use crate::payload::Payload;
 use crate::{Error, Event, Session};
@@ -58,6 +62,9 @@ impl From<OutboxItem> for OutboxEntry {
 pub(crate) enum Attempt {
     Sent(usize),
     Retry,
+    /// A file upload is paused or used up this pass's share: not a failure,
+    /// but later items of the group wait.
+    Hold,
     Failed(Error),
 }
 
@@ -117,20 +124,36 @@ impl Session {
         message_id: Option<&str>,
         local: impl FnOnce(&mut Self) -> Result<(), Error>,
     ) -> Result<usize, Error> {
+        self.queue_item(gid, p, message_id, None, local)
+    }
+
+    /// [`Session::queue_payload`], optionally for a file: `upload` is the
+    /// item's local id (its blob is named by it) and its upload record. A
+    /// file item is never sealed at enqueue (the attachment id comes with
+    /// the upload) and is queued even with no other device in the group
+    /// (the upload still has to happen for this user's history).
+    pub(crate) fn queue_item(
+        &mut self,
+        gid: &[u8],
+        p: &Payload,
+        message_id: Option<&str>,
+        upload: Option<(String, crate::media::UploadState)>,
+        local: impl FnOnce(&mut Self) -> Result<(), Error>,
+    ) -> Result<usize, Error> {
         if !self.group(gid)?.is_member() {
             return Err(Error::Usage("this device is not a member of the group".into()));
         }
         let to = self.other_devices(gid)?;
-        if to.is_empty() {
+        if to.is_empty() && upload.is_none() {
             local(self)?;
             return Ok(0);
         }
         let inner = p.encode();
-        // Seal now unless an older item of this group still waits for its
-        // seal (it must keep its place).
+        // Seal now unless it is a file, or an older item of this group still
+        // waits for its seal (it must keep its place).
         let behind_unsealed =
             self.client.outbox_unsent(Some(gid))?.iter().any(|i| i.body.is_none() && i.state != OutboxState::Failed);
-        let encoded = if behind_unsealed {
+        let encoded = if behind_unsealed || upload.is_some() {
             None
         } else {
             match self.seal_payload(gid, &inner) {
@@ -139,16 +162,21 @@ impl Session {
                 Err(e) => return Err(e),
             }
         };
-        let local_id = new_local_id();
+        let local_id = upload.as_ref().map(|(l, _)| l.clone()).unwrap_or_else(new_local_id);
         let mut item = OutboxItem::new(&local_id, gid, message_id, now());
         self.client.begin_batch()?;
-        let r = self.enqueue_in_batch(gid, &mut item, encoded, inner, to, local);
+        let r = self.enqueue_in_batch(gid, &mut item, encoded, inner, to, |s| {
+            if let Some((l, st)) = &upload {
+                s.save_upload(l, st)?;
+            }
+            local(s)
+        });
         self.end_batch()?;
         r?;
         match take(self.drive_outbox(Some(gid))?, &local_id) {
             Some(Attempt::Sent(n)) => Ok(n),
             Some(Attempt::Failed(e)) => Err(e),
-            Some(Attempt::Retry) | None => Ok(0),
+            Some(Attempt::Retry | Attempt::Hold) | None => Ok(0),
         }
     }
 
@@ -204,7 +232,7 @@ impl Session {
                 continue;
             }
             let a = self.attempt(item.clone(), due)?;
-            if matches!(a, Attempt::Retry) {
+            if matches!(a, Attempt::Retry | Attempt::Hold) {
                 held.insert(item.group_id.clone());
             }
             out.push((item.local_id, a));
@@ -217,7 +245,25 @@ impl Session {
     fn attempt(&mut self, mut item: OutboxItem, due: bool) -> Result<Attempt, Error> {
         let gid = item.group_id.clone();
         if item.body.is_none() {
-            let inner = item.payload.clone().unwrap_or_default();
+            let mut inner = item.payload.clone().unwrap_or_default();
+            // A file: its upload first, then the reference gets the id.
+            if let Some(st) = self.upload_state(&item.local_id)? {
+                match self.drive_upload(&item.local_id, st) {
+                    Up::Done(id) => match Payload::decode(&inner) {
+                        Some(Payload::File(mut f)) => {
+                            f.id = id;
+                            inner = Payload::File(f).encode();
+                        }
+                        _ => {
+                            self.client.outbox_mark_failed(&item.local_id, "damaged outbox item")?;
+                            return Ok(Attempt::Failed(Error::Protocol("damaged outbox item".into())));
+                        }
+                    },
+                    Up::Hold => return Ok(Attempt::Hold),
+                    // An attempt that moved the upload on does not count.
+                    Up::Failed { error, progressed } => return self.after_failure(&item, due && !progressed, error),
+                }
+            }
             let enc = match self.seal_payload(&gid, &inner) {
                 Ok(e) => e,
                 Err(e) => return self.after_failure(&item, due, e),
@@ -225,6 +271,7 @@ impl Session {
             let to = self.other_devices(&gid)?;
             if to.is_empty() {
                 self.client.outbox_mark_sent(&item.local_id, now())?;
+                self.upload_finished(&item.local_id)?;
                 return Ok(Attempt::Sent(0));
             }
             self.client.begin_batch()?;
@@ -249,6 +296,7 @@ impl Session {
         match self.api.send_keyed(&self.creds, &item.recipients, body, key) {
             Ok(v) => {
                 self.client.outbox_mark_sent(&item.local_id, now())?;
+                self.upload_finished(&item.local_id)?;
                 Ok(Attempt::Sent(v["delivered"].as_u64().unwrap_or(0) as usize))
             }
             Err(e) => self.after_failure(&item, due, e),
@@ -329,11 +377,17 @@ impl Session {
     /// leaves the outbox, and its message leaves this device's history.
     /// Others may still have it if an earlier attempt reached the server
     /// and only the answer was lost.
+    /// A paused file upload can be cancelled too; its partial upload goes.
     pub fn cancel_send(&mut self, id: &str) -> Result<(), Error> {
         let item = self.find_item(id)?;
+        let paused = self.upload_state(&item.local_id)?.is_some_and(|u| u.paused);
+        if paused && item.state != OutboxState::Failed {
+            self.client.outbox_mark_failed(&item.local_id, "cancelled")?;
+        }
         let Some(item) = self.client.outbox_cancel(&item.local_id)? else {
             return Err(Error::Usage("only a failed message can be cancelled".into()));
         };
+        self.upload_cancelled(&item.local_id)?;
         if let Some(m) = &item.message_id {
             self.client.remove_message(&item.group_id, m)?;
         }

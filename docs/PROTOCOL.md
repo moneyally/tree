@@ -683,32 +683,116 @@ edit window, disappearing timer, ...) is implemented feature by feature.
 
 ### 6.12 Attachments
 
-Each file is encrypted with its own key and uploaded as an opaque blob
-(`POST /v1/attachments`); the reference travels in an end-to-end encrypted
-application message ([APP_PROTOCOL.md](APP_PROTOCOL.md) `file`).
+Each file is encrypted on the sender's device with its own secret, padded to
+a size bucket and uploaded in parts as one opaque blob (`/v1/uploads`,
+SERVER_API.md). The reference, with everything the sender's app knows about
+the file, travels only inside an end-to-end encrypted application message
+([APP_PROTOCOL.md](APP_PROTOCOL.md) `file`). Format version 2
+(`crates/tree-core/src/attachment.rs`).
+
+**Keys.** A fresh 32-byte file secret `s` per file, from the operating
+system's random generator; it is never used as a key itself. HKDF-SHA256
+(RFC 5869), salt `tree/attachment/v2`, input `s`, derives one value per
+label:
+
+| Label (HKDF info) | Output | Used for |
+| --- | --- | --- |
+| `tree/attachment/v2/aead-key` | 32 bytes | the AES-256-GCM key |
+| `tree/attachment/v2/nonce-prefix` | 7 bytes | the STREAM nonce prefix |
+| `tree/attachment/v2/commit-key` | 32 bytes | the HMAC key of the key commitment |
+
+No key serves two purposes; a key is used for one file only.
+
+**Chunks: the STREAM construction.** Hoang, Reyhanitabar, Rogaway, Vizár
+(CRYPTO 2015), as implemented by RustCrypto `aead::stream::StreamBE32` with
+AES-256-GCM:
 
 | Item | Value |
 | --- | --- |
-| Cipher | AES-256-GCM in the STREAM construction (Hoang, Reyhanitabar, Rogaway, Vizár, CRYPTO 2015), RustCrypto `aead::stream::StreamBE32` |
-| Chunks | 64 KiB of plaintext + 16-byte tag; nonce = 7-byte random prefix ‖ 32-bit big-endian chunk counter ‖ last-chunk flag; an empty file is one empty last chunk |
-| Key | 32 random bytes per file, never reused |
-| Commitment | the reference carries SHA-256 of the ciphertext and of the plaintext; the receiver checks the first before decrypting and the second (and the size) after |
-| Retention | the server deletes the blob after the mailbox TTL (30 days) |
+| Plaintext per chunk | 1 MiB (the last chunk may be shorter) |
+| Nonce of chunk `i` | prefix (7) ‖ `i` as 32-bit big-endian ‖ last-chunk flag (1 byte: 1 for the last chunk, else 0) |
+| Ciphertext per chunk | plaintext + 16-byte GCM tag |
+| Nonce reuse | impossible: the key is unique to the file and every chunk has its own index |
+| Reorder, drop, repeat | the chunk fails to authenticate under the nonce of its position |
+| Truncation | the receiver knows the chunk count from the size in the message; a blob cut on a chunk boundary also fails because its new last chunk was sealed with flag 0 |
+| Empty file | one padded chunk |
 
-Why the hashes: AES-GCM is not key-committing, so one ciphertext can be made
-to decrypt under two keys to two different files. Every member of a group
-receives the same reference, so within a group this cannot show different
-files to different members; the plaintext hash also binds the content for
-later reporting. Chunk reordering, dropping and truncation are detected by
-STREAM itself.
+**Key commitment.** AES-GCM alone is not key-committing: one ciphertext can
+be built to decrypt under two keys to two different files. The blob starts
+with `C = HMAC-SHA256(commit-key, "tree/attachment/v2/key-commitment")`. The
+receiver derives `C` from the secret in the message and compares it in
+constant time before decrypting anything; two different secrets give the
+same `C` only through an HMAC or HKDF collision. This is the "commitment
+derived from the key" construction (a separate KDF output stored with the
+ciphertext); the key it commits to is the one that derives the cipher key.
+The message also carries SHA-256 of the plaintext, checked after
+decryption, so a reported file is bound to its content.
 
-The server learns the size of each ciphertext and when it was uploaded and
-fetched (and by which device, while the request runs); not its name, type,
-uploader (not stored) or content. A device that has the id can fetch the
-ciphertext; it is useless without the key from the message.
+**Padding.** Before encryption the plaintext is padded with zero bytes to
+`padded_len(size)`:
 
-The group's `chat.media` setting (section 6.11) is enforced by every device:
-when released, sending is refused and received references are dropped.
+| Plaintext size | Padded to |
+| --- | --- |
+| up to 1 KiB | 1 KiB |
+| up to 1 MiB | the next power of two |
+| above 1 MiB | Padmé (Nikitin et al., PETS 2019): keep the top `floor(log2 E) + 1` bits after the leading one of `E = floor(log2 L)`, round up the rest. At most about 3 % overhead from 1 MiB on (32 KiB steps just above 1 MiB, 64 MiB steps near 2 GiB) |
+
+The padding is inside the encryption and authenticated; the receiver checks
+that it is all zero and that the plaintext matches the size and hash in the
+message. The server sees only the blob length, a function of the bucket:
+
+```text
+blob = C (32) ‖ chunk_0 ‖ ... ‖ chunk_{n-1}
+len  = 32 + padded_len(size) + 16 · ceil(padded_len(size) / 1 MiB)
+```
+
+Largest file: 2 GiB of plaintext (design: free limit); the server's default
+limit is 2 GiB + 64 KiB of blob.
+
+**Metadata.** The name, type, plaintext size, picture or video width and
+height, length (voice, video) and a small preview picture (JPEG or PNG, at
+most 32 KiB, made by the sender's app) are fields of the encrypted message.
+None of them is ever a separate server object. Receivers drop a reference
+that does not fit the format (version, key length, limits).
+
+**Upload.** The blob is written to the sender's media folder
+(`<profile>.media/out/`, ciphertext only; its secret stays in the encrypted
+profile) and uploaded part by part (`UPLOAD_CHUNK_BYTES`, default 1 MiB,
+independent of the AEAD chunks). The server counts the parts it has; an
+upload interrupted by the network, a crash or a restart resumes from that
+count. Unfinished uploads are deleted by the server after 24 hours; the
+client then starts again. When the last part arrives the blob becomes an
+attachment with the upload's id. The message waits in the outbox until then
+(section 6.13).
+
+**Download.** By ranges of one part (`GET /v1/attachments/{id}?offset=`),
+into `<profile>.media/in/<id>.part`; an interrupted download resumes from
+what is on disk. The receiver checks the server's total against the length
+the message implies, then the commitment, every chunk, the padding, the
+size and the plaintext hash. A file written to disk goes to a temporary
+name first and is renamed only when everything matched.
+
+**Retention and visibility.** The server deletes the blob after the mailbox
+TTL (30 days). It learns the padded size of each blob, when it was uploaded
+(minute) and fetched, and, while an upload is unfinished, which device
+uploads it; not its name, type, real size, dimensions, preview or content.
+Any registered device that has the id can fetch the ciphertext; it is
+useless without the secret from the message.
+
+**Settings.** The group's `chat.media`, `chat.view_once` and `chat.voice`
+(section 6.11) are enforced by every device: when released, sending is
+refused and received references are dropped. A view-once reference is
+deleted after the first successful open; the sender keeps none.
+
+**Auto-download (`user.auto_download`).** Applied by default with option
+`wifi:20m`. Option `<network>[:<size>]`: `wifi` (unmetered networks only),
+`wifi+mobile` or `never`, and a plaintext size limit (`k`, `m`, `g`; at
+most `2g`). The app reports the network (Wi-Fi or other unmetered, mobile,
+none); until it does, nothing downloads by itself. A file downloads by
+itself only if the setting allows the network and size, the sender is one
+of the user's contacts (accepted, not blocked) or the user's own device,
+the chat is not a request and the file is not view-once. Files from
+strangers never do. Released: nothing downloads by itself.
 
 ### 6.13 Outbox: reliable sending
 
@@ -785,6 +869,17 @@ answers a retry from the winner hash it stores per epoch (7.4), so commits
 are idempotent without a key.
 
 ---
+
+**Files.** A file message is queued like any other, together with its
+upload record; it is not sealed at enqueue, because the attachment id comes
+with the upload. Each attempt first moves the upload on (resuming from the
+server's count of parts), then seals and sends the reference. An attempt
+that uploaded at least one part does not count against the item's budget;
+a refusal (too large, quota) fails the item, which the user retries or
+cancels (the blob and the partial upload go). An upload can be paused;
+later items of the same chat wait behind it, so the chat's order holds. Apps
+upload in slices (4 MiB per call through the bindings) so a long upload
+never holds the session.
 
 ## 7. Commit ordering
 
@@ -1749,7 +1844,9 @@ the server cannot learn it from what it sees or stores.
 | Group membership | **not protected** | the cleartext MLS group id in every message header plus the recipient list of each send; commit endpoint keeps an eligibility set | stage 4: group mailboxes with anonymous subscription |
 | Group size | **not protected** | number of recipients; commit and welcome sizes grow with the tree | stage 4 reduces (group mailbox); not fully hidden |
 | Group epoch and message type | **not protected** | cleartext `epoch` and `content_type` (application or commit) | none planned in MLS framing |
-| Message size | **partially protected** | ciphertext padded to multiples of 256 bytes; attachments sized separately (exact ciphertext size, section 6.12) | larger padding buckets (open) |
+| Message size | **partially protected** | ciphertext padded to multiples of 256 bytes | larger padding buckets (open) |
+| Attachment size | **partially protected** | the padded blob size only: powers of two up to 1 MiB, Padmé buckets above (section 6.12); name, type, real size, dimensions and previews are inside the encrypted message | — |
+| Attachment uploader | **partially protected** | the uploading device while an upload is unfinished (at most 24 hours), then nothing; bytes per account per day for the quota | sealed sender (stage 4) |
 | Timing | **not protected** | exact arrival time live; stored rounded to the minute | stage 4-5: cover traffic (optional) |
 | Sending activity per device | **not protected** | idempotency records (8.10): sending device, day, request hash per keyed send, kept up to the message TTL; no recipients, body or time of day | sealed sender (stage 4) removes the device id |
 | IP address | **not protected** from the server or network | live only; not stored (signup limiter keeps it in memory) | stage 4: relayed requests for sensitive endpoints; stage 5: independent proxies |

@@ -7,7 +7,6 @@ use reqwest::blocking::Client as Http;
 use reqwest::{Method, StatusCode};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use thiserror::Error;
 
 use crate::Error as ClientError;
 

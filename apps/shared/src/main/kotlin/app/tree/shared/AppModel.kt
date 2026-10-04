@@ -118,7 +118,10 @@ class AppModel(
     var notifier: ((String, String?) -> Unit)? = null
 
 
-    private suspend fun <T> call(block: (TreeSession) -> T): T? {
+    /** Stickers, GIFs, locations, events, video notes, photos, per-chat profiles. */
+    val rich = RichChats(this)
+
+    internal suspend fun <T> call(block: (TreeSession) -> T): T? {
         val s = session ?: return null
         return try {
             withContext(io) { block(s) }
@@ -245,6 +248,9 @@ class AppModel(
             is TreeEvent.GroupSafetyNotice -> _state.update { it.copy(notice = Strings.t("group_notice")) }
             is TreeEvent.KeyChanged -> _state.update { it.copy(notice = Strings.t("key_changed")) }
             is TreeEvent.SendFailed -> _state.update { it.copy(notice = Strings.t("send_failed")) }
+            is TreeEvent.Sticker -> maybeNotify(e.group, false, e.emoji)
+            is TreeEvent.Location -> maybeNotify(e.group, false, Strings.t("location"))
+            is TreeEvent.ChatEvent -> maybeNotify(e.group, false, e.title)
             else -> {}
         }
     }
@@ -296,6 +302,7 @@ class AppModel(
                 screenshotBlocked = blocked, folders = folders, readMine = readMine, sending = sending,
             )
         }
+        rich.refresh(open, messages)
     }
 
     suspend fun openChat(group: String?) {

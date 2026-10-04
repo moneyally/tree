@@ -300,4 +300,86 @@ class AppModelTest {
         alice.syncNow()
         alice.stop(); bob.stop()
     }
+
+    /**
+     * Rich chats through the model: a sticker pack shared by link, a sticker,
+     * a place and a live location with its countdown, an event with replies
+     * counted on both sides, a profile photo, a name for one chat only, and
+     * the GIF button hidden while the server offers no relay.
+     */
+    @Test
+    fun richChatsThroughTheModel() = runBlocking {
+        val alice = AppModel(this, Dispatchers.IO)
+        val bob = AppModel(this, Dispatchers.IO)
+        assertTrue(alice.createAccount("$dir/rich-alice.db", "alice pass", "alice", url, 8u))
+        assertTrue(bob.createAccount("$dir/rich-bob.db", "bob pass", "bob", url, 8u))
+        val g = assertNotNull(alice.newChat())
+        assertTrue(alice.invite(g, bob.state.value.account))
+        bob.syncNow()
+        bob.accept(g)
+        alice.syncNow()
+        bob.openChat(g)
+
+        // No relay on the test server: the GIF button is hidden.
+        assertTrue(!bob.rich.state.value.relays.gif)
+        assertTrue(!bob.rich.gifAvailable(bob.state.value))
+        assertTrue(bob.rich.allowed(bob.state.value, "chat.stickers"))
+
+        // A sticker pack: made by alice, installed by bob from its link.
+        val png = byteArrayOf(0x89.toByte(), 0x50, 0x4e, 0x47, 1, 2, 3)
+        val link = assertNotNull(alice.rich.createPack("model pack", listOf(uniffi.tree_ffi.NewStickerItem("one", "😀", "image/png", png))))
+        assertTrue(bob.rich.installPack(link))
+        assertEquals(listOf("model pack"), bob.rich.state.value.packs.map { it.title })
+        val pack = alice.rich.state.value.packs.single().id
+        assertTrue(alice.rich.sendSticker(g, pack, 0))
+        bob.syncNow()
+        val sticker = bob.state.value.messages.last()
+        assertEquals("sticker", sticker.kind)
+        assertEquals(pack, bob.rich.state.value.stickers[sticker.id]?.pack)
+        assertTrue(png.contentEquals(bob.rich.stickerImage(pack, 0)))
+
+        // A place, then a live location with a countdown.
+        assertTrue(alice.rich.sendLocation(g, 37.5665, 126.978, 10, "시청"))
+        bob.syncNow()
+        val place = bob.rich.state.value.places[bob.state.value.messages.last().id]
+        assertEquals("시청", place?.label)
+        assertTrue(place!!.geoUri.startsWith("geo:37.5665"))
+        val live = assertNotNull(alice.rich.startLive(g, 37.0, 127.0, 900))
+        bob.syncNow()
+        val lp = assertNotNull(bob.rich.state.value.places[live])
+        assertTrue(lp.live)
+        assertNotNull(bob.rich.countdown(lp))
+        assertTrue(alice.rich.stopLive(g, live))
+        bob.syncNow()
+        assertTrue(bob.rich.state.value.places[live]!!.ended)
+
+        // An event: bob answers, both devices count it.
+        val ev = assertNotNull(alice.rich.createEvent(g, "저녁", 1_900_000_000L, "식당", null))
+        bob.syncNow()
+        assertTrue(bob.rich.rsvp(g, ev, "going"))
+        alice.openChat(g)
+        alice.syncNow()
+        val me = bob.session!!.memberId()
+        assertEquals(listOf(me), alice.rich.state.value.events[ev]?.going)
+        assertEquals("going", bob.rich.state.value.events[ev]?.mine)
+
+        // Profile photo: bob sees alice's in the chat and in the chat list.
+        assertTrue(alice.rich.setPhoto(png, "image/png"))
+        bob.syncNow()
+        val aliceId = alice.session!!.memberId()
+        assertTrue(png.contentEquals(bob.rich.state.value.photos[aliceId]?.bytes))
+        assertTrue(png.contentEquals(bob.rich.state.value.chatPhotos[g]?.bytes))
+
+        // A name for this chat only, once alice turned the feature on.
+        assertTrue(!alice.rich.setChatName(g, "앨리스 (회사)"))
+        alice.clearMessages()
+        assertTrue(alice.setFeature("user.per_chat_profile", true))
+        assertTrue(alice.rich.setChatName(g, "앨리스 (회사)"))
+        bob.syncNow()
+        assertEquals("앨리스 (회사)", bob.state.value.names[aliceId])
+        assertTrue(alice.rich.clearChatProfile(g))
+        bob.syncNow()
+        assertEquals("alice", bob.state.value.names[aliceId])
+        alice.stop(); bob.stop()
+    }
 }

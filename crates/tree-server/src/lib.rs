@@ -25,8 +25,8 @@ pub mod files;
 pub mod groups;
 pub mod keypackages;
 pub mod limits;
-pub mod messages;
 pub mod media;
+pub mod messages;
 pub mod recovery;
 pub mod social;
 pub mod util;
@@ -233,7 +233,10 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/files", post(files::upload))
         .route("/v1/files/{file_id}", get(files::download))
         .route("/v1/media", post(media::init))
-        .route("/v1/media/{media_id}", get(media::manifest).post(media::finalize))
+        .route(
+            "/v1/media/{media_id}",
+            get(media::manifest).post(media::finalize),
+        )
         .route("/v1/media/{media_id}/chunks", post(media::put_chunk))
         .route("/v1/media/{media_id}/chunks/{index}", get(media::get_chunk))
         .route("/v1/ws", get(ws::connect))

@@ -223,8 +223,9 @@ Issues found by testing Tree's own design. Each one has a regression test.
   a day, so any group from that account skipped the request inbox and the
   `user.group_add` setting.
 - **Severity:** low.
-- **Fix:** the marker is tied to the link (its hash), the adding device names
-  that hash in its roster, and the marker is used once.
+- **Fix:** the marker is tied to the link use, the adding device names it in
+  its roster, and the marker is used once. (Since F-016 the marker is a
+  nonce only the owner's device learns, not the link's hash.)
 - **Test:** `strangers_join_through_a_link` (a second group from the owner
   arrives as a request).
 
@@ -267,3 +268,50 @@ Issues found by testing Tree's own design. Each one has a regression test.
   public key, which a thief who started the change has).
 - **Fix:** the check runs on every path.
 - **Test:** `a_key_pending_elsewhere_cannot_be_applied`.
+
+## F-018: a stranger could add the user to groups as one of their contacts (fixed)
+
+- **Found:** 2026-10-04, feature-switch audit.
+- **What:** the adder of a group is the roster's sender under the account it
+  claims, and that claim was taken as it is. (a) A stranger's device that
+  claimed to be one of the user's contacts skipped message requests and
+  `user.group_add`; the key-change warning appeared, but the group was
+  accepted, and the claimed device was pinned so later groups passed
+  silently. (b) Anyone who saw a published invite link knew its hash, so
+  within a day of the user opening it they could claim the owner's account,
+  name the hash and pull the user into their own group.
+- **Severity:** medium (consent; no message content exposed).
+- **Fix:** (a) a device counts as a contact only if it was pinned before and
+  is not an unconfirmed key change; devices that only a roster claims for an
+  account that already had devices stay unconfirmed (warned, no contact
+  trust) until the user verifies the safety number or the server names them
+  in a key-package claim. (b) The joiner sends a random nonce with its join
+  request; only the owner's device gets it from the server and names it in
+  the roster. Residual: trust on first use. A device that claims an account
+  the user has no pinned device for (a contact added by hand, or none) is
+  taken as that account; key transparency (stage 4) closes this.
+- **Test:** `requests::tests::a_device_claiming_a_contacts_account_is_a_stranger`,
+  `requests::tests::a_public_link_does_not_let_others_pull_the_joiner_in`.
+
+## F-019: feature switches that did not do what they said (fixed)
+
+- **Found:** 2026-10-04, feature-switch audit.
+- **What:** `user.discoverable` was never read (names were always findable);
+  a modified admin client could write `chat.e2e` released into the group
+  settings and every member displayed it; `read_by` showed receipts after
+  `user.read_receipts` was released; releasing `user.recovery_phrase`
+  without the phrase showed "released" while the server kept the key for 7
+  days; options were never validated and `chat.disappearing` silently
+  ignored `1d`.
+- **Severity:** low to medium (users were told a protection was on or off
+  when it was not).
+- **Fix:** the client registers the username with the discoverable flag
+  and re-registers when the setting changes; settings contradicting a
+  permanent lock or holding an invalid option are rejected in commit
+  validation and dropped on read; `read_by` checks the setting; the recovery
+  setting follows the server (applied with "release pending until" while
+  the key still works); one option table in `features.rs` with
+  `INVALID_OPTION`.
+- **Test:** `crates/tree-client/tests/feature_switches.rs`,
+  `a_pending_release_is_reported_until_the_server_drops_the_key`,
+  `locked_keys_and_bad_options_in_settings_rejected`, `options_are_validated`.

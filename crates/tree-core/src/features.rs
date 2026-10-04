@@ -100,6 +100,9 @@ pub enum FeatureError {
     NotAdmin,
     /// `PLAN_REQUIRED`
     PlanRequired,
+    /// `INVALID_OPTION`: the option does not fit the feature (see
+    /// [`option_format`]); the text says what would.
+    InvalidOption(String),
 }
 
 impl FeatureError {
@@ -112,6 +115,7 @@ impl FeatureError {
             Self::LockedByChat => "LOCKED_BY_CHAT",
             Self::NotAdmin => "NOT_ADMIN",
             Self::PlanRequired => "PLAN_REQUIRED",
+            Self::InvalidOption(_) => "INVALID_OPTION",
         }
     }
 }
@@ -283,6 +287,7 @@ impl Registry {
             return Err(FeatureError::PlanRequired);
         }
         if matches!(f.lock, Lock::None) {
+            let option = check_option(f.key, option)?;
             self.state.insert((f.scope, f.key), (State::Applied, option));
         }
         self.status(key)
@@ -347,6 +352,127 @@ impl Registry {
     /// Operator flag for a key that also exists at a lower scope.
     pub fn set_server_flag(&mut self, key: &'static str, state: State) {
         self.state.insert((Scope::Server, key), (state, None));
+    }
+}
+
+/// What the option of a feature may be. Defined here only, for every
+/// platform: the registry refuses anything else with `INVALID_OPTION`, group
+/// settings carrying anything else are rejected (PROTOCOL.md 6.11), and the
+/// apps draw their choices from [`option_choices`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OptionFormat {
+    /// The feature takes no option.
+    Nothing,
+    /// A duration between `min` and `max` seconds: whole seconds (`90`) or
+    /// a whole number with one unit, `s`, `m`, `h`, `d` or `w` (`30m`, `1d`,
+    /// `2w`). `default` is stored when the feature is applied without one.
+    Duration { min: i64, max: i64, default: Option<&'static str> },
+    /// One of these words. No option means the first one.
+    OneOf(&'static [&'static str]),
+    /// A feature defined at run time with no declared format: kept as given.
+    Free,
+}
+
+const MINUTE: i64 = 60;
+const HOUR: i64 = 3600;
+const DAY: i64 = 86400;
+
+/// The option format of `key` (see [`OptionFormat`]).
+pub fn option_format(key: &str) -> OptionFormat {
+    use OptionFormat::*;
+    match key {
+        // How long after arrival a message disappears.
+        "chat.disappearing" => Duration { min: 1, max: 365 * DAY, default: Some("1d") },
+        // How long after arrival a message can still be edited / deleted
+        // for everyone (no option: 24 hours).
+        "chat.edit" | "chat.delete_for_all" => Duration { min: 1, max: 30 * DAY, default: None },
+        "chat.mention_all" => OneOf(&["admins", "all"]),
+        "user.group_add" => OneOf(&["contacts", "nobody"]),
+        // How the app unlocks (no option: the passphrase).
+        "user.app_lock" => OneOf(&["passphrase", "pin", "bio"]),
+        k if standard_features().iter().any(|f| f.key == k) => Nothing,
+        _ => Free,
+    }
+}
+
+/// Seconds in a duration option (`90`, `30s`, `5m`, `1h`, `1d`, `2w`), or
+/// `None` if it is not one.
+pub fn parse_duration(s: &str) -> Option<i64> {
+    let s = s.trim();
+    let (num, unit) = match s.char_indices().last() {
+        Some((i, c)) if c.is_ascii_alphabetic() => (&s[..i], c),
+        _ => (s, 's'),
+    };
+    if num.is_empty() || num.len() > 9 || !num.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let n: i64 = num.parse().ok()?;
+    let mul = match unit {
+        's' => 1,
+        'm' => MINUTE,
+        'h' => HOUR,
+        'd' => DAY,
+        'w' => 7 * DAY,
+        _ => return None,
+    };
+    n.checked_mul(mul)
+}
+
+/// Checks `option` for `key` and returns what is stored: the option as
+/// given (trimmed), or the format's default when there is none.
+pub fn check_option(key: &str, option: Option<String>) -> Result<Option<String>, FeatureError> {
+    let format = option_format(key);
+    let bad = |want: String| Err(FeatureError::InvalidOption(format!("{key}: {want}")));
+    match (format, option.map(|o| o.trim().to_string())) {
+        (OptionFormat::Free, o) => Ok(o),
+        (OptionFormat::Duration { default, .. }, None) => Ok(default.map(str::to_string)),
+        (_, None) => Ok(None),
+        (OptionFormat::Nothing, Some(_)) => bad("takes no option".into()),
+        (OptionFormat::OneOf(words), Some(o)) => {
+            if words.contains(&o.as_str()) {
+                Ok(Some(o))
+            } else {
+                bad(format!("one of {}", words.join(", ")))
+            }
+        }
+        (OptionFormat::Duration { min, max, .. }, Some(o)) => match parse_duration(&o) {
+            Some(n) if (min..=max).contains(&n) => Ok(Some(o)),
+            _ => bad(format!("a duration from {min} to {max} seconds, e.g. 90, 30m, 1h, 1d, 2w")),
+        },
+    }
+}
+
+/// Seconds of a duration feature's option, or of its default (`None` if
+/// the feature has no duration or none is set).
+pub fn option_seconds(key: &str, option: Option<&str>) -> Option<i64> {
+    let OptionFormat::Duration { min, max, default } = option_format(key) else { return None };
+    option.or(default).and_then(parse_duration).filter(|n| (min..=max).contains(n))
+}
+
+/// Values the apps offer for a feature's option (empty: no option).
+pub fn option_choices(key: &str) -> Vec<String> {
+    let v: &[&str] = match (key, option_format(key)) {
+        ("chat.disappearing", _) => &["5m", "1h", "1d", "7d", "30d"],
+        (_, OptionFormat::Duration { .. }) => &["15m", "1h", "1d", "7d"],
+        (_, OptionFormat::OneOf(words)) => words,
+        _ => &[],
+    };
+    v.iter().map(|s| s.to_string()).collect()
+}
+
+/// The permanent lock of a standard feature (`None` for unknown keys).
+pub fn standard_lock(key: &str) -> Option<Lock> {
+    standard_features().into_iter().find(|f| f.key == key).map(|f| f.lock)
+}
+
+/// A chat setting that contradicts a permanent lock (e.g. `chat.e2e`
+/// released). Such a setting never takes effect: devices reject commits
+/// that write one and ignore one that is already there.
+pub fn contradicts_lock(key: &str, applied: bool) -> bool {
+    match standard_lock(key) {
+        Some(Lock::AlwaysOn(_)) => !applied,
+        Some(Lock::AlwaysOff(_)) => applied,
+        _ => false,
     }
 }
 

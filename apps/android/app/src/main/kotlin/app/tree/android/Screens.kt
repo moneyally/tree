@@ -246,11 +246,24 @@ private fun SettingsScreen(model: AppModel, state: UiState) {
         items(state.features, key = { it.key }) { f ->
             Row(Modifier.fillMaxWidth().padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text(f.key)
+                    Text(f.key + (f.option?.let { " ($it)" } ?: ""))
                     f.lockedBy?.let { Text("${Strings.t("locked")}: $it", style = MaterialTheme.typography.bodySmall) }
+                    model.pendingNote(f)?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                    if (f.lockedBy == null && f.choices.isNotEmpty()) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            f.choices.forEach { c ->
+                                TextButton(onClick = { scope.launch { model.setFeature(f.key, true, c) } }) {
+                                    Text(if (f.applied && f.option == c) "[$c]" else c)
+                                }
+                            }
+                        }
+                    }
                 }
-                Switch(checked = f.applied, enabled = f.lockedBy == null && f.key != "user.recovery_phrase",
-                    onCheckedChange = { on -> scope.launch { model.setFeature(f.key, on) } })
+                // The recovery phrase is made with the button above; the
+                // switch only releases it (pending for 7 days on the server).
+                val switchable = f.key != "user.recovery_phrase" || (f.applied && f.releasePendingUntil == null)
+                Switch(checked = f.applied, enabled = f.lockedBy == null && switchable,
+                    onCheckedChange = { on -> scope.launch { model.setFeature(f.key, on, if (on) f.option else null) } })
             }
         }
     }

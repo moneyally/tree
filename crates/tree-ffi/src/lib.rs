@@ -21,6 +21,9 @@ pub enum TreeError {
     /// A feature-registry code (`LOCKED_BY_CHAT`, `NOT_ADMIN`, ...).
     #[error("feature: {code}")]
     Feature { code: String },
+    /// `INVALID_OPTION`: `reason` says which values the feature takes.
+    #[error("INVALID_OPTION: {reason}")]
+    InvalidOption { reason: String },
     /// Wrong passphrase, or a damaged database.
     #[error("wrong passphrase or damaged database")]
     WrongKey,
@@ -37,6 +40,7 @@ impl From<tree_client::Error> for TreeError {
             E::Server { status, code } => TreeError::Server { status, code },
             E::Network(reason) => TreeError::Network { reason },
             E::Feature(code) => TreeError::Feature { code },
+            E::InvalidOption(reason) => TreeError::InvalidOption { reason },
             E::Usage(reason) => TreeError::Usage { reason },
             E::Core(tree_core::error::TreeError::WrongKey) => TreeError::WrongKey,
             other => TreeError::Other { reason: other.to_string() },
@@ -258,6 +262,12 @@ pub struct Feature {
     /// Why it cannot be changed here, if it cannot (`always: ...`, `server`,
     /// `chat`, `plan`).
     pub locked_by: Option<String>,
+    /// Values the app offers for the option (empty: the feature takes none).
+    pub choices: Vec<String>,
+    /// A release was asked for but takes effect only then (unix seconds);
+    /// until then the feature still works and `applied` stays true. Show
+    /// "release pending until <date>".
+    pub release_pending_until: Option<i64>,
 }
 
 impl From<tree_core::features::Status> for Feature {
@@ -267,14 +277,22 @@ impl From<tree_core::features::Status> for Feature {
             key: s.key.to_string(),
             applied: s.state == tree_core::features::State::Applied,
             option: s.option,
+            choices: if s.locked_by.is_some() { Vec::new() } else { tree_core::features::option_choices(s.key) },
             locked_by: s.locked_by.map(|l| match l {
                 L::Always(r) => format!("always: {r}"),
                 L::Server => "server".into(),
                 L::Chat => "chat".into(),
                 L::Plan => "plan".into(),
             }),
+            release_pending_until: None,
         }
     }
+}
+
+/// A user setting with what only the session knows (a pending release).
+fn user_feature(s: &Session, f: tree_core::features::Status) -> R<Feature> {
+    let pending = s.release_pending(f.key)?;
+    Ok(Feature { release_pending_until: pending, ..f.into() })
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -713,8 +731,9 @@ impl TreeSession {
 
     // --- people ---
 
-    pub fn set_username(&self, name: String, discoverable: bool) -> R<String> {
-        Ok(self.s().set_username(&name, discoverable)?)
+    /// Findable or hidden as `user.discoverable` says.
+    pub fn set_username(&self, name: String) -> R<String> {
+        Ok(self.s().set_username(&name)?)
     }
 
     pub fn release_username(&self) -> R<()> {
@@ -777,15 +796,24 @@ impl TreeSession {
 
     /// Every user setting with its state, for the settings screen.
     pub fn features(&self) -> R<Vec<Feature>> {
-        Ok(self.s().features()?.into_iter().map(Into::into).collect())
+        let s = self.s();
+        s.features()?.into_iter().map(|f| user_feature(&s, f)).collect()
     }
 
+    /// `option`: one of `option_choices(key)` or another value of the
+    /// feature's format; anything else is `InvalidOption`.
     pub fn apply_feature(&self, key: String, option: Option<String>) -> R<Feature> {
-        Ok(self.s().apply_feature(&key, option)?.into())
+        let s = self.s();
+        let f = s.apply_feature(&key, option)?;
+        user_feature(&s, f)
     }
 
+    /// Check `release_pending_until` in the answer: some releases (the
+    /// recovery phrase without its words) take effect only later.
     pub fn release_feature(&self, key: String) -> R<Feature> {
-        Ok(self.s().release_feature(&key)?.into())
+        let s = self.s();
+        let f = s.release_feature(&key)?;
+        user_feature(&s, f)
     }
 
     /// A new recovery phrase (shown once, never stored); `korean` picks the

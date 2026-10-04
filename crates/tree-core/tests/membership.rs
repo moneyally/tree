@@ -634,6 +634,89 @@ fn settings_without_admin_rejected() {
     assert!(matches!(r, Err(TreeError::Rejected(ref e)) if e.contains("admin")), "{r:?}");
 }
 
+/// A modified admin client cannot change a permanently locked chat key
+/// (`chat.e2e` released, `chat.private_to_public` applied) or write an
+/// option outside the feature's format: every device rejects the commit,
+/// and an honest client refuses to make one.
+#[test]
+fn locked_keys_and_bad_options_in_settings_rejected() {
+    use tree_core::group_settings::ChatSetting;
+    let (alice, bob, mut a, mut b, mut m) = chat_with_insider("mallory");
+    let mut s = a.settings();
+    s.admins.push(m.member_id());
+    let p = a.change_settings(&alice, &s).unwrap();
+    a.confirm_commit(&alice).unwrap();
+    b.receive(&bob, &p.commit).unwrap();
+    m.receive_commit(&p.commit);
+    let crafted = |key: &str, applied: bool, option: Option<&str>| {
+        let mut evil = s.clone();
+        evil.features.insert(key.into(), ChatSetting { applied, option: option.map(str::to_string) });
+        evil
+    };
+    let cases = [
+        (crafted("chat.e2e", false, None), "permanently locked"),
+        (crafted("chat.private_to_public", true, None), "permanently locked"),
+    ];
+    for (evil, why) in cases {
+        assert!(a.change_settings(&alice, &evil).is_err(), "an honest admin client refuses: {why}");
+        let (pr, sg) = (&m.provider, &m.signer);
+        let ext = openmls::prelude::Extensions::from_vec(vec![
+            openmls::prelude::Extension::RequiredCapabilities(openmls::prelude::RequiredCapabilitiesExtension::new(
+                &[openmls::prelude::ExtensionType::Unknown(tree_core::group_settings::EXTENSION_TYPE)],
+                &[],
+                &[],
+            )),
+            openmls::prelude::Extension::Unknown(
+                tree_core::group_settings::EXTENSION_TYPE,
+                openmls::prelude::UnknownExtension(evil.encode().unwrap()),
+            ),
+        ])
+        .unwrap();
+        let g = m.group.as_mut().unwrap();
+        let (commit, _, _) = g.update_group_context_extensions(pr, ext, sg).unwrap();
+        g.clear_pending_commit(openmls_traits::OpenMlsProvider::storage(pr)).unwrap();
+        let sealed = m.seal(&commit.to_bytes().unwrap());
+        let r = b.receive(&bob, &sealed);
+        assert!(matches!(r, Err(TreeError::Rejected(ref e)) if e.contains(why)), "{why}: {r:?}");
+        assert!(!b.settings().features.contains_key("chat.e2e"));
+    }
+    // An option this version does not know is not refused (a newer client
+    // may write it; refusing would split the group) but reads as the
+    // default; an honest client never writes it.
+    for (key, opt, want) in [("chat.disappearing", "forever", Some("1d")), ("chat.media", "1d", None)] {
+        let evil = crafted(key, true, Some(opt));
+        assert!(a.change_settings(&alice, &evil).is_err(), "an honest admin client refuses {key}={opt}");
+        let (pr, sg) = (&m.provider, &m.signer);
+        let ext = openmls::prelude::Extensions::from_vec(vec![
+            openmls::prelude::Extension::RequiredCapabilities(openmls::prelude::RequiredCapabilitiesExtension::new(
+                &[openmls::prelude::ExtensionType::Unknown(tree_core::group_settings::EXTENSION_TYPE)],
+                &[],
+                &[],
+            )),
+            openmls::prelude::Extension::Unknown(
+                tree_core::group_settings::EXTENSION_TYPE,
+                openmls::prelude::UnknownExtension(evil.encode().unwrap()),
+            ),
+        ])
+        .unwrap();
+        let g = m.group.as_mut().unwrap();
+        let (commit, _, _) = g.update_group_context_extensions(pr, ext, sg).unwrap();
+        let sealed = m.seal(&commit.to_bytes().unwrap());
+        let (pr, g) = (&m.provider, m.group.as_mut().unwrap());
+        g.merge_pending_commit(pr).unwrap();
+        b.receive(&bob, &sealed).unwrap();
+        a.receive(&alice, &sealed).unwrap();
+        assert_eq!(b.settings().features[key].option.as_deref(), want, "{key}={opt} reads as the default");
+        assert_eq!(a.settings().features[key].option.as_deref(), want);
+    }
+    // A valid option from the same admin is accepted.
+    let ok = crafted("chat.disappearing", true, Some("1d"));
+    let p = a.change_settings(&alice, &ok).unwrap();
+    a.confirm_commit(&alice).unwrap();
+    b.receive(&bob, &p.commit).unwrap();
+    assert_eq!(b.settings().features["chat.disappearing"].option.as_deref(), Some("1d"));
+}
+
 
 /// An admin's group-context commit may hold exactly Tree's settings and the
 /// required-capabilities extension naming only them (PROTOCOL.md 6.11).

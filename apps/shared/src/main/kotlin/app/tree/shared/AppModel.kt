@@ -90,6 +90,7 @@ class AppModel(
         is TreeException.WrongKey -> Strings.t("wrong_pass")
         is TreeException.Server -> "${e.code} (${e.status})"
         is TreeException.Feature -> e.code
+        is TreeException.InvalidOption -> "INVALID_OPTION: ${e.reason}"
         is TreeException.Network -> e.reason
         is TreeException.Usage -> e.reason
         is TreeException.Other -> e.reason
@@ -260,7 +261,11 @@ class AppModel(
 
     suspend fun isVerified(account: String): Boolean = call { s -> s.contacts().any { it.account == account && it.verified } } ?: false
 
-    /** Admins: apply or release a chat setting for everyone in the group. */
+    /**
+     * Admins: apply or release a chat setting for everyone in the group.
+     * `option`: one of the feature's `choices` (e.g. `1d` for
+     * chat.disappearing); null = the feature's default.
+     */
     suspend fun setChatFeature(group: String, key: String, on: Boolean, option: String? = null): Boolean =
         (call { it.setChatFeature(group, key, on, option) }?.accepted == true).also { refresh() }
 
@@ -293,9 +298,21 @@ class AppModel(
         _state.update { it.copy(features = f) }
     }
 
-    suspend fun setFeature(key: String, on: Boolean) {
-        call { if (on) it.applyFeature(key, null) else it.releaseFeature(key) }
+    /**
+     * Applies (with `option`, one of the feature's `choices` or another
+     * value of its format; null = the default) or releases a user setting.
+     * Returns false if refused (the reason is in `error`).
+     */
+    suspend fun setFeature(key: String, on: Boolean, option: String? = null): Boolean {
+        val ok = call { if (on) it.applyFeature(key, option) else it.releaseFeature(key) } != null
         loadFeatures()
+        return ok
+    }
+
+    /** "Release pending until <date>" for a release that takes effect later, else null. */
+    fun pendingNote(f: Feature): String? = f.releasePendingUntil?.let { at ->
+        val day = java.time.Instant.ofEpochSecond(at).atZone(java.time.ZoneId.systemDefault()).toLocalDate()
+        "${Strings.t("release_pending")}: $day"
     }
 
     suspend fun recoveryPhrase(korean: Boolean): String? = call { it.newRecoveryPhrase(24u, korean, null) }?.words
@@ -304,7 +321,8 @@ class AppModel(
 
     suspend fun joinLink(link: String): Boolean = call { it.joinInviteLink(link.trim()) } != null
 
-    suspend fun setUsername(name: String): String? = call { it.setUsername(name, true) }
+    /** Findable by others only while `user.discoverable` is applied. */
+    suspend fun setUsername(name: String): String? = call { it.setUsername(name) }
 
     fun clearMessages() = _state.update { it.copy(error = null, notice = null) }
 }

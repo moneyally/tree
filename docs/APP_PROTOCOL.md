@@ -20,7 +20,7 @@ One JSON object per application message, UTF-8, field `t` names the type:
 | `delete` | `id` | deletes the sender's own message `id` for everyone | its sender, if `chat.delete_for_all` is applied, within the window |
 | `react` | `id`, `emoji` (1 to 8 characters), `remove` (optional) | adds or takes back a reaction | any member, if `chat.reactions` is applied |
 | `profile` | `name` | the sender's own display name | any member, about itself |
-| `roster` | `devices`: member id (hex) -> device id; `names` (optional): member id -> name; `accounts` (optional): member id -> account id; `link` (optional): hash of the invite link the new member used | who is reachable at which server device, the sender's view of names, and which account each device belongs to | the member that just added devices (others may too) |
+| `roster` | `devices`: member id (hex) -> device id; `names` (optional): member id -> name; `accounts` (optional): member id -> account id; `link` (optional): the nonce (hex) the new member's device sent with its invite-link request (PROTOCOL.md 8.7) | who is reachable at which server device, the sender's view of names, and which account each device belongs to | the member that just added devices (others may too) |
 | `leave` | — | the sender asks to be removed (PROTOCOL.md 6.5) | any member |
 | `read` | `ids` (at most 100 message ids) | the sender read these messages | any member, while its `user.read_receipts` is applied; shown only while the receiver's is applied too |
 | `typing` | `on` | the sender started or stopped typing; never stored | any member, both sides `user.typing` |
@@ -82,15 +82,23 @@ sending device before sending and by every receiving device on arrival
 | Setting | Default | Effect |
 | --- | --- | --- |
 | `chat.media` | applied | files allowed |
-| `chat.edit` | applied, option = window in seconds (default 86400) | the sender may edit its own text |
-| `chat.delete_for_all` | applied, option = window (default 86400) | the sender may delete its own message for everyone; a placeholder stays so a late edit cannot revive it |
+| `chat.edit` | applied, option = window, a duration of 1 s to 30 days (default 24 h) | the sender may edit its own text |
+| `chat.delete_for_all` | applied, option = window, as `chat.edit` (default 24 h) | the sender may delete its own message for everyone; a placeholder stays so a late edit cannot revive it |
 | `chat.reactions` | applied | reactions allowed |
 | `chat.view_once` | applied | view-once files allowed; the reference is deleted after the first successful download (and the sender keeps none) |
-| `chat.disappearing` | released; option = seconds | every message expires that long after it arrives on each device and is deleted from its history |
+| `chat.disappearing` | released; option = a duration of 1 s to 365 days (default `1d`) | every message expires that long after it arrives on each device and is deleted from its history |
 | `chat.voice` | applied | voice messages (files with `voice`) allowed |
 | `chat.formatting` | applied | markup shown; released: plain text |
 | `chat.mention_all` | applied, option `admins` (default) or `all` | who may send @all; a refused @all is ignored by receivers (the text still arrives); released: nobody |
 | `chat.screenshot_block` | released | apps block screenshots of the chat for every member; a user can also block them for themselves (`screenshot/<group>`). It stops honest apps' screenshot function, not cameras or modified apps |
+
+Durations are whole seconds (`90`) or a whole number with one unit, `s`,
+`m`, `h`, `d` or `w` (`30m`, `1d`, `2w`). Every option is checked against
+one table (`tree_core::features::option_format`); anything else is refused
+with `INVALID_OPTION` when applied, and a commit whose settings hold an
+invalid option is rejected by every device (PROTOCOL.md 6.11). Permanently
+locked keys (`chat.e2e` on, `chat.private_to_public` off) always show and
+act as locked, whatever the settings hold.
 
 Windows and expiry are measured with the device's own clock from when it
 received (or sent) the original, never from a time the sender claims. A
@@ -122,9 +130,24 @@ request until the adder's account is known from its `roster`. Then
 | stranger, `user.stranger_block` applied | declined | declined |
 | stranger | request if `user.message_requests` applied (default), else accepted | declined if `user.group_add` applied (default: contacts only), else as for a 1:1 chat |
 
-A group whose adder names, in its roster, an invite link the user opened
-from that adder in the last day (PROTOCOL.md 8.7) is accepted after the
-blocked check, once: the user asked to join that group.
+The adder is the roster's sender under the account its roster claims. The
+claim counts only if that device is already pinned for the account and is
+not an unconfirmed key change (a device that only a roster claimed for an
+account that already had devices; confirmed when the user verifies the
+safety number or the server names it in a key-package claim), or if no
+device is pinned for the account yet (trust on first use). Otherwise the
+adder is judged as a stranger, and the key-change warning is shown (F-018).
+
+A group whose adder names, in its roster, the nonce this device sent with
+an invite-link request to that adder in the last day (PROTOCOL.md 8.7) is
+accepted after the blocked check, once: the user asked to join that group,
+so the joiner's own `user.group_add` and message requests do not apply.
+The nonce reaches only the link owner's device, so nobody else who saw a
+published link can use it.
+
+`user.group_add` takes the option `contacts` (default) or `nobody`;
+`user.read_receipts` released also hides receipts stored earlier
+(`read_by` is empty) and sends none.
 
 Messages in a request are shown as such (`request: true`) until accepted.
 Declining sends `leave` and ignores the group from then on; it can also
@@ -165,7 +188,7 @@ In the same encrypted database as the core (`tree_app` table, SCHEMA.md):
 | `announce/<group hex>` | present until the own profile was sent |
 | `held/<20-digit counter>` | a held message body |
 | `accounts/<group hex>` | JSON member id -> account id |
-| `contact/<account id>` | JSON: pinned member ids, verified, accepted (chosen by the user), blocked |
+| `contact/<account id>` | JSON: pinned member ids, verified, accepted (chosen by the user), blocked, unconfirmed (key changes only a roster claimed) |
 | `gstatus/<group hex>` | request (with adder account) or declined; absent = accepted |
 | `feature/<key>` | the user's setting: applied or released, option |
 | `profile/username` | the own @username |
@@ -179,6 +202,7 @@ In the same encrypted database as the core (`tree_app` table, SCHEMA.md):
 | `refresh/<group hex>`, `traffic/<group hex>` | when this device last refreshed its keys in the group, and when the group last had traffic (PROTOCOL.md 6.9) |
 | `keypackages/last_resort`, `keypackages/last_resort_prev`, `keypackages/last_resort_at`, `keypackages/checked` | current and previous last-resort key package as published, when the current one was made, when the server supply was last checked (PROTOCOL.md 5.3) |
 | `invite/<link hash hex>` | a link this device made: group, expiry, use limit (PROTOCOL.md 8.7) |
-| `linkjoin/<link hash hex>` | the user opened this link: owner account and time (one day, used once) |
-| `feature/user.recovery_phrase` | applied once a recovery phrase was made (the phrase itself is never stored) |
+| `linkjoin/<nonce hex>` | the user opened a link of this owner and sent this nonce: owner account and time (one day, used once) |
+| `feature/user.recovery_phrase` | applied while the server holds a recovery key for the account, as last reported by the server (the phrase itself is never stored) |
+| `recovery/release_at` | when the server drops the recovery key after a release without the phrase (unix seconds) |
 | table `tree_messages` | message history with franking records (SCHEMA.md 1.2) |

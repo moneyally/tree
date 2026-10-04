@@ -329,14 +329,17 @@ Only the device that made it; idempotent. `200 { "state": "released" }`.
 
 ### `POST /v1/invites/join` — use a link
 
-`{ "token": "<16 bytes>" }` → `202 { "owner_account": "..." }`. `404` if
-unknown, expired or used up; `400` for the owner's own account. A repeated
-request by the same account counts once. Costs 5 rate tokens.
+`{ "token": "<16 bytes>", "nonce": "<16 bytes>" }` → `202 { "owner_account":
+"..." }`. `nonce` (optional, random from the joining device) is handed only
+to the owner's device with the request (PROTOCOL.md 8.7). `404` if unknown,
+expired or used up; `400` for the owner's own account or a nonce that is not
+16 bytes. A repeated request by the same account counts once and replaces
+the nonce. Costs 5 rate tokens.
 
 ### `GET /v1/invites/requests` — requests for my links
 
-`200 { "requests": [{ "id", "token_hash", "account_id" }] }`, oldest first,
-at most 100.
+`200 { "requests": [{ "id", "token_hash", "account_id", "nonce" }] }`
+(`nonce` null if the joiner sent none), oldest first, at most 100.
 
 ### `POST /v1/invites/requests/ack` — handled
 

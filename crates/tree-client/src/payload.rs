@@ -53,8 +53,9 @@ pub enum Payload {
         /// key-package claim. Lets every member pin the devices of a contact.
         #[serde(default)]
         accounts: BTreeMap<String, String>,
-        /// Hash (hex) of the invite link the new member used, if any, so
-        /// it can accept this group without a request (PROTOCOL.md 8.7).
+        /// The nonce (hex) the new member's device sent with its invite
+        /// link request, if it joined by link, so it can accept this group
+        /// without a request (PROTOCOL.md 8.7).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         link: Option<String>,
     },

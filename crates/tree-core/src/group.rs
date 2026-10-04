@@ -166,9 +166,12 @@ impl Group {
     }
 
     /// The group settings every member agrees on (PROTOCOL.md 6.11). Admins
-    /// who are no longer members are left out.
+    /// who are no longer members are left out, and so is any chat setting
+    /// that contradicts a permanent lock (a group joined with one in its
+    /// first settings: the lock holds anyway); unknown options read as the
+    /// default.
     pub fn settings(&self) -> GroupSettings {
-        let mut s = settings_of(self.mls.extensions()).unwrap_or_default();
+        let mut s = settings_of(self.mls.extensions()).unwrap_or_default().effective();
         let members = self.members();
         s.admins.retain(|a| members.contains(a));
         s
@@ -200,7 +203,7 @@ impl Group {
         if !self.is_admin(&me.member_id()) {
             return Err(TreeError::NotAdmin);
         }
-        new.check(&self.members())?;
+        new.check_own(&self.members())?;
         let ext = Self::settings_extensions(new)?;
         self.begin_commit(me, |mls| {
             let (commit, _, _) =

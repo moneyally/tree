@@ -56,6 +56,18 @@ pub enum Error {
     /// A feature-registry error code (`LOCKED_ALWAYS`, `NOT_ADMIN`, ...).
     #[error("feature: {0}")]
     Feature(String),
+    /// `INVALID_OPTION`: the option does not fit the feature; says what would.
+    #[error("INVALID_OPTION: {0}")]
+    InvalidOption(String),
+}
+
+impl From<tree_core::features::FeatureError> for Error {
+    fn from(e: tree_core::features::FeatureError) -> Self {
+        match e {
+            tree_core::features::FeatureError::InvalidOption(why) => Error::InvalidOption(why),
+            e => Error::Feature(e.code().into()),
+        }
+    }
 }
 
 /// Key packages kept on the server; topped up when fewer remain.
@@ -162,7 +174,7 @@ struct PendingExtra {
     /// (member id hex, device id) of added devices.
     added: Vec<(String, String)>,
     removed_devices: Vec<String>,
-    /// Invite link hash (hex) the added account used.
+    /// Nonce (hex) of the invite link request the added account made.
     #[serde(default)]
     link: Option<String>,
 }
@@ -211,11 +223,23 @@ pub struct Contact {
     pub accepted: bool,
     #[serde(default)]
     pub blocked: bool,
+    /// Devices (member ids, hex) that appeared after the first ones and
+    /// were only claimed for this account by a group roster, not named by
+    /// the server: a key change the user has not confirmed. They do not
+    /// count as this contact for message requests and `user.group_add`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unconfirmed: Vec<String>,
 }
 
 impl Contact {
     pub fn member_ids(&self) -> Vec<MemberId> {
         self.members.iter().filter_map(|m| MemberId::from_hex(m)).collect()
+    }
+
+    /// Does this device count as this contact? Yes if it is pinned and not
+    /// an unconfirmed key change, or if no device is pinned yet (first use).
+    pub fn vouches_for(&self, member: &str) -> bool {
+        self.members.is_empty() || (self.members.iter().any(|m| m == member) && !self.unconfirmed.iter().any(|m| m == member))
     }
 }
 
@@ -236,18 +260,33 @@ pub struct MemberInfo {
 /// is taken as it is; afterwards every member id not seen before is a key
 /// change, reported, and clears "verified". Returns the updated contact if
 /// anything changed.
-fn merge_pins(old: Option<Contact>, account: &str, members: &[MemberId]) -> Option<(Contact, Option<Event>)> {
+///
+/// `confirmed`: the server named these devices as the account's (a
+/// key-package claim). Devices that only a group roster claims for an
+/// account that already had devices stay `unconfirmed`: they get the
+/// warning but none of the contact's trust (F-018) until the user verifies
+/// the safety number or invites the account.
+fn merge_pins(old: Option<Contact>, account: &str, members: &[MemberId], confirmed: bool) -> Option<(Contact, Option<Event>)> {
     let first = old.is_none();
+    let had_pins = old.as_ref().is_some_and(|c| !c.members.is_empty());
     let mut c = old.unwrap_or_else(|| Contact { account: account.to_string(), ..Default::default() });
     let mut new: Vec<MemberId> = members.iter().filter(|m| !c.members.contains(&m.to_hex())).copied().collect();
     new.sort();
     new.dedup();
-    if new.is_empty() && !first {
+    let hex: Vec<String> = members.iter().map(MemberId::to_hex).collect();
+    let confirms = confirmed && c.unconfirmed.iter().any(|m| hex.contains(m));
+    if new.is_empty() && !first && !confirms {
         return None;
     }
-    let event = (!first).then(|| Event::KeyChanged { account: account.to_string(), new_members: new.clone(), was_verified: c.verified });
-    if !first {
+    let event = (!first && !new.is_empty())
+        .then(|| Event::KeyChanged { account: account.to_string(), new_members: new.clone(), was_verified: c.verified });
+    if !first && !new.is_empty() {
         c.verified = false;
+    }
+    if confirmed {
+        c.unconfirmed.retain(|m| !hex.contains(m));
+    } else if had_pins {
+        c.unconfirmed.extend(new.iter().map(MemberId::to_hex));
     }
     c.members.extend(new.iter().map(MemberId::to_hex));
     Some((c, event))
@@ -503,14 +542,21 @@ impl Session {
     }
 
     /// Registers (or changes) this account's @username. The server stores
-    /// only its hash. `discoverable = false` hides it from lookups
-    /// (`user.discoverable` released).
-    pub fn set_username(&self, name: &str, discoverable: bool) -> Result<String, Error> {
+    /// only its hash. Whether others can find it follows
+    /// `user.discoverable` (applied: findable; released: hidden from
+    /// lookups, still reserved); changing that setting later updates the
+    /// registration.
+    pub fn set_username(&self, name: &str) -> Result<String, Error> {
         let n = username::normalise(name).map_err(|e| Error::Usage(e.into()))?;
-        let h = username::hash(&n).map_err(|e| Error::Usage(e.into()))?;
-        self.api.username(&self.creds, "apply", Some(&json!({ "hash": api::b64(&h), "discoverable": discoverable })))?;
+        self.register_username(&n, self.is_applied(settings::DISCOVERABLE)?)?;
         self.client.set_app_data("profile/username", Some(n.as_bytes()))?;
         Ok(n)
+    }
+
+    pub(crate) fn register_username(&self, name: &str, discoverable: bool) -> Result<(), Error> {
+        let h = username::hash(name).map_err(|e| Error::Usage(e.into()))?;
+        self.api.username(&self.creds, "apply", Some(&json!({ "hash": api::b64(&h), "discoverable": discoverable })))?;
+        Ok(())
     }
 
     /// Deletes the account: tells every group this device is leaving (so
@@ -556,26 +602,33 @@ impl Session {
         let account = self.account_id();
         let cur = current.map(Phrase::parse).transpose()?.map(|c| c.recovery_key().sign_change(account, Some(&rk.public_key())));
         let v = self.api.recovery_apply(&self.creds, &rk.public_key(), &rk.sign_set(account), cur.as_ref())?;
-        self.change(settings::RECOVERY, true, None)?;
-        Ok((p, RecoveryStatus::from_json(&v)))
+        let st = RecoveryStatus::from_json(&v);
+        self.record_recovery(&st)?;
+        Ok((p, st))
     }
 
     /// Drops the recovery key: immediate with the current phrase, otherwise
-    /// after 7 days.
+    /// after 7 days. Until then `user.recovery_phrase` stays applied with a
+    /// pending release ([`Session::release_pending`]): the key still works.
     pub fn release_recovery(&self, current: Option<&str>) -> Result<RecoveryStatus, Error> {
         let cur = current.map(Phrase::parse).transpose()?.map(|c| c.recovery_key().sign_change(self.account_id(), None));
-        let v = self.api.recovery_release(&self.creds, cur.as_ref())?;
-        self.change(settings::RECOVERY, false, None)?;
-        Ok(RecoveryStatus::from_json(&v))
+        let st = RecoveryStatus::from_json(&self.api.recovery_release(&self.creds, cur.as_ref())?);
+        self.record_recovery(&st)?;
+        Ok(st)
     }
 
     /// The server's view: active or not, and a pending change. Apps warn
-    /// about a pending change ("if this was not you, recover now").
+    /// about a pending change ("if this was not you, recover now"). Also
+    /// brings this device's `user.recovery_phrase` in line with it (another
+    /// device may have made or released the phrase).
     pub fn recovery_status(&self) -> Result<RecoveryStatus, Error> {
-        Ok(RecoveryStatus::from_json(&self.api.recovery_status(&self.creds)?))
+        let st = RecoveryStatus::from_json(&self.api.recovery_status(&self.creds)?);
+        self.record_recovery(&st)?;
+        Ok(st)
     }
 
-    /// Whether this device registered a recovery phrase.
+    /// Whether a recovery phrase can recover this account, as this device
+    /// last heard from the server (also true while a release is pending).
     pub fn has_recovery(&self) -> Result<bool, Error> {
         Ok(self.feature(settings::RECOVERY)?.state == tree_core::features::State::Applied)
     }
@@ -618,12 +671,13 @@ impl Session {
 
     /// Records that `members` belong to `account`. The first time they are
     /// trusted as they are; afterwards any member id not seen before is a
-    /// key change and is reported (and clears "verified").
-    fn pin(&self, account: &str, members: &[MemberId], events: &mut Vec<Event>) -> Result<(), Error> {
+    /// key change and is reported (and clears "verified"). `confirmed`: the
+    /// server named them (a key-package claim), not a group roster.
+    fn pin(&self, account: &str, members: &[MemberId], confirmed: bool, events: &mut Vec<Event>) -> Result<(), Error> {
         if account == self.creds.account_id {
             return Ok(());
         }
-        if let Some((c, ev)) = merge_pins(self.contact(account)?, account, members) {
+        if let Some((c, ev)) = merge_pins(self.contact(account)?, account, members, confirmed) {
             self.client.set_app_data(&contact_key(account), Some(&serde_json::to_vec(&c).expect("JSON")))?;
             events.extend(ev);
         }
@@ -653,6 +707,9 @@ impl Session {
             }
         }
         c.verified = true;
+        // The user compared exactly these devices: no key change is left
+        // unconfirmed.
+        c.unconfirmed.clear();
         Ok(self.client.set_app_data(&contact_key(account), Some(&serde_json::to_vec(&c).expect("JSON")))?)
     }
 
@@ -662,7 +719,8 @@ impl Session {
         self.invite_via(gid, account_id, None)
     }
 
-    /// [`Session::invite`], naming the invite link (hash hex) the account used.
+    /// [`Session::invite`], naming the nonce (hex) of the account's invite
+    /// link request.
     pub(crate) fn invite_via(&mut self, gid: &[u8], account_id: &str, link: Option<String>) -> Result<(CommitOutcome, Vec<Event>), Error> {
         self.group(gid)?;
         let claimed = self.api.claim(&self.creds, account_id)?;
@@ -677,7 +735,7 @@ impl Session {
             added.push((id.to_hex(), device.clone()));
         }
         let mut events = Vec::new();
-        self.pin(account_id, &ids, &mut events)?;
+        self.pin(account_id, &ids, true, &mut events)?;
         self.accept_contact(account_id)?;
         let mut accounts = self.map(&accounts_key(gid))?;
         for i in &ids {
@@ -816,9 +874,14 @@ impl Session {
         let mut r = Registry::standard();
         let admin = Caller { plan: Plan::Free, is_admin: true };
         let status = if apply { r.apply(key, option, admin) } else { r.release(key, admin) }
-            .map_err(|e| Error::Feature(e.code().into()))?;
+            .map_err(Error::from)?;
         if !r.list(Scope::Chat).iter().any(|s| s.key == status.key) {
             return Err(Error::Feature("NOT_A_CHAT_FEATURE".into()));
+        }
+        if status.locked_by.is_some() {
+            // Applying an AlwaysOn key (releasing an AlwaysOff one) is a
+            // no-op: a locked key is never written into the group settings.
+            return Ok(CommitOutcome::Accepted { epoch: self.epoch(gid)? });
         }
         let mut s = self.group_settings(gid)?;
         s.features.insert(
@@ -1030,12 +1093,24 @@ impl Session {
                     }
                 }
                 self.save_map(&accounts_key(gid), &known_accounts)?;
+                // The sender's account is its own claim. It counts as that
+                // account only if the sender is a device already pinned for
+                // it and not an unconfirmed key change (or nothing is pinned
+                // yet: trust on first use, PROTOCOL.md 5.4). A new device
+                // claiming a contact's account is judged as a stranger, so
+                // nobody gets past message requests or `user.group_add` by
+                // naming one of the user's contacts (F-018).
+                let adder = known_accounts.get(&from.to_hex()).cloned();
+                let vouched = match &adder {
+                    Some(a) => self.contact(a)?.is_none_or(|c| c.vouches_for(&from.to_hex())),
+                    None => false,
+                };
                 for (a, ids) in by_account {
-                    self.pin(&a, &ids, events)?;
+                    self.pin(&a, &ids, false, events)?;
                 }
                 // The roster's sender added us if we are still a request.
-                if let Some(adder) = self.map(&accounts_key(gid))?.get(&from.to_hex()).cloned() {
-                    self.decide_request(gid, &adder, link.as_deref(), events)?;
+                if let Some(adder) = adder {
+                    self.decide_request(gid, &adder, vouched, link.as_deref(), events)?;
                 }
                 events.push(Event::RosterUpdated { group: gid.to_vec() });
             }
@@ -1144,20 +1219,31 @@ mod tests {
     #[test]
     fn pinning_rules() {
         // first contact: trusted as is, no warning
-        let (c, ev) = merge_pins(None, "acc", &[id(1), id(1)]).unwrap();
+        let (c, ev) = merge_pins(None, "acc", &[id(1), id(1)], false).unwrap();
         assert_eq!((c.members.len(), c.verified, ev), (1, false, None));
+        assert!(c.vouches_for(&id(1).to_hex()));
         // same devices again: nothing to do
-        assert!(merge_pins(Some(c.clone()), "acc", &[id(1)]).is_none());
+        assert!(merge_pins(Some(c.clone()), "acc", &[id(1)], false).is_none());
         // a device missing from a claim (no key packages left) is no change
-        assert!(merge_pins(Some(c.clone()), "acc", &[]).is_none());
+        assert!(merge_pins(Some(c.clone()), "acc", &[], true).is_none());
         // verified, then a new device appears: warning, verification cleared
         let verified = Contact { verified: true, ..c };
-        let (c2, ev) = merge_pins(Some(verified), "acc", &[id(1), id(2)]).unwrap();
+        let (c2, ev) = merge_pins(Some(verified), "acc", &[id(1), id(2)], false).unwrap();
         assert_eq!(ev, Some(Event::KeyChanged { account: "acc".into(), new_members: vec![id(2)], was_verified: true }));
         assert!(!c2.verified);
         assert_eq!(c2.member_ids(), vec![id(1), id(2)]);
+        // only a roster claimed it: not vouched for until the server names it
+        assert!(c2.vouches_for(&id(1).to_hex()) && !c2.vouches_for(&id(2).to_hex()));
+        let (c3, ev) = merge_pins(Some(c2.clone()), "acc", &[id(2)], true).unwrap();
+        assert_eq!(ev, None, "no second warning");
+        assert!(c3.vouches_for(&id(2).to_hex()));
         // unverified change is reported too
-        let (_, ev) = merge_pins(Some(c2), "acc", &[id(3)]).unwrap();
+        let (_, ev) = merge_pins(Some(c2), "acc", &[id(3)], true).unwrap();
         assert!(matches!(ev, Some(Event::KeyChanged { was_verified: false, .. })));
+        // a contact added by hand has no devices yet: first use
+        let hand = Contact { account: "acc".into(), accepted: true, ..Default::default() };
+        assert!(hand.vouches_for(&id(9).to_hex()));
+        let (c4, _) = merge_pins(Some(hand), "acc", &[id(9)], false).unwrap();
+        assert!(c4.vouches_for(&id(9).to_hex()));
     }
 }

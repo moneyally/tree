@@ -4,7 +4,7 @@
 //!
 //! | Setting | Default | Behaviour |
 //! | --- | --- | --- |
-//! | `user.read_receipts` | applied | `mark_read` tells the others; others' receipts are shown only while applied (both ways) |
+//! | `user.read_receipts` | applied | `mark_read` tells the others; others' receipts are stored and shown (`read_by`, `Event::Read`) only while applied, both ways; receipts stored earlier are hidden after a release |
 //! | `user.typing` | applied | `set_typing` tells the others; shown only while applied (both ways) |
 //! | `user.peek` | applied | apps may show a chat without calling `mark_read` (no receipt) |
 //! | `user.note_to_self` | applied | a one-member group for notes; released: apps hide it |
@@ -106,7 +106,12 @@ impl Session {
     }
 
     /// Members (hex) who read message `id`, as far as their receipts arrived.
+    /// Empty while `user.read_receipts` is released (both ways: receipts
+    /// stored before the release are hidden too, not deleted).
     pub fn read_by(&self, gid: &[u8], id: &str) -> Result<Vec<String>, Error> {
+        if !self.is_applied("user.read_receipts")? {
+            return Ok(Vec::new());
+        }
         let reads: BTreeMap<String, BTreeSet<String>> = self.json(&reads_key(gid))?;
         Ok(reads.get(id).map(|s| s.iter().cloned().collect()).unwrap_or_default())
     }

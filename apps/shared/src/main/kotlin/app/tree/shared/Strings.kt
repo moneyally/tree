@@ -105,7 +105,7 @@ object Strings {
         "devices" to "내 기기",
         "remove_device" to "기기 제거",
         "remove_device_asked" to "멤버가 자기 다른 기기를 이 대화에서 빼 달라고 합니다. 맞는지 확인한 뒤 관리자가 직접 빼 주세요.",
-    )
+    ) + RichStrings.ko
 
     private val en = mapOf(
         "app" to "Tree",
@@ -205,7 +205,7 @@ object Strings {
         "devices" to "My devices",
         "remove_device" to "Remove device",
         "remove_device_asked" to "A member asks to remove another of their devices from this chat. Check it, then remove it yourself as an admin.",
-    )
+    ) + RichStrings.en
 
     fun t(key: String): String = (if (lang == Lang.KO) ko[key] else null) ?: en[key] ?: key
 

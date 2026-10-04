@@ -85,6 +85,21 @@ replies (`chat.events`), reminders, chat export (`chat.export`), storage
 clean-up (`user.storage_clean`), profile photos (encrypted, shared with
 contacts and groups only), per-chat profiles.
 
+Part A, **built** (branch `claude/rich-chats-a`; APP_PROTOCOL.md 6.2):
+
+| Item | Status |
+| --- | --- |
+| Pinned messages with expiry (24 h, 7 d, 30 d, until unpinned; at most 10; `chat.pins`) | built |
+| Scheduled messages (device only; list, edit, cancel) | built |
+| Polls (single / multiple choice, anonymous in the apps, close time; `chat.polls`) | built |
+| Forwarding control (`chat.forwarding`) | built |
+| Reminders (device only, local notification) | built |
+| Chat export, plain text and JSON (`chat.export`) | built |
+| Storage clean-up of downloaded media (`user.storage_clean`) | built |
+
+Part B (stickers, GIF relay, location, events, video notes, profile
+photos, per-chat profiles) is built on another branch.
+
 ## Wave 3 — groups and communities
 
 Topics (`chat.topics`), roles and member tags (`chat.roles`), admin log

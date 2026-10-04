@@ -300,4 +300,84 @@ class AppModelTest {
         alice.syncNow()
         alice.stop(); bob.stop()
     }
+
+    /**
+     * Wave 2 part A through the model: pins on top of the chat, a poll with
+     * its tally, a scheduled message, forwarding (and chat.forwarding
+     * hiding it), a reminder notification, export and storage clean-up.
+     */
+    @Test
+    fun richChatsThroughTheModel() = runBlocking {
+        val alice = AppModel(this, Dispatchers.IO)
+        val bob = AppModel(this, Dispatchers.IO)
+        assertTrue(alice.createAccount("$dir/rich-alice.db", "alice pass", "alice", url, 8u))
+        assertTrue(bob.createAccount("$dir/rich-bob.db", "bob pass", "bob", url, 8u))
+        val g = assertNotNull(alice.newChat())
+        assertTrue(alice.invite(g, bob.state.value.account))
+        bob.syncNow()
+        bob.accept(g)
+        alice.syncNow()
+        val now = { System.currentTimeMillis() / 1000 }
+
+        // Pins: either person in a 1:1 pins; both see the bar.
+        assertTrue(alice.send(g, "meet at 7"))
+        alice.openChat(g)
+        val msg = alice.state.value.messages.last().id
+        assertTrue(alice.state.value.rich.mayPin)
+        assertEquals(listOf("24h", "7d", "30d", "forever"), alice.pinChoices().map { it.first })
+        assertTrue(alice.pinMessage(g, msg, alice.pinChoices().first().second))
+        bob.syncNow()
+        bob.openChat(g)
+        assertEquals(listOf("meet at 7"), bob.state.value.rich.pins.map { it.text })
+
+        // A poll and its tally on both sides.
+        val poll = assertNotNull(alice.createPoll(g, "Lunch?", listOf("noodles", "rice", "")))
+        bob.syncNow()
+        assertEquals(listOf("noodles", "rice"), bob.state.value.rich.polls[poll]?.options)
+        assertTrue(bob.vote(g, poll, listOf(1)))
+        alice.syncNow()
+        assertEquals(listOf(0u, 1u), alice.state.value.rich.polls[poll]?.counts)
+
+        // A scheduled message waits on the device, then goes.
+        assertNotNull(alice.schedule(g, "sent later", now() + 2))
+        assertEquals(1, alice.state.value.rich.scheduled.size)
+        kotlinx.coroutines.delay(3000)
+        alice.syncNow()
+        assertTrue(alice.state.value.rich.scheduled.isEmpty())
+        bob.syncNow()
+        assertTrue(bob.state.value.messages.any { it.text == "sent later" })
+
+        // Forwarding into the notes chat: marked forwarded.
+        val notes = assertNotNull(alice.openNotes())
+        assertNotNull(alice.forward(g, msg, notes))
+        alice.openChat(notes)
+        assertTrue(alice.state.value.messages.last().forwarded)
+        // Released: the chat hides forwarding and the client refuses.
+        assertTrue(alice.setChatFeature(g, "chat.forwarding", false))
+        alice.openChat(g)
+        assertTrue(!alice.state.value.rich.forwardingAllowed)
+        assertEquals(null, alice.forward(g, msg, notes))
+        assertEquals("LOCKED_BY_CHAT", alice.state.value.error)
+        alice.clearMessages()
+
+        // A reminder shows a local notification once.
+        val shown = mutableListOf<Pair<String, String?>>()
+        alice.notifier = { title, text -> shown += title to text }
+        assertNotNull(alice.remindMe(g, msg, now() + 1))
+        kotlinx.coroutines.delay(2000)
+        alice.syncNow()
+        alice.syncNow()
+        assertEquals(listOf("meet at 7"), shown.filter { it.first.startsWith(Strings.t("reminder")) }.map { it.second })
+
+        // Export to two files.
+        val files = assertNotNull(alice.exportChat(g, "$dir/rich-export"))
+        assertTrue(files.all { java.io.File(it).readText().contains("meet at 7") })
+
+        // Storage clean-up: only while applied.
+        assertEquals(null, alice.cleanStorage())
+        alice.clearMessages()
+        assertTrue(alice.setFeature("user.storage_clean", true, "30d"))
+        assertEquals(0u, alice.cleanStorage()?.files)
+        alice.stop(); bob.stop()
+    }
 }

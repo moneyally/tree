@@ -2,7 +2,7 @@
 
 What the design (internal design document v5, not in this repository) asks
 for, what exists in this repository, and in which order the rest is built.
-Updated with every merged step. Last update: 2026-10-04 (chat list basics, username links).
+Updated with every merged step. Last update: 2026-10-04 (chat list basics, username links; rich chats part A).
 
 Legend: **done** = implemented and tested here; **partial** = some of it,
 named; **missing** = not started; **decided otherwise** = deliberately
@@ -122,6 +122,16 @@ platform section), stage 3: 68, stage 4: 14, stage 5: 14, unstaged: 14. None
 of stages 2 to 5 is started, except that the registry already holds the
 permanent locks those stages rely on (points never move between people, bots
 never pay out points, private groups never become public).
+
+Stage 3, rich chats (wave 2 part A, branch `claude/rich-chats-a`): **built**.
+Pinned messages with expiry (`chat.pins`), polls (`chat.polls`; anonymous
+means the apps hide names, votes stay MLS-authenticated to members'
+devices), scheduled messages (device only, sent when due by the running
+app or the next sync), forwarding (`chat.forwarding`; honest apps only),
+reminders (device only), chat export (`chat.export`) and storage clean-up
+(`user.storage_clean`): APP_PROTOCOL.md 3 and 6.2, client, FFI, desktop UI
+and model tests (`crates/tree-client/tests/rich_chats.rs`, `AppModelTest`).
+The Android app shares the model; its screens for these are not built yet.
 
 Big blocks per stage: bots (gateway, bot lane, factory, tokens) in 2;
 1,000-member groups, public groups and channels, admin roles, multi-device,

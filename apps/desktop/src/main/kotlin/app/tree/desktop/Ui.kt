@@ -44,6 +44,9 @@ import kotlinx.coroutines.launch
 import java.io.File
 
 /** Where profiles live: one encrypted database per account on this computer. */
+/** Downloaded media (opened files); user.storage_clean deletes old ones. */
+fun mediaDir(): String = File(System.getProperty("user.home"), ".tree/media").path
+
 fun profilePath(): String {
     val dir = File(System.getProperty("user.home"), ".tree")
     dir.mkdirs()
@@ -368,6 +371,9 @@ private fun ChatView(model: AppModel, state: UiState, chat: Chat) {
             SafetyPanel(model, state)
             TextButton(onClick = { settingsOpen = !settingsOpen }) { Text(Strings.t("group_settings")) }
             if (settingsOpen) GroupSettingsPanel(model, state, chat.id)
+            // Pins on top; scheduled messages, reminders, export (RichViews.kt).
+            PinsBar(model, state, chat.id)
+            ChatExtras(model, state, chat.id)
         }
         if (state.typing.isNotEmpty()) {
             Text(state.typing.joinToString(", ") { state.names[it] ?: it.take(6) } + " " + Strings.t("typing"),
@@ -378,8 +384,10 @@ private fun ChatView(model: AppModel, state: UiState, chat: Chat) {
                 val body = when {
                     m.kind == "left" || m.kind == "removed" -> "${m.who ?: m.sender.take(6)} ${Strings.t(m.kind)}"
                     m.deleted -> Strings.t("deleted")
-                    else -> (m.text ?: "") + if (m.edited) " (${Strings.t("edited")})" else ""
+                    else -> (if (m.forwarded) "↪ ${Strings.t("forwarded")}: " else "") +
+                        (m.text ?: "") + if (m.edited) " (${Strings.t("edited")})" else ""
                 }
+                Column {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     val who = state.names[m.sender]?.ifEmpty { Strings.t("me") } ?: m.sender.take(6)
                     val read = if (m.id in state.readMine) "  ✓ " + Strings.t("read") else ""
@@ -398,6 +406,12 @@ private fun ChatView(model: AppModel, state: UiState, chat: Chat) {
                         Text(Strings.t("after_accept"), style = MaterialTheme.typography.bodySmall)
                     } else if (m.kind == "file" && state.files.containsKey(m.id)) {
                         TextButton(onClick = {
+                            scope.launch { model.openFile(m.id, mediaDir())?.let { java.awt.Desktop.getDesktop().open(File(it)) } }
+                        }) { Text(Strings.t("open_file")) }
+                    }
+                    // Saving a copy elsewhere is hidden while the chat released chat.forwarding.
+                    if (m.kind == "file" && chat.status != "request" && state.files.containsKey(m.id) && state.rich.forwardingAllowed) {
+                        TextButton(onClick = {
                             val d = java.awt.FileDialog(null as java.awt.Frame?, Strings.t("save"), java.awt.FileDialog.SAVE)
                             d.file = m.text ?: "file"
                             d.isVisible = true
@@ -407,6 +421,9 @@ private fun ChatView(model: AppModel, state: UiState, chat: Chat) {
                     TextButton(onClick = { scope.launch { model.report(chat.id, listOf(m.id), "user report") } }) {
                         Text(Strings.t("report"))
                     }
+                    MessageMenu(model, state, chat.id, m)
+                }
+                if (m.kind == "poll") PollWidget(model, state, chat.id, m)
                 }
             }
         }
@@ -421,6 +438,7 @@ private fun ChatView(model: AppModel, state: UiState, chat: Chat) {
                 draft = v
                 scope.launch { model.saveDraft(chat.id, v) }
             }, label = { Text(Strings.t("message")) }, modifier = Modifier.weight(1f))
+            ComposerExtras(model, chat.id, draft, silent) { draft = ""; scope.launch { model.saveDraft(chat.id, "") } }
             Checkbox(silent, { silent = it })
             Text(Strings.t("silent"), style = MaterialTheme.typography.bodySmall)
             Button(onClick = { scope.launch { if (model.send(chat.id, draft, silent)) { model.typing(chat.id, false); draft = "" } } }) { Text(Strings.t("send")) }
@@ -472,6 +490,7 @@ private fun Settings(model: AppModel, state: UiState) {
             SelectionContainer { Text(it, style = MaterialTheme.typography.titleMedium) }
         }
         TextButton(onClick = { confirmDelete = true }) { Text(Strings.t("delete_account")) }
+        StorageCleanButton(model, state)
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
         // Linking a new device: paste its link, compare the code on both.
         Row(verticalAlignment = Alignment.CenterVertically) {

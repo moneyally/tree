@@ -52,7 +52,10 @@ impl Session {
             Payload::Poll(def) => self.on_poll(gid, from, def, franking, events),
             Payload::Vote { id, choices } => self.on_vote(gid, from, id, choices, events),
             Payload::PollClose { id } => self.on_poll_close(gid, from, id, events),
-            _ => Ok(events.push(Event::Dropped { reason: "not a pin or poll".into() })),
+            _ => {
+                events.push(Event::Dropped { reason: "not a pin or poll".into() });
+                Ok(())
+            }
         }
     }
 

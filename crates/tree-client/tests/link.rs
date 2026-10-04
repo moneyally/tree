@@ -62,7 +62,7 @@ fn link(alice: &mut Session, mut nd: NewDevice) -> (Session, LinkStatus) {
 fn linked_desktop_gets_the_account_and_chats_in_existing_groups() {
     let env = Env::new("link-happy");
     let (mut alice, mut bob, g) = setup(&env);
-    alice.set_username("alice_link", true).unwrap();
+    alice.set_username("alice_link").unwrap();
     alice.apply_feature("user.typing", None).unwrap();
     alice.release_feature("user.read_receipts").unwrap();
     let notes = alice.note_to_self().unwrap();

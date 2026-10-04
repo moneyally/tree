@@ -77,6 +77,7 @@ fn pins_are_shared_expire_are_limited_and_follow_chat_pins() {
     bob.sync(0).unwrap();
     alice.pin_message(&g, &m2, Some(1)).unwrap();
     bob.sync(0).unwrap();
+    carol.sync(0).unwrap(); // (a device that syncs later keeps it that much longer)
     assert_eq!(pinned_ids(&mut bob, &g), vec![m2.clone(), m1.clone()], "newest first");
     sleep(2);
     assert_eq!(pinned_ids(&mut bob, &g), vec![m1.clone()]);

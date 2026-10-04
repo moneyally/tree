@@ -20,7 +20,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::messages::{new_id, now, TextOptions};
-use crate::{Error, Event, Session};
+use crate::{Error, Event, OutboxState, Session};
 
 /// The furthest a message can be scheduled or a reminder set: one year.
 pub const MAX_AHEAD: i64 = 365 * 86400;
@@ -136,7 +136,8 @@ impl Session {
     }
 
     /// Sends every scheduled message whose time has come (sync calls
-    /// this): `Sent` for each that went out or waits in the outbox,
+    /// this): `Sent` for each that reached the server (one that meets a
+    /// network error waits in the outbox like any message),
     /// `SendFailed` (with the schedule id) for one that cannot be sent.
     pub fn send_due_scheduled(&mut self) -> Result<Vec<Event>, Error> {
         let t = now();
@@ -150,10 +151,16 @@ impl Session {
             if let Some(d) = draft {
                 self.set_draft(&gid, &d)?;
             }
-            events.push(match r {
-                Ok(id) => Event::Sent { group: gid, id: Some(id) },
-                Err(e) => Event::SendFailed { group: gid, id: None, local_id: s.id, reason: e.to_string() },
-            });
+            match r {
+                // Reached the server now (or there was nobody to send to);
+                // one still waiting in the outbox is reported when it goes.
+                Ok(id) => {
+                    if self.send_states(&gid)?.get(&id).is_none_or(|st| *st == OutboxState::Sent) {
+                        events.push(Event::Sent { group: gid, id: Some(id) });
+                    }
+                }
+                Err(e) => events.push(Event::SendFailed { group: gid, id: None, local_id: s.id, reason: e.to_string() }),
+            }
         }
         Ok(events)
     }

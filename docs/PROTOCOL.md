@@ -669,6 +669,7 @@ Feature options, one table for every scope (`option_format` in
 | `chat.mention_all` | `admins` or `all` | `admins` |
 | `user.group_add` | `contacts` or `nobody` | `contacts` |
 | `user.app_lock` | `passphrase`, `pin` or `bio` | `passphrase` |
+| `user.storage_clean` | duration, 1 s to 365 days (the apps offer `30d`, `90d`, `365d`) | `90d` is stored |
 | every other standard feature (also `user.drafts`, `user.unarchive_on_message`, `user.username_link`) | none | |
 
 Mute durations are not a feature option: muting is a per-chat action
@@ -677,6 +678,14 @@ Mute durations are not a feature option: muting is a per-chat action
 A duration is whole seconds (`90`) or a whole number with one unit `s`, `m`,
 `h`, `d`, `w` (`30m`, `1d`, `2w`). The apps offer a few values per key
 (`option_choices`).
+
+Wave 2 part A adds the chat keys `chat.pins`, `chat.polls`,
+`chat.forwarding` and `chat.export` (all applied by default, no option)
+and the user key `user.storage_clean` (released by default). What they do
+is in [APP_PROTOCOL.md](APP_PROTOCOL.md) 3 and 6.2; none of them needs the
+server, which learns nothing new (pins, polls, votes and forwarded
+messages are ordinary MLS application messages; scheduled messages and
+reminders never leave the device before they are sent).
 
 Chat features are stored here; what they enforce on each device (media off,
 edit window, disappearing timer, ...) is implemented feature by feature.

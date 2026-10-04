@@ -93,6 +93,8 @@ data class UiState(
     /** A device link in progress (either side), and this account's devices. */
     val link: LinkUi? = null,
     val devices: List<String> = emptyList(),
+    /** Pins, polls, scheduled messages, reminders of the open chat (RichChats.kt). */
+    val rich: RichUi = RichUi(),
     val notice: String? = null,
     val error: String? = null,
 )
@@ -106,7 +108,7 @@ class AppModel(
     private val scope: CoroutineScope,
     private val io: CoroutineDispatcher = Dispatchers.IO,
 ) {
-    private val _state = MutableStateFlow(UiState())
+    internal val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
 
     var session: TreeSession? = null
@@ -118,7 +120,7 @@ class AppModel(
     var notifier: ((String, String?) -> Unit)? = null
 
 
-    private suspend fun <T> call(block: (TreeSession) -> T): T? {
+    internal suspend fun <T> call(block: (TreeSession) -> T): T? {
         val s = session ?: return null
         return try {
             withContext(io) { block(s) }
@@ -179,7 +181,7 @@ class AppModel(
             while (isActive && session != null) {
                 val outbox = _state.value.sending
                 val pending = call { it.wait(if (outbox) 5u else 25u) } ?: false
-                if (pending || outbox) syncNow()
+                if (pending || outbox) syncNow() else tick()
             }
         }
     }
@@ -208,6 +210,7 @@ class AppModel(
         val events = call { it.sync(0u) } ?: return
         for (e in events) onEvent(e)
         refresh()
+        checkReminders()
     }
 
     /**
@@ -245,6 +248,7 @@ class AppModel(
             is TreeEvent.GroupSafetyNotice -> _state.update { it.copy(notice = Strings.t("group_notice")) }
             is TreeEvent.KeyChanged -> _state.update { it.copy(notice = Strings.t("key_changed")) }
             is TreeEvent.SendFailed -> _state.update { it.copy(notice = Strings.t("send_failed")) }
+            is TreeEvent.Poll -> maybeNotify(e.group, false, e.question)
             else -> {}
         }
     }
@@ -296,6 +300,7 @@ class AppModel(
                 screenshotBlocked = blocked, folders = folders, readMine = readMine, sending = sending,
             )
         }
+        loadRich()
     }
 
     suspend fun openChat(group: String?) {

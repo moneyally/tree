@@ -3,7 +3,7 @@
 //! This layer intentionally stores plaintext only inside the already encrypted
 //! local profile. It is not part of the network protocol.
 
-use rusqlite::{params, OptionalExtension};
+use rusqlite::params;
 
 use crate::{
     error::TreeError,

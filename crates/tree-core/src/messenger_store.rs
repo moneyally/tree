@@ -171,27 +171,28 @@ impl crate::storage::StoredProvider {
         group_id: &[u8],
         limit: u32,
     ) -> Result<Vec<StoredMessage>, TreeError> {
-        let rows = {
-            let mut stmt = self.connection().prepare(
-                "SELECT group_id,message_id,sender_member_id,sequence,created_at,edited_at,expires_at,view_once,deleted,body
-                 FROM tree_messages WHERE group_id=?1 ORDER BY sequence,created_at LIMIT ?2",
-            ).map_err(local_err)?;
-            stmt.query_map(params![group_id, limit.min(5000) as i64], |r| {
-                Ok((
-                    r.get::<_, Vec<u8>>(0)?,
-                    r.get::<_, Vec<u8>>(1)?,
-                    r.get::<_, Vec<u8>>(2)?,
-                    r.get::<_, i64>(3)?,
-                    r.get::<_, i64>(4)?,
-                    r.get::<_, Option<i64>>(5)?,
-                    r.get::<_, Option<i64>>(6)?,
-                    r.get::<_, i64>(7)?,
-                    r.get::<_, i64>(8)?,
-                    r.get::<_, Vec<u8>>(9)?,
-                ))
-            }).map_err(local_err)?
-                .collect::<Result<Vec<_>, _>>().map_err(local_err)?
-        };
+        let mut stmt = self.connection().prepare(
+            "SELECT group_id,message_id,sender_member_id,sequence,created_at,edited_at,expires_at,view_once,deleted,body
+             FROM tree_messages WHERE group_id=?1 ORDER BY sequence,created_at LIMIT ?2",
+        ).map_err(local_err)?;
+        let mapped = stmt.query_map(params![group_id, limit.min(5000) as i64], |r| {
+            Ok((
+                r.get::<_, Vec<u8>>(0)?,
+                r.get::<_, Vec<u8>>(1)?,
+                r.get::<_, Vec<u8>>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, i64>(4)?,
+                r.get::<_, Option<i64>>(5)?,
+                r.get::<_, Option<i64>>(6)?,
+                r.get::<_, i64>(7)?,
+                r.get::<_, i64>(8)?,
+                r.get::<_, Vec<u8>>(9)?,
+            ))
+        }).map_err(local_err)?;
+        let mut rows = Vec::new();
+        for row in mapped {
+            rows.push(row.map_err(local_err)?);
+        }
 
         rows.into_iter().map(|(group,msg,sender,sequence,created_at,edited_at,expires_at,view_once,deleted,body)| {
             Ok(StoredMessage {

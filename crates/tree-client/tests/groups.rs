@@ -632,3 +632,24 @@ fn a_stranger_naming_another_account_is_not_added_even_if_a_roster_labels_it() {
     assert!(ev.iter().any(|e| matches!(e, Event::CommunityMemberAdded { member, .. } if *member == bob.member_id())), "{ev:?}");
     assert!(!alice.members(&chat).unwrap().iter().any(|m| m.id == dave.member_id()));
 }
+
+/// F-038: a member cannot point another member's device at a bogus id
+/// (malformed: every send failed; well formed: messages went elsewhere).
+#[test]
+fn a_roster_cannot_redirect_another_members_device() {
+    let env = Env::new("roster-redirect");
+    let (mut alice, mut bob, mut carol, g) = trio(&env);
+    let a = alice.member_id().to_hex();
+    for bogus in ["not-a-device-id", "AAAAAAAAAAAAAAAAAAAAAA"] {
+        let devices = [(a.clone(), bogus.to_string())].into_iter().collect();
+        bob.send_unchecked(&g, &Payload::Roster { devices, names: Default::default(), accounts: Default::default(), link: None }).unwrap();
+        carol.sync(0).unwrap();
+        // carol (who trusts alice, not bob) still reaches alice.
+        carol.send_text(&g, &format!("still to alice ({bogus})")).unwrap();
+        let got = alice.sync(0).unwrap();
+        assert!(
+            got.iter().any(|e| matches!(e, Event::Text { text, .. } if text.contains(bogus))),
+            "{bogus}: {got:?}"
+        );
+    }
+}

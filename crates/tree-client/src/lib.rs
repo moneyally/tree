@@ -1329,9 +1329,29 @@ impl Session {
                 // Only entries for current members are taken; names only as
                 // hints where the member has not announced its own.
                 let members: std::collections::HashSet<String> = self.group(gid)?.members().iter().map(|m| m.to_hex()).collect();
+                // Device ids decide where this device's messages go, so a
+                // member must not be able to point another member at a
+                // bogus id (every send would then fail, F-038). Taken only
+                // if well formed, and for another member only while it has
+                // none yet or from a trusted sender (one of this account's
+                // devices, or pinned for its account); the sender may
+                // always give its own.
+                let trusted_sender = {
+                    let own = self.own_members()?;
+                    let s = from.to_hex();
+                    own.contains(&s)
+                        || match self.map(&accounts_key(gid))?.get(&s) {
+                            Some(a) if *a == self.creds.account_id => false,
+                            Some(a) => self.contact(a)?.is_some_and(|c| c.vouches_for(&s)),
+                            None => false,
+                        }
+                };
                 let mut roster = self.roster(gid)?;
                 for (m, d) in devices {
-                    if members.contains(&m) && m != me {
+                    if !members.contains(&m) || m == me || !is_device_id(&d) {
+                        continue;
+                    }
+                    if m == from.to_hex() || trusted_sender || !roster.contains_key(&m) {
                         roster.insert(m, d);
                     }
                 }
@@ -1555,6 +1575,14 @@ impl Session {
     }
 }
 
+/// A server device id: 16 bytes, base64url without padding (22 characters).
+pub(crate) fn is_device_id(s: &str) -> bool {
+    use base64::Engine;
+    s.len() == 22
+        && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        && base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(s).is_ok_and(|v| v.len() == 16)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1621,3 +1649,4 @@ mod tests {
         assert!(c6.vouches_for(&id(9).to_hex()));
     }
 }
+

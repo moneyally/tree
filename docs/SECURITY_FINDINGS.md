@@ -668,3 +668,19 @@ Issues found by testing Tree's own design. Each one has a regression test.
   `a_stranger_naming_another_account_is_not_added_even_if_a_roster_labels_it`,
   `requests::tests::join_approval_keeps_the_link_version_rules`,
   `settings_sync.rs` `group_rules_do_not_touch_the_self_group`.
+
+## F-038: a member could redirect another member's device id (fixed)
+
+- **Found:** 2026-10-05, while merging the groups work.
+- **What:** a roster from any group member replaced the device ids this
+  device keeps for the other members. A malformed id made every later send
+  to the group fail (`400`); a well-formed foreign id sent this device's
+  copies for that member somewhere else (unreadable there, but the member
+  never got them).
+- **Severity:** medium (denial of delivery by any member).
+- **Fix:** a roster entry is taken only if it is a well-formed device id,
+  and for another member only while none is known or from a trusted sender
+  (one of this account's linked devices, or a sender pinned for its
+  account); a member may always give its own.
+- **Test:** `groups::a_roster_cannot_redirect_another_members_device`
+  (fails without the fix).

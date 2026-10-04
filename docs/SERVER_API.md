@@ -134,6 +134,12 @@ Each package is selected and deleted in one statement, so it is never handed
 out twice, even under concurrent claims. Oldest first. A claim costs extra
 rate-limit tokens. `NOT_FOUND` for an unknown account.
 
+### `DELETE /v1/keypackages` — revoke my unused packages
+
+Deletes every unclaimed key package belonging to the authenticated device.
+Use this after suspected compromise, then upload fresh packages.
+`200` → `{ "revoked": 42 }`.
+
 ### `GET /v1/keypackages/count` — my remaining count
 
 `200` → `{ "count": 42 }`

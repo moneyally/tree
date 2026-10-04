@@ -546,6 +546,63 @@ fn put_bytes_u16(out: &mut Vec<u8>, b: &[u8]) -> Result<(), TreeError> {
     Ok(())
 }
 
+pub const MEDIA_VIEW_MAGIC: &[u8] = b"TREEMEDIAVIEW\x01";
+
+#[derive(Debug)]
+pub struct SecureMediaBytes(Zeroizing<Vec<u8>>);
+
+impl SecureMediaBytes {
+    pub fn new(bytes: Vec<u8>) -> Self {
+        Self(Zeroizing::new(bytes))
+    }
+
+    pub fn as_slice(&self) -> &[u8] {
+        &self.0
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MediaViewEvent {
+    pub message_id: MessageId,
+    pub attachment_id: [u8; ATTACHMENT_ID_LEN],
+    pub consumed_at: i64,
+}
+
+impl MediaViewEvent {
+    pub fn encode(&self) -> Result<Vec<u8>, TreeError> {
+        let mut out = Vec::with_capacity(MEDIA_VIEW_MAGIC.len() + 16 + 16 + 8);
+        out.extend_from_slice(MEDIA_VIEW_MAGIC);
+        out.extend_from_slice(self.message_id.as_bytes());
+        out.extend_from_slice(&self.attachment_id);
+        out.extend_from_slice(&self.consumed_at.to_be_bytes());
+        Ok(out)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, TreeError> {
+        let expected = MEDIA_VIEW_MAGIC.len() + 16 + ATTACHMENT_ID_LEN + 8;
+        if bytes.len() != expected || !bytes.starts_with(MEDIA_VIEW_MAGIC) {
+            return Err(TreeError::Malformed("invalid media view event".into()));
+        }
+        let mut p = MEDIA_VIEW_MAGIC.len();
+        let message_id = MessageId::from_bytes(bytes[p..p + 16].try_into().expect("length checked"));
+        p += 16;
+        let attachment_id = bytes[p..p + ATTACHMENT_ID_LEN]
+            .try_into()
+            .expect("length checked");
+        p += ATTACHMENT_ID_LEN;
+        let consumed_at = i64::from_be_bytes(bytes[p..p + 8].try_into().expect("length checked"));
+        Ok(Self { message_id, attachment_id, consumed_at })
+    }
+}
+
 pub const MEDIA_MESSAGE_MAGIC: &[u8] = b"TREEMEDIA\x01";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -741,6 +798,13 @@ impl MediaLifecycle {
             .map(|e| e.saturating_sub(now).max(0) as u32)
     }
 
+    pub fn apply_remote_consumed(&mut self) {
+        if matches!(self.policy, ViewPolicy::ViewOnce) {
+            self.state = MediaViewState::Consumed;
+            self.expires_at = None;
+        }
+    }
+
     pub fn is_reopenable(&self) -> bool {
         matches!(
             self.state,
@@ -777,6 +841,24 @@ mod tests {
         assert_eq!(decoded.manifest, manifest);
         assert_eq!(decoded.file_key.as_bytes(), key.as_bytes());
         assert_eq!(decrypt_preview(decoded.file_key_ref(), &decoded.manifest, decoded.preview.as_ref().unwrap()).unwrap(), b"thumb");
+    }
+
+    #[test]
+    fn view_event_round_trips() {
+        let event = MediaViewEvent {
+            message_id: MessageId([3; 16]),
+            attachment_id: [4; 16],
+            consumed_at: 123,
+        };
+        assert_eq!(MediaViewEvent::decode(&event.encode().unwrap()).unwrap(), event);
+    }
+
+    #[test]
+    fn secure_media_bytes_expose_only_a_borrowed_view() {
+        let bytes = SecureMediaBytes::new(vec![1, 2, 3]);
+        assert_eq!(bytes.as_slice(), &[1, 2, 3]);
+        assert_eq!(bytes.len(), 3);
+        assert!(!bytes.is_empty());
     }
 
     #[test]

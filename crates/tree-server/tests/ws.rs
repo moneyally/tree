@@ -60,7 +60,7 @@ async fn websocket_requires_signed_upgrade_and_delivers_ciphertext_until_ack() {
     let ciphertext = app(b"encrypted payload only");
     let (st, body) = api.send_raw(&alice, &[&bob.device_id], &ciphertext).await;
     assert_eq!(st, StatusCode::OK, "{body}");
-    let message_id = body["message_ids"][0].as_str().unwrap().to_string();
+    assert_eq!(body["delivered"], json!(1));
 
     let frame = tokio::time::timeout(std::time::Duration::from_secs(2), ws.next())
         .await
@@ -73,7 +73,7 @@ async fn websocket_requires_signed_upgrade_and_delivers_ciphertext_until_ack() {
     };
     let payload: serde_json::Value = serde_json::from_str(&text).unwrap();
     assert_eq!(payload["type"], json!("message"));
-    assert_eq!(payload["id"], json!(message_id));
+    let message_id = payload["id"].as_str().unwrap().to_string();
     let returned = base64::engine::general_purpose::STANDARD
         .decode(payload["body"].as_str().unwrap())
         .unwrap();

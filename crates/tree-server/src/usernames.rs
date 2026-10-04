@@ -48,9 +48,15 @@ fn hash32(s: &str) -> ApiResult<Vec<u8>> {
 
 /// `POST /v1/usernames/apply` — register (or change) my name, idempotent.
 pub async fn apply(State(state): State<AppState>, req: Signed<ApplyReq>) -> ApiResult<Json<Value>> {
+    // A bot's username is set when it is created (PROTOCOL.md 8.16).
+    req.device.refuse_bot()?;
     let hash = hash32(&req.body.hash)?;
     let account = &req.device.account_id;
     let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
+    // People and bots share one namespace of names.
+    if sqlx::query("SELECT 1 FROM bots WHERE username_hash = ?").bind(&hash).fetch_optional(&mut *tx).await?.is_some() {
+        return Err(ApiError::new(StatusCode::CONFLICT, "USERNAME_TAKEN", "this name belongs to a bot"));
+    }
     let owner: Option<String> = sqlx::query("SELECT account_id FROM usernames WHERE hash = ?")
         .bind(&hash)
         .fetch_optional(&mut *tx)
@@ -85,6 +91,7 @@ pub async fn release(State(state): State<AppState>, req: Signed<crate::auth::NoB
 /// `POST /v1/usernames/link/apply` — set (or replace: reset) my link's
 /// hash. Needs a registered name. The old link stops working.
 pub async fn link_apply(State(state): State<AppState>, req: Signed<LookupReq>) -> ApiResult<Json<Value>> {
+    req.device.refuse_bot()?;
     let hash = hash32(&req.body.hash)?;
     let account = &req.device.account_id;
     let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;

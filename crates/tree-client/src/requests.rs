@@ -22,6 +22,11 @@
 //! through an invite link (the roster names the nonce of that request) is
 //! accepted without a request, whatever `user.group_add` says.
 //!
+//! A bot (as the server labels it, `bots.rs`) that is not an accepted
+//! contact always makes a request, also with `user.message_requests`
+//! released; the server lets a bot start a chat only with someone who
+//! contacted it.
+//!
 //! Declining sends a leave request and ignores the group from then on.
 //! Enforcement is on this device: the server still delivers (it cannot know
 //! contacts, by design).
@@ -211,7 +216,9 @@ impl Session {
             events.push(decline("only contacts may add you to groups (user.group_add)"));
             return self.decline(gid, false);
         }
-        if self.is_applied("user.message_requests")? {
+        // A bot this person never chose (the server's label, PROTOCOL.md
+        // 8.16): always a request, whatever `user.message_requests` says.
+        if self.is_applied("user.message_requests")? || self.bot_member(gid, adder_member)?.is_some() {
             self.set_group_status(gid, &GroupStatus::Request { from: Some(adder.to_string()) })?;
             events.push(Event::Request { group: gid.to_vec(), from: adder.to_string(), direct });
             Ok(())

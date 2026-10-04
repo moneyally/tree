@@ -3874,6 +3874,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "tree-bot-gateway"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "hex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "subtle",
+ "tokio",
+ "tree-client",
+ "tree-core",
+ "tree-server",
+]
+
+[[package]]
 name = "tree-cli"
 version = "0.1.0"
 dependencies = [
@@ -3894,6 +3911,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "sqlx",
+ "subtle",
  "thiserror",
  "tokio",
  "tree-core",

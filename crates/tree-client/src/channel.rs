@@ -184,7 +184,7 @@ mod tests {
     use tree_core::group_settings::ChatSetting;
 
     fn text(re: Option<&str>) -> Payload {
-        Payload::Text { id: "1".into(), text: "x".into(), fmt: false, mentions: vec![], all: false, preview: None, silent: false, fwd: false, topic: None, re: re.map(str::to_string) }
+        Payload::Text { id: "1".into(), text: "x".into(), fmt: false, mentions: vec![], all: false, preview: None, silent: false, fwd: false, topic: None, re: re.map(str::to_string), kb: vec![] }
     }
 
     #[test]

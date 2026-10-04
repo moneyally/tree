@@ -172,6 +172,8 @@ pub async fn remove_device(
     req: Signed<NoBody>,
 ) -> ApiResult<Json<serde_json::Value>> {
     check_id(&device_id, "device_id")?;
+    // A bot's gateway device changes only through its token.
+    req.device.refuse_bot()?;
     let account_id = &req.device.account_id;
     let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
     let removed = sqlx::query("DELETE FROM devices WHERE id = ? AND account_id = ?")
@@ -201,6 +203,9 @@ pub async fn remove_device(
 /// its mailbox and key packages, the username, the recovery key, push
 /// endpoints and invite links (all by cascade). Required by the app stores.
 pub async fn delete_account(State(state): State<AppState>, req: Signed<NoBody>) -> ApiResult<Json<serde_json::Value>> {
+    // A bot is deleted by its owner (`DELETE /v1/bots/{id}`); an owner's
+    // bots go with the owner's account (database trigger, PROTOCOL.md 8.16).
+    req.device.refuse_bot()?;
     let account_id = &req.device.account_id;
     let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
     let devices: Vec<String> = sqlx::query("DELETE FROM devices WHERE account_id = ? RETURNING id")

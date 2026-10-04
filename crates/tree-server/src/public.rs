@@ -328,6 +328,7 @@ json_body!(CreateReq, |_cfg| 8 * 1024);
 /// account owns it. `201` with the space.
 pub async fn create(State(state): State<AppState>, req: Signed<CreateReq>) -> ApiResult<(StatusCode, Json<Value>)> {
     on(&state).await?;
+    req.device.refuse_bot()?;
     let r = &req.body;
     if r.kind != "group" && r.kind != "channel" {
         return Err(ApiError::bad_request("kind is group or channel"));

@@ -113,6 +113,8 @@ pub struct ClaimResp {
     /// Devices of the account that have no key package left, not even a
     /// last-resort one.
     pub exhausted: Vec<String>,
+    /// The account is a bot (PROTOCOL.md 8.16).
+    pub bot: bool,
 }
 
 /// `POST /v1/keypackages/claim` — one key package per device of the account,
@@ -135,6 +137,21 @@ pub async fn claim(
             .collect::<Result<_, _>>()?;
     if devices.is_empty() {
         return Err(ApiError::not_found("unknown account"));
+    }
+    // Bots (PROTOCOL.md 8.16): a bot claims only people who contacted it;
+    // a person claiming a bot's key packages contacts it.
+    let target_bot = crate::bots::is_bot(&state.db, &req.body.account_id).await?;
+    match &req.device.bot {
+        Some(bot) => {
+            if !crate::bots::has_contact(&state.db, bot, &req.body.account_id).await? {
+                return Err(ApiError::forbidden("BOT_NO_CONTACT", "a bot can only start a chat with someone who contacted it"));
+            }
+        }
+        None if target_bot => {
+            crate::bots::platform_on(&state).await?;
+            crate::bots::note_contact(&state.db, &req.body.account_id, &req.device.account_id).await?;
+        }
+        None => {}
     }
 
     let mut key_packages = Vec::new();
@@ -175,6 +192,7 @@ pub async fn claim(
     Ok(Json(ClaimResp {
         key_packages,
         exhausted,
+        bot: target_bot,
     }))
 }
 

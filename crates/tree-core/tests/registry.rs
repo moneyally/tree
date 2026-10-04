@@ -102,7 +102,8 @@ fn standard_feature_table() {
             Lock::None => {}
         }
         assert_eq!(f.plan, Plan::Free, "{}", f.key);
-        assert!((1..=3).contains(&f.stage), "{}", f.key);
+        // Stage 4 only for what is locked off until then (bot payments, tips).
+        assert!((1..=3).contains(&f.stage) || (f.stage == 4 && matches!(f.lock, Lock::AlwaysOff(_))), "{}", f.key);
         // The key prefix names the scope.
         let prefix = f.key.split('.').next().unwrap();
         let ok = match f.scope {
@@ -118,6 +119,10 @@ fn standard_feature_table() {
     assert!(matches!(get("chat.e2e").lock, Lock::AlwaysOn(_)));
     assert!(matches!(get("points.send_to_user").lock, Lock::AlwaysOff(_)));
     assert!(matches!(get("bot.pay_out_points").lock, Lock::AlwaysOff(_)));
+    assert!(matches!(get("bot.payments").lock, Lock::AlwaysOff(_)));
+    assert!(matches!(get("bot.tips").lock, Lock::AlwaysOff(_)));
+    assert_eq!((get("bot.privacy_mode").default, get("chat.bots").default), (State::Applied, State::Applied));
+    assert_eq!((get("bot.directory").default, get("bot.inline").default), (State::Released, State::Released));
     assert_eq!(get("server.bot_platform").stage, 2);
     assert_eq!(get("server.calls").stage, 3);
 }
@@ -188,13 +193,14 @@ fn permanent_locks() {
     assert_eq!(r.status("points.send_to_user").unwrap().state, State::Released);
 }
 
-/// Chat and Server scope need an admin; User scope does not.
+/// Chat and Server scope need an admin, Bot scope the bot owner; User
+/// scope does not.
 #[test]
 fn admin_rules() {
     let mut r = Registry::standard();
     for f in standard_features().into_iter().filter(|f| f.lock == Lock::None) {
         let before = r.status(f.key).unwrap();
-        let needs_admin = matches!(f.scope, Scope::Chat | Scope::Server);
+        let needs_admin = matches!(f.scope, Scope::Chat | Scope::Server | Scope::Bot);
         for who in [USER, PRO_USER] {
             let a = r.apply(f.key, None, who);
             let rel = r.release(f.key, who);

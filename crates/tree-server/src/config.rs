@@ -105,6 +105,26 @@ pub struct Config {
     pub relay_max_bytes: usize,
     /// `RELAY_ALLOW_HTTP`: allow `http://` and local upstreams (tests only).
     pub relay_allow_http: bool,
+    /// `MAX_BOTS_PER_OWNER`: bots one account may own (PROTOCOL.md 8.16).
+    pub max_bots_per_owner: u32,
+    /// `BOT_TOKEN_KEY`: 64 hex characters, the key of the bot token HMACs.
+    /// Unset: a random key kept in the database. Set from the environment
+    /// (never in git), a copy of the database alone cannot check tokens.
+    pub bot_token_key: Option<SecretKey>,
+    /// `BOT_RATE_PER_SEC` / `BOT_RATE_BURST`: one token bucket per bot,
+    /// over all its requests (on top of the per-device bucket).
+    pub bot_rate_per_sec: f64,
+    pub bot_rate_burst: f64,
+}
+
+/// A configured key: never printed by `Debug`.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SecretKey(pub [u8; 32]);
+
+impl std::fmt::Debug for SecretKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SecretKey(..)")
+    }
 }
 
 /// A configured secret: never printed by `Debug`.
@@ -164,6 +184,10 @@ impl Default for Config {
             map_tile_url: None,
             relay_max_bytes: 8 * 1024 * 1024,
             relay_allow_http: false,
+            max_bots_per_owner: 20,
+            bot_token_key: None,
+            bot_rate_per_sec: 10.0,
+            bot_rate_burst: 200.0,
         }
     }
 }
@@ -207,6 +231,12 @@ impl Config {
             Ok(v) if !v.trim().is_empty() => Some(parse_sha256_hex(&v).ok_or_else(|| {
                 ConfigError("ADMIN_TOKEN_SHA256 must be 64 hex characters".into())
             })?),
+            _ => None,
+        };
+        let bot_token_key = match std::env::var("BOT_TOKEN_KEY") {
+            Ok(v) if !v.trim().is_empty() => Some(SecretKey(parse_sha256_hex(&v).ok_or_else(|| {
+                ConfigError("BOT_TOKEN_KEY must be 64 hex characters".into())
+            })?)),
             _ => None,
         };
         let cfg = Self {
@@ -264,6 +294,10 @@ impl Config {
             map_tile_url: env_opt("MAP_TILE_URL"),
             relay_max_bytes: env_parse("RELAY_MAX_BYTES", d.relay_max_bytes)?,
             relay_allow_http: env_parse("RELAY_ALLOW_HTTP", d.relay_allow_http)?,
+            max_bots_per_owner: env_parse("MAX_BOTS_PER_OWNER", d.max_bots_per_owner)?,
+            bot_token_key,
+            bot_rate_per_sec: env_parse("BOT_RATE_PER_SEC", d.bot_rate_per_sec)?,
+            bot_rate_burst: env_parse("BOT_RATE_BURST", d.bot_rate_burst)?,
         };
         cfg.validate()?;
         Ok(cfg)
@@ -307,6 +341,9 @@ impl Config {
         if self.purge_interval_secs == 0 {
             return Err(ConfigError("PURGE_INTERVAL_SECS must be positive".into()));
         }
+        if !(self.bot_rate_per_sec > 0.0 && self.bot_rate_burst >= 1.0) {
+            return Err(ConfigError("BOT_RATE_PER_SEC must be > 0 and BOT_RATE_BURST >= 1".into()));
+        }
         if self.relay_max_bytes == 0 {
             return Err(ConfigError("RELAY_MAX_BYTES must be positive".into()));
         }
@@ -334,7 +371,17 @@ mod tests {
         set("GIF_PROVIDER_URL", " https://gifs.example/search ");
         set("GIF_PROVIDER_KEY", "not-a-real-key");
         set("MAP_TILE_URL", "https://tiles.example/{z}/{x}/{y}.png");
+        set("BOT_TOKEN_KEY", &"cd".repeat(32));
+        set("MAX_BOTS_PER_OWNER", "3");
         let c = Config::from_env().unwrap();
+        assert_eq!(c.bot_token_key, Some(SecretKey([0xcd; 32])));
+        assert!(!format!("{c:?}").contains("205, 205"), "the bot token key is never printed");
+        assert_eq!(c.max_bots_per_owner, 3);
+        set("BOT_TOKEN_KEY", "short");
+        assert!(Config::from_env().is_err());
+        for k in ["BOT_TOKEN_KEY", "MAX_BOTS_PER_OWNER"] {
+            std::env::remove_var(k);
+        }
         assert_eq!(c.gif_provider_url.as_deref(), Some("https://gifs.example/search"));
         assert_eq!(c.gif_provider_key, Some(Secret("not-a-real-key".into())));
         assert!(!format!("{c:?}").contains("not-a-real-key"), "the key is never printed");
@@ -382,6 +429,8 @@ mod tests {
             |c| c.push_interval_secs = 0,
             |c| c.public_push_interval_secs = 0,
             |c| c.relay_max_bytes = 0,
+            |c| c.bot_rate_per_sec = 0.0,
+            |c| c.bot_rate_burst = 0.0,
         ];
         for (i, f) in bad.into_iter().enumerate() {
             let mut c = Config::default();

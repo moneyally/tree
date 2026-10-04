@@ -127,6 +127,15 @@ pub async fn submit(State(state): State<AppState>, req: Signed<CommitReq>) -> Ap
         }
     };
     let hash: [u8; 32] = Sha256::digest(&body).into();
+    // A bot commits only to devices it may reach (PROTOCOL.md 8.16).
+    if let Some(bot) = &req.device.bot {
+        let all: Vec<String> = recipients.iter().chain(&added).cloned().collect();
+        let (_, refused) = crate::bots::may_reach(&state.db, bot, &sender, &all).await?;
+        if !refused.is_empty() {
+            return Err(ApiError::forbidden("BOT_NO_CONTACT", "a bot can only reach people who contacted it and its groups")
+                .with("refused_devices", json!(refused)));
+        }
+    }
     req.device.charge_outreach(&state, ((recipients.len() + added.len()) / 100) as f64)?;
 
     let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
@@ -224,12 +233,14 @@ pub async fn submit(State(state): State<AppState>, req: Signed<CommitReq>) -> Ap
     // Deliver: the commit to the existing members, then the welcome to the
     // added devices, in the same transaction (before any message of the new
     // epoch can exist).
-    let mut d = deliver(&mut tx, cfg, &body, recipients).await?;
+    let from_bot = req.device.bot.as_deref();
+    let mut d = deliver(&mut tx, cfg, &body, recipients, from_bot).await?;
     if let Some(w) = welcome {
-        let dw = deliver(&mut tx, cfg, &w, added).await?;
+        let dw = deliver(&mut tx, cfg, &w, added, from_bot).await?;
         d.delivered.extend(dw.delivered);
         d.unknown_devices.extend(dw.unknown_devices);
         d.full_devices.extend(dw.full_devices);
+        d.refused_devices.extend(dw.refused_devices);
     }
     tx.commit().await?;
 

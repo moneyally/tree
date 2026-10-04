@@ -230,9 +230,21 @@ pub struct DeviceCtx {
     pub max_fanout: usize,
     /// Multiplier on the rate cost of requests that reach other people.
     pub cost_factor: f64,
+    /// The device belongs to a bot account (its account id): the gateway
+    /// device of that bot (PROTOCOL.md 8.16).
+    pub bot: Option<String>,
 }
 
 impl DeviceCtx {
+    /// Refuses a request that only people may make (`NOT_FOR_BOTS`): device
+    /// links, recovery, @usernames, account deletion, owning bots.
+    pub fn refuse_bot(&self) -> ApiResult<()> {
+        match self.bot {
+            Some(_) => Err(ApiError::forbidden("NOT_FOR_BOTS", "bots cannot do this")),
+            None => Ok(()),
+        }
+    }
+
     /// Charges an outreach request (send, commit, claim, lookup, join):
     /// `extra` tokens on top of the request's own, times the account's factor.
     pub fn charge_outreach(&self, state: &crate::AppState, extra: f64) -> ApiResult<()> {
@@ -260,7 +272,11 @@ impl<T: SignedBody + Send> FromRequest<AppState> for Signed<T> {
         let device_id = auth.device.clone().unwrap_or_default();
 
         let row = sqlx::query(
-            "SELECT d.account_id, d.auth_pub, a.created_day FROM devices d JOIN accounts a ON a.id = d.account_id WHERE d.id = ?",
+            "SELECT d.account_id, d.auth_pub, a.created_day, b.account_id AS bot, b.token_mac IS NOT NULL AS bot_token, \
+             b.token_gen AS bot_gen, bd.token_gen AS device_gen \
+             FROM devices d JOIN accounts a ON a.id = d.account_id \
+             LEFT JOIN bots b ON b.account_id = d.account_id LEFT JOIN bot_devices bd ON bd.device_id = d.id \
+             WHERE d.id = ?",
         )
             .bind(&device_id)
             .fetch_optional(&state.db)
@@ -273,6 +289,21 @@ impl<T: SignedBody + Send> FromRequest<AppState> for Signed<T> {
 
         auth.verify(state, &key, &parts.method, &parts.uri, &bytes)?;
         state.rate_device(&device_id, 1.0)?;
+        // A bot's gateway device works only under the bot's current token
+        // (rotating or revoking it cuts the device off at once), only while
+        // the operator has the bot platform applied, and within the bot's
+        // own rate limit.
+        let bot: Option<String> = row.try_get("bot")?;
+        if let Some(b) = &bot {
+            let token: bool = row.try_get("bot_token")?;
+            let gen: Option<i64> = row.try_get("bot_gen")?;
+            let device_gen: Option<i64> = row.try_get("device_gen")?;
+            if !token || device_gen.is_none() || device_gen != gen {
+                return Err(ApiError::new(StatusCode::UNAUTHORIZED, "BOT_DEVICE_DISABLED", "this gateway device must register again with the bot's current token"));
+            }
+            crate::bots::platform_on(state).await?;
+            state.rate_bot(b, 1.0)?;
+        }
         // A suspended account can do nothing until an operator releases it.
         if crate::reports::is_suspended(&state.db, &account_id).await? {
             return Err(ApiError::forbidden("SUSPENDED", "this account is suspended"));
@@ -287,6 +318,7 @@ impl<T: SignedBody + Send> FromRequest<AppState> for Signed<T> {
                 account_id,
                 max_fanout: limits.max_fanout.unwrap_or(state.cfg.max_recipients),
                 cost_factor: limits.cost_factor,
+                bot,
             },
             body,
         })

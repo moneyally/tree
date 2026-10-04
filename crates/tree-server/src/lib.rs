@@ -15,6 +15,7 @@
 //! * [`attachments`] — encrypted attachments (padded ciphertext, uploaded in resumable parts)
 //! * [`reports`] — reports with message franking, account suspension
 //! * [`public`] — public groups and channels: plaintext, a separate data path (not end-to-end)
+//! * [`bots`] — bot accounts, tokens (stored as HMACs), gateway devices, the bot directory
 //! * [`features`] — operator flags with apply/release
 //! * [`relay`] — GIF search and map tiles fetched for devices (off by default)
 //!
@@ -30,6 +31,7 @@
 pub mod accounts;
 pub mod attachments;
 pub mod auth;
+pub mod bots;
 pub mod commits;
 pub mod config;
 pub mod error;
@@ -96,6 +98,12 @@ pub struct Inner {
     pub upload_locks: attachments::UploadLocks,
     /// Public spaces with new posts, for their subscribers' wake-ups.
     pub public_wakes: public::PublicWakes,
+    /// One bucket per bot over all its requests (see [`bots`]).
+    pub bot_limiter: RateLimiter<String>,
+    /// The key of the bot token HMACs (configured, or kept in the database).
+    pub bot_key: tokio::sync::OnceCell<[u8; 32]>,
+    /// Open gateway registration challenges (memory only).
+    pub bot_challenges: bots::Challenges,
 }
 
 impl Deref for AppState {
@@ -122,6 +130,9 @@ impl AppState {
             request_tags: messages::RequestTagKeys::default(),
             upload_locks: attachments::UploadLocks::default(),
             public_wakes: public::PublicWakes::default(),
+            bot_limiter: RateLimiter::new(cfg.bot_rate_per_sec, cfg.bot_rate_burst),
+            bot_key: tokio::sync::OnceCell::new(),
+            bot_challenges: bots::Challenges::default(),
             db,
             cfg,
         }))
@@ -132,6 +143,12 @@ impl AppState {
         self.device_limiter
             .take(&device_id.to_string(), cost)
             .map_err(ApiError::rate_limited)
+    }
+
+    /// Takes `cost` tokens from the bot's bucket (every request of the bot's
+    /// devices, and its gateway registrations).
+    pub fn rate_bot(&self, bot: &str, cost: f64) -> ApiResult<()> {
+        self.bot_limiter.take(&bot.to_string(), cost).map_err(ApiError::rate_limited)
     }
 
     /// Something arrived for `device_id`: wake its long-poll and, if it has
@@ -290,6 +307,18 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/public/directory", get(public::directory))
         .route("/v1/public/subscriptions", get(public::subscriptions))
         .route("/v1/public/reports", post(public::report))
+        .route("/v1/bots", post(bots::create).get(bots::mine))
+        .route("/v1/bots/lookup", post(bots::lookup))
+        .route("/v1/bots/directory", get(bots::directory))
+        .route("/v1/bots/by-username/{name}", get(bots::by_username))
+        .route("/v1/bots/gateway/challenge", post(bots::gateway_challenge))
+        .route("/v1/bots/gateway/register", post(bots::gateway_register))
+        .route("/v1/bots/gateway/me", get(bots::gateway_me))
+        .route("/v1/bots/{id}", get(bots::get).delete(bots::delete))
+        .route("/v1/bots/{id}/profile", put(bots::profile))
+        .route("/v1/bots/{id}/features/{key}/{action}", post(bots::feature))
+        .route("/v1/bots/{id}/token/{action}", post(bots::token))
+        .route("/v1/bots/{id}/stop", post(bots::stop))
         .route("/v1/relay", get(relay::status))
         .route("/v1/relay/gif/search", post(relay::gif_search))
         .route("/v1/relay/gif/media/{id}", get(relay::gif_media))
@@ -420,6 +449,8 @@ pub async fn start(cfg: Config) -> Result<Server, BoxError> {
                 state.replay.prune(util::now_secs());
                 state.device_limiter.prune();
                 state.signup_limiter.prune();
+                state.bot_limiter.prune();
+                state.bot_challenges.prune(util::now_secs());
             }
         }));
     }

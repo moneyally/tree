@@ -165,6 +165,9 @@ const SECURITY_KEYS: &[&str] = &[
     "user.recovery_phrase",
     "user.username_link",
     "user.profile_photo_visibility",
+    // A bot in a group receives only what is addressed to it (bot lanes,
+    // PROTOCOL.md 8.16).
+    "bot.privacy_mode",
 ];
 
 /// Reporting, spam and stranger protection.
@@ -181,7 +184,13 @@ const MODERATION_KEYS: &[&str] = &[
     "chat.join_approval",
     "chat.slow_mode",
     "chat.restrict",
+    // Whether bots may be in the group (Wave 5): released, receivers drop
+    // what bots send and nobody can add one.
+    "chat.bots",
 ];
+
+/// Bot features about money: points, payments and tips.
+const BOT_MONEY_KEYS: &[&str] = &["bot.pay_out_points", "bot.payments", "bot.tips"];
 
 pub(crate) fn kind(f: &Feature) -> Kind {
     let prefix = f.key.split('.').next().unwrap_or("");
@@ -189,7 +198,7 @@ pub(crate) fn kind(f: &Feature) -> Kind {
         Kind::SecurityPolicy
     } else if MODERATION_KEYS.contains(&f.key) || f.scope == Scope::Server {
         Kind::ModerationPolicy
-    } else if f.plan == Plan::Pro || matches!(prefix, "points" | "pro") || f.key == "bot.pay_out_points" {
+    } else if f.plan == Plan::Pro || matches!(prefix, "points" | "pro") || BOT_MONEY_KEYS.contains(&f.key) {
         Kind::BillingCapability
     } else if f.scope == Scope::Chat {
         Kind::ChatPolicy
@@ -685,6 +694,19 @@ pub fn standard_features() -> Vec<Feature> {
         feat("chat.public_listing", Chat, Released, 3),
         feat("channel.comments", Chat, Released, 3),
         feat("channel.signatures", Chat, Released, 3),
+        // Bot platform (Wave 5, design stage 2, PROTOCOL.md 8.16): admins
+        // allow bots in the group (released: no bot can be added, and what
+        // a bot sends is dropped).
+        feat("chat.bots", Chat, Applied, 2),
+        // bot (set by the bot's owner, kept by the server): a bot in a group
+        // gets only messages addressed to it (privacy mode, enforced by the
+        // senders' devices); the bot may be added to groups (released: 1:1
+        // chats only); inline queries (flag only for now); listed in the bot
+        // directory.
+        feat("bot.privacy_mode", Bot, Applied, 2),
+        feat("bot.join_groups", Bot, Applied, 2),
+        feat("bot.inline", Bot, Released, 2),
+        feat("bot.directory", Bot, Released, 2),
         // user
         feat("user.read_receipts", User, Applied, 1),
         feat("user.typing", User, Applied, 1),
@@ -755,6 +777,15 @@ pub fn standard_features() -> Vec<Feature> {
         let default = if matches!(lock, Lock::AlwaysOn(_)) { Applied } else { Released };
         v.push(Feature { key, scope, default, lock, plan: Plan::Free, stage: 1 });
     }
+    // Money through bots waits for design stage 4: the owner's identity has
+    // to be verified and the rules checked by a lawyer first.
+    let later = [
+        ("bot.payments", Lock::AlwaysOff("bot payments wait for stage 4: identity verification and legal review")),
+        ("bot.tips", Lock::AlwaysOff("tips to bots wait for stage 4: identity verification and legal review")),
+    ];
+    for (key, lock) in later {
+        v.push(Feature { key, scope: Bot, default: Released, lock, plan: Plan::Free, stage: 4 });
+    }
     v
 }
 
@@ -772,6 +803,11 @@ mod tests {
         assert_eq!(k("server.signups"), Kind::ModerationPolicy);
         assert_eq!(k("points.send_to_user"), Kind::BillingCapability);
         assert_eq!(k("bot.pay_out_points"), Kind::BillingCapability);
+        assert_eq!(k("bot.payments"), Kind::BillingCapability);
+        assert_eq!(k("bot.tips"), Kind::BillingCapability);
+        assert_eq!(k("bot.privacy_mode"), Kind::SecurityPolicy);
+        assert_eq!(k("chat.bots"), Kind::ModerationPolicy);
+        assert_eq!(k("bot.directory"), Kind::UserPreference);
         assert_eq!(k("chat.reactions"), Kind::ChatPolicy);
         assert_eq!(k("user.read_receipts"), Kind::UserPreference);
         // Every listed key exists, so the lists cannot silently rot.

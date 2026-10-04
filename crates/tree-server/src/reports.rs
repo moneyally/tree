@@ -189,7 +189,8 @@ pub async fn report(State(state): State<AppState>, req: Signed<ReportReq>) -> Ap
 pub async fn list(State(state): State<AppState>, headers: HeaderMap) -> ApiResult<Json<Value>> {
     check_admin(&state.cfg, &headers)?;
     let rows = sqlx::query(
-        "SELECT id, reported_account, reporter_account, reason, messages, verified, created_day \
+        "SELECT id, reported_account, reporter_account, reason, messages, verified, created_day, \
+         (SELECT owner_account FROM bots WHERE account_id = reported_account) AS bot_owner \
          FROM reports WHERE resolved = 0 ORDER BY created_day, id LIMIT 100",
     )
     .fetch_all(&state.db)
@@ -205,6 +206,8 @@ pub async fn list(State(state): State<AppState>, headers: HeaderMap) -> ApiResul
             "messages": serde_json::from_str::<Value>(&messages).unwrap_or(Value::Null),
             "verified": r.try_get::<bool, _>("verified")?,
             "created_day": r.try_get::<i64, _>("created_day")?,
+            // A bot (PROTOCOL.md 8.16): its owner is named for the operator.
+            "reported_bot_owner": r.try_get::<Option<String>, _>("bot_owner")?,
         }));
     }
     Ok(Json(json!({ "reports": out })))

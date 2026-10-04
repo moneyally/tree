@@ -84,6 +84,16 @@ pub struct Api {
     receiving: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
+/// One mailbox entry as fetched.
+pub struct Fetched {
+    pub id: String,
+    pub body: Vec<u8>,
+    /// Arrival at the server (unix seconds, whole minutes).
+    pub at: i64,
+    /// Sent by this bot's device, as the server says.
+    pub bot: Option<String>,
+}
+
 /// Someone used one of this device's invite links.
 pub struct InviteRequest {
     pub id: String,
@@ -123,6 +133,28 @@ pub fn solve_pow(auth_pub: &[u8; 32], bits: u32) -> u64 {
             leading_zero_bits(&h) >= bits
         })
         .expect("a nonce exists")
+}
+
+/// Proof of work for a new bot (PROTOCOL.md 8.16): the signup's, under
+/// its own label, over 32 random bytes `key` used once.
+pub fn solve_bot_pow(key: &[u8; 32], bits: u32) -> u64 {
+    (0u64..)
+        .find(|n| {
+            let h = Sha256::new().chain_update(b"tree-bot-signup-v1").chain_update(key).chain_update(n.to_be_bytes()).finalize();
+            leading_zero_bits(&h) >= bits
+        })
+        .expect("a nonce exists")
+}
+
+/// What a bot's gateway signs with its device key to register
+/// (PROTOCOL.md 8.16): each part with its length (4 bytes big-endian).
+pub fn gateway_message(bot: &str, challenge: &[u8], auth_pub: &[u8; 32]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for p in [&b"tree/bot-gateway/v1"[..], bot.as_bytes(), challenge, auth_pub] {
+        out.extend_from_slice(&(p.len() as u32).to_be_bytes());
+        out.extend_from_slice(p);
+    }
+    out
 }
 
 fn leading_zero_bits(h: &[u8]) -> u32 {
@@ -245,6 +277,41 @@ impl Api {
         Ok(Creds { account_id: field(&v, "account_id")?, device_id: field(&v, "device_id")?, key: key.clone() })
     }
 
+    /// A request with a bot token instead of a device signature (the
+    /// gateway's registration, PROTOCOL.md 8.16).
+    pub fn with_bot_token(&self, method: Method, path: &str, token: &str, body: Option<&Value>) -> Result<Value, Error> {
+        self.assert_not_receiving(path);
+        let mut req = self.http.request(method, format!("{}{}", self.base, path)).header("Authorization", format!("Bearer {}", token.trim()));
+        if let Some(b) = body {
+            req = req.header("Content-Type", "application/json").body(serde_json::to_vec(b).expect("JSON value"));
+        }
+        let resp = req.send().map_err(|e| Error::Network(e.to_string()))?;
+        let status = resp.status();
+        let text = resp.text().map_err(|e| Error::Network(e.to_string()))?;
+        let body = if text.is_empty() { Value::Null } else { serde_json::from_str(&text).unwrap_or(Value::Null) };
+        Reply { status, body }.ok()
+    }
+
+    /// Registers `key` as the bot's gateway device with the bot token:
+    /// asks for a challenge and signs it with the key (proof of possession).
+    /// The same key as before keeps its device id.
+    pub fn bot_register(&self, token: &str, key: &SigningKey) -> Result<Creds, Error> {
+        let c = self.with_bot_token(Method::POST, "/v1/bots/gateway/challenge", token, None)?;
+        let bot = field(&c, "account_id")?;
+        let challenge = unb64(&field(&c, "challenge")?)?;
+        let public = key.verifying_key().to_bytes();
+        let sig = key.sign(&gateway_message(&bot, &challenge, &public));
+        let body = json!({ "auth_pub": b64(&public), "challenge": b64(&challenge), "signature": b64(&sig.to_bytes()) });
+        let v = self.with_bot_token(Method::POST, "/v1/bots/gateway/register", token, Some(&body))?;
+        Ok(Creds { account_id: field(&v, "account_id")?, device_id: field(&v, "device_id")?, key: key.clone() })
+    }
+
+    /// A bot request (`/v1/bots/...`): the answer's JSON, or the server's
+    /// error code.
+    pub fn bots(&self, c: &Creds, method: Method, path: &str, body: Option<&Value>) -> Result<Value, Error> {
+        self.call(c, method, path, body)?.ok()
+    }
+
     /// Deletes the whole account on the server.
     pub fn delete_account(&self, c: &Creds) -> Result<(), Error> {
         self.call(c, Method::DELETE, "/v1/accounts", None)?.ok()?;
@@ -345,6 +412,11 @@ impl Api {
 
     /// One key package per device of `account_id`: (device id, key package).
     pub fn claim(&self, c: &Creds, account_id: &str) -> Result<Vec<(String, Vec<u8>)>, Error> {
+        Ok(self.claim_flagged(c, account_id)?.0)
+    }
+
+    /// [`Api::claim`], and whether the server says the account is a bot.
+    pub fn claim_flagged(&self, c: &Creds, account_id: &str) -> Result<(Vec<(String, Vec<u8>)>, bool), Error> {
         let v = self
             .call(c, Method::POST, "/v1/keypackages/claim", Some(&json!({ "account_id": account_id })))?
             .ok()?;
@@ -352,7 +424,7 @@ impl Api {
         for kp in v["key_packages"].as_array().into_iter().flatten() {
             out.push((field(kp, "device_id")?, unb64(kp["key_package"].as_str().unwrap_or(""))?));
         }
-        Ok(out)
+        Ok((out, v["bot"].as_bool().unwrap_or(false)))
     }
 
     /// Starts an upload of `size` ciphertext bytes (PROTOCOL.md 6.12).
@@ -498,13 +570,19 @@ impl Api {
     }
 
     /// [`Api::fetch`] with the server's arrival time of each message (unix
-    /// seconds, whole minutes; the server keeps no finer time).
-    pub fn fetch_timed(&self, c: &Creds, wait: u64) -> Result<Vec<(String, Vec<u8>, i64)>, Error> {
+    /// seconds, whole minutes; the server keeps no finer time) and, for a
+    /// message a bot's device sent, the bot's account (PROTOCOL.md 8.16).
+    pub fn fetch_timed(&self, c: &Creds, wait: u64) -> Result<Vec<Fetched>, Error> {
         let path = if wait > 0 { format!("/v1/messages?wait={wait}") } else { "/v1/messages".into() };
         let v = self.call(c, Method::GET, &path, None)?.ok()?;
         let mut out = Vec::new();
         for m in v["messages"].as_array().into_iter().flatten() {
-            out.push((field(m, "id")?, unb64(m["body"].as_str().unwrap_or(""))?, m["received_at"].as_i64().unwrap_or(0)));
+            out.push(Fetched {
+                id: field(m, "id")?,
+                body: unb64(m["body"].as_str().unwrap_or(""))?,
+                at: m["received_at"].as_i64().unwrap_or(0),
+                bot: m["bot"].as_str().map(str::to_string),
+            });
         }
         Ok(out)
     }

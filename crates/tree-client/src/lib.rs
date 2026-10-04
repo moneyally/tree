@@ -8,6 +8,7 @@
 
 pub mod admin_log;
 pub mod api;
+pub mod bots;
 pub mod channel;
 pub mod chat_events;
 pub mod device;
@@ -58,6 +59,8 @@ use tree_core::{
 use zeroize::Zeroizing;
 
 pub use api::{Api, Creds};
+pub use bots::{BotCommand, BotFeature, BotInfo, OwnedBot};
+pub use payload::Button;
 pub use link::{LinkStatus, NewDevice};
 pub use media::{Downloader, MediaMeta, SendOptions, Source, Transfer, TransferState, Transfers};
 pub use messages::TextOptions;
@@ -138,6 +141,11 @@ pub enum Event {
         preview: Option<payload::LinkPreview>,
         /// Sent silently: apps do not notify ([`Session::should_notify`]).
         silent: bool,
+        /// The sender is a bot, as the server says (PROTOCOL.md 8.16):
+        /// apps label it, whatever name it uses.
+        bot: bool,
+        /// A bot's inline buttons (rows); empty for people.
+        buttons: Vec<Vec<Button>>,
     },
     /// The sender edited its message `id`.
     Edited { group: Vec<u8>, id: String, from: MemberId, text: String },
@@ -238,6 +246,12 @@ pub enum Event {
     /// This admin device added `member` to `group` at its request through
     /// the community `community`.
     CommunityMemberAdded { community: Vec<u8>, group: Vec<u8>, member: MemberId },
+    /// A bot's device only: `from` pressed button `data` under this bot's
+    /// message `msg`; answer with [`Session::answer_callback`] and `id`.
+    CallbackQuery { group: Vec<u8>, id: String, from: MemberId, msg: String, data: String },
+    /// The bot answered this device's button press `id`: show `text` (as a
+    /// dialog with `alert`), if any.
+    CallbackAnswer { group: Vec<u8>, id: String, text: Option<String>, alert: bool },
 }
 
 /// Recovery as the server has it (PROTOCOL.md 8.6).
@@ -364,6 +378,9 @@ pub struct MemberInfo {
     pub duplicate_name: bool,
     /// The member's account, if this device learned it (for safety numbers).
     pub account: Option<String>,
+    /// The member is a bot (its account), as the server says; never from a
+    /// roster's claim (PROTOCOL.md 8.16). Apps show the "bot" label.
+    pub bot: Option<String>,
 }
 
 /// Pinning rule: devices the server names for an account in a key-package
@@ -425,6 +442,9 @@ pub struct Session {
     /// locally (pins); only tests change it, to cross an expiry without
     /// waiting on the wall clock.
     clock_offset: i64,
+    /// The bot whose device sent the message being handled, as the server
+    /// says (PROTOCOL.md 8.16; `bots.rs`).
+    from_bot: Option<String>,
 }
 
 impl Session {
@@ -484,7 +504,7 @@ impl Session {
 
     pub(crate) fn from_parts(client: Client<StoredProvider>, api: Api, creds: Creds, path: &str) -> Self {
         let media = media::MediaState::new(path);
-        Self { client, api, creds, groups: HashMap::new(), refresh_policy: Default::default(), link: None, media, path: path.to_string(), server_time: None, unchecked: false, clock_offset: 0 }
+        Self { client, api, creds, groups: HashMap::new(), refresh_policy: Default::default(), link: None, media, path: path.to_string(), server_time: None, unchecked: false, clock_offset: 0, from_bot: None }
     }
 
     /// Opens an existing profile and resubmits any commit that was waiting
@@ -619,6 +639,7 @@ impl Session {
         let roster = self.roster(gid)?;
         let names = self.names(gid)?;
         let accounts = self.map(&accounts_key(gid))?;
+        let bots = self.map(&format!("botmem/{}", hex::encode(gid)))?;
         let ids = self.group(gid)?.members();
         let name_of = |id: &MemberId| names.get(&id.to_hex()).cloned();
         // Counted once (not per member: groups have up to 1,000 members).
@@ -631,7 +652,11 @@ impl Session {
         Ok(ids
             .iter()
             .map(|id| {
-                let name = name_of(id);
+                // A bot is shown by the username the server knows, not by
+                // a name it chose (it could choose a person's).
+                let bot = bots.get(&id.to_hex()).cloned();
+                let bot_name = bot.as_deref().and_then(|b| self.cached_bot(b).ok().flatten()).map(|i| i.username);
+                let name = bot_name.or_else(|| name_of(id));
                 let duplicate_name = name.as_ref().is_some_and(|n| uses.get(n).copied().unwrap_or(0) > 1);
                 MemberInfo {
                     id: *id,
@@ -639,6 +664,7 @@ impl Session {
                     name,
                     duplicate_name,
                     account: accounts.get(&id.to_hex()).cloned(),
+                    bot,
                 }
             })
             .collect())
@@ -873,6 +899,12 @@ impl Session {
                 return Ok(true);
             }
         }
+        // A blocked bot, by the server's label (whatever its roster says).
+        if let Some(b) = self.bot_member(gid, from)? {
+            if self.is_blocked(&b)? {
+                return Ok(true);
+            }
+        }
         let hex = from.to_hex();
         Ok(self.contacts()?.iter().any(|c| c.blocked && c.members.contains(&hex)))
     }
@@ -919,7 +951,12 @@ impl Session {
         if !self.may_add(gid)? {
             return Err(Error::Feature("NOT_ADMIN".into()));
         }
-        let claimed = self.api.claim(&self.creds, account_id)?;
+        // A bot needs `chat.bots` (and `bot.join_groups` for a group).
+        self.check_bot_add(gid, account_id)?;
+        let (claimed, is_bot) = self.api.claim_flagged(&self.creds, account_id)?;
+        if is_bot && !self.chat_feature(gid, "chat.bots")?.0 {
+            return Err(Error::Feature("LOCKED_BY_CHAT".into()));
+        }
         if claimed.is_empty() {
             return Err(Error::Usage("that account has no key packages left".into()));
         }
@@ -933,6 +970,11 @@ impl Session {
         let mut events = Vec::new();
         self.pin(account_id, &ids, true, &mut events)?;
         self.accept_contact(account_id)?;
+        if is_bot {
+            for i in &ids {
+                self.note_bot_member(gid, i, account_id)?;
+            }
+        }
         let mut accounts = self.map(&accounts_key(gid))?;
         for i in &ids {
             accounts.insert(i.to_hex(), account_id.to_string());
@@ -1036,7 +1078,14 @@ impl Session {
             // Topic names and recent history for the new members (best
             // effort: the add itself is done).
             let _ = self.send_topic_list(gid);
-            let _ = self.share_history(gid, &p.added);
+            // Never to bots: shared history is more than a bot is sent.
+            let mut people = Vec::new();
+            for m in &p.added {
+                if self.bot_member(gid, m)?.is_none() {
+                    people.push(*m);
+                }
+            }
+            let _ = self.share_history(gid, &people);
         }
         Ok(CommitOutcome::Accepted { epoch })
     }
@@ -1134,16 +1183,29 @@ impl Session {
         let mut events = Vec::new();
         let mut ids = Vec::new();
         let mut moved = false;
-        for (id, body, at) in msgs {
-            self.server_time = Some(at);
-            let r = self.handle_durably(&body, &mut events, true);
+        for m in msgs {
+            self.server_time = Some(m.at);
+            self.from_bot = m.bot;
+            let r = self.handle_durably(&m.body, &mut events, true);
             self.server_time = None;
+            self.from_bot = None;
             moved |= r?;
-            ids.push(id);
+            ids.push(m.id);
         }
         self.api.ack(&self.creds, &ids)?;
         while moved {
             moved = self.retry_held(&mut events)?;
+        }
+        // Bots among new devices and labels (best effort; sends check again).
+        let changed: std::collections::BTreeSet<Vec<u8>> = events
+            .iter()
+            .filter_map(|e| match e {
+                Event::RosterUpdated { group } | Event::Joined { group } => Some(group.clone()),
+                _ => None,
+            })
+            .collect();
+        for g in changed {
+            let _ = self.refresh_lane(&g, false);
         }
         if events.iter().any(|e| matches!(e, Event::Joined { .. })) || self.key_packages_due()? {
             self.ensure_key_packages()?;
@@ -1193,6 +1255,10 @@ impl Session {
                         self.client.set_app_data(&history_share::taken_key(&gid), None)?;
                         self.client.set_app_data(&announce_key(&gid), Some(b"1"))?;
                         self.set_group_status(&gid, &GroupStatus::Request { from: None })?;
+                        // A bot's device added this one: the server says so.
+                        if let Some(bot) = self.from_bot.clone() {
+                            self.note_bot_member(&gid, &adder, &bot)?;
+                        }
                         self.accept_if_asked(&gid)?;
                         events.push(Event::Joined { group: gid.clone() });
                         self.on_joined(&gid, events)?;
@@ -1227,6 +1293,9 @@ impl Session {
                 Ok(false)
             }
             Ok(Incoming::GroupChanged { added, removed, epoch, own_commit_discarded, settings_changed, by }) => {
+                if let Some(bot) = self.from_bot.clone() {
+                    self.note_bot_member(&gid, &by, &bot)?;
+                }
                 self.note_departures(&gid, &removed)?;
                 if let Some(before) = &before {
                     self.log_commit(&gid, &by, before, &added, &removed)?;
@@ -1284,6 +1353,17 @@ impl Session {
             }
             other => (other, None),
         };
+        // Sent by a bot's device, as the server says: label the member (no
+        // roster can take the label away, PROTOCOL.md 8.16).
+        if let Some(bot) = self.from_bot.clone() {
+            self.note_bot_member(gid, &from, &bot)?;
+        }
+        // `chat.bots` released: nothing a bot sends is taken (it may still
+        // ask to leave).
+        if self.bot_member(gid, &from)?.is_some() && !matches!(payload, Some(Payload::Leave { .. })) && !self.chat_feature(gid, "chat.bots")?.0 {
+            events.push(Event::Dropped { reason: "bots are released in this group (chat.bots)".into() });
+            return Ok(());
+        }
         // The account's self group (settings sync) is not a chat: group
         // roles, restrictions and slow mode never apply in it, and it has
         // no topics, shared history or community joins, whoever sends them.
@@ -1476,6 +1556,8 @@ impl Session {
                 }
             }
             Some(Payload::Settings { s }) => self.on_settings(gid, from, s, events)?,
+            Some(Payload::Callback { id, msg, data, bot }) => self.on_callback(gid, from, id, msg, data, bot, events)?,
+            Some(Payload::CallbackAnswer { id, to, text, alert }) => self.on_callback_answer(gid, from, id, to, text, alert, events)?,
             Some(Payload::Franked { .. }) | None => events.push(Event::Dropped { reason: format!("unsupported message from {}", &from.to_hex()[..8]) }),
         }
         Ok(())

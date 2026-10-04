@@ -140,6 +140,8 @@ json_body!(ApplyReq, |_cfg| 512);
 /// signed by the current key (or the first key) is immediate; otherwise it
 /// is pending for [`CHANGE_DELAY`].
 pub async fn apply(State(state): State<AppState>, req: Signed<ApplyReq>) -> ApiResult<Json<Value>> {
+    // Bots never have recovery (PROTOCOL.md 8.16).
+    req.device.refuse_bot()?;
     let account = &req.device.account_id;
     let new = recovery_pub(&req.body.recovery_pub)?;
     if !verify(&new, &change_message(SET_CONTEXT, account, &new), &sig(&req.body.proof, "proof")?) {
@@ -192,6 +194,7 @@ json_body!(ReleaseReq, |_cfg| 256);
 /// `POST /v1/recovery/release` — no recovery for my account: immediate with
 /// the current key's signature, otherwise after [`CHANGE_DELAY`].
 pub async fn release(State(state): State<AppState>, req: Signed<ReleaseReq>) -> ApiResult<Json<Value>> {
+    req.device.refuse_bot()?;
     let account = &req.device.account_id;
     let current_sig = req.body.current_signature.as_deref().map(|s| sig(s, "current_signature")).transpose()?;
     let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
@@ -211,6 +214,7 @@ pub async fn release(State(state): State<AppState>, req: Signed<ReleaseReq>) -> 
 /// `GET /v1/recovery` — my account's recovery state and any pending change
 /// (apps warn: "if this was not you, recover now").
 pub async fn get(State(state): State<AppState>, req: Signed<NoBody>) -> ApiResult<Json<Value>> {
+    req.device.refuse_bot()?;
     let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
     let row = current(&mut tx, &req.device.account_id).await?;
     tx.commit().await?;

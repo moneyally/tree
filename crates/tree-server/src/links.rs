@@ -166,6 +166,8 @@ json_body!(CreateReq, |_cfg| MAX_OFFER * 2 + 256);
 /// `POST /v1/links` — the existing device opens a session for a scanned
 /// invitation.
 pub async fn create(State(state): State<AppState>, req: Signed<CreateReq>) -> ApiResult<(StatusCode, Json<Value>)> {
+    // A bot's devices come only from its gateway registration.
+    req.device.refuse_bot()?;
     raw_link_id(&req.body.link_id)?;
     let (_, raw) = parse_public_key(&req.body.new_auth_pub)?;
     let offer = decode_limited(&req.body.offer, MAX_OFFER, "offer")?;

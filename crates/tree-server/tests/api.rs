@@ -161,9 +161,10 @@ async fn flags_require_operator_and_lock_signups() {
         ]
     );
     // All start applied (the test harness released the new-account limits)
-    // except the relays, which start released (PROTOCOL.md 8.12).
+    // except the relays (PROTOCOL.md 8.12) and the bot platform (8.16),
+    // which start released.
     assert!(v["features"].as_array().unwrap().iter().all(|f| {
-        let released = ["server.new_account_limits", "server.gif_relay", "server.map_relay"].contains(&f["key"].as_str().unwrap());
+        let released = ["server.new_account_limits", "server.gif_relay", "server.map_relay", "server.bot_platform"].contains(&f["key"].as_str().unwrap());
         f["state"] == if released { "released" } else { "applied" }
     }));
 

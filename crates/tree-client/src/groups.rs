@@ -455,7 +455,7 @@ mod tests {
     fn speech_kinds() {
         assert!(is_speech(&Payload::Delete { id: "x".into() }));
         assert!(!is_speech(&Payload::Leave { quiet: false }));
-        assert!(counts_for_slow_mode(&Payload::Text { id: "1".into(), text: "x".into(), fmt: false, mentions: vec![], all: false, preview: None, silent: false, fwd: false, topic: None, re: None }));
+        assert!(counts_for_slow_mode(&Payload::Text { id: "1".into(), text: "x".into(), fmt: false, mentions: vec![], all: false, preview: None, silent: false, fwd: false, topic: None, re: None, kb: vec![] }));
         assert!(!counts_for_slow_mode(&Payload::Delete { id: "x".into() }));
     }
 }

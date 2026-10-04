@@ -25,7 +25,7 @@ fn dropped(ev: &[Event], why: &str) -> bool {
 fn text(t: &str, re: Option<&str>) -> Payload {
     let mut b = [0u8; 16];
     getrandom::getrandom(&mut b).unwrap();
-    Payload::Text { id: hex::encode(b), text: t.into(), fmt: false, mentions: vec![], all: false, preview: None, silent: false, fwd: false, topic: None, re: re.map(str::to_string) }
+    Payload::Text { id: hex::encode(b), text: t.into(), fmt: false, mentions: vec![], all: false, preview: None, silent: false, fwd: false, topic: None, re: re.map(str::to_string), kb: vec![] }
 }
 
 fn sync_all(s: &mut [&mut Session]) {

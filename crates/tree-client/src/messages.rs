@@ -192,6 +192,11 @@ impl Session {
     /// (plain text sent) if the group released `chat.formatting`; an @all
     /// the group does not allow this device is refused.
     pub fn send_text_with(&mut self, gid: &[u8], text: &str, o: &TextOptions) -> Result<String, Error> {
+        self.send_text_kb(gid, text, o, Vec::new())
+    }
+
+    /// [`Session::send_text_with`] with a bot's inline buttons (`bots.rs`).
+    pub(crate) fn send_text_kb(&mut self, gid: &[u8], text: &str, o: &TextOptions, kb: Vec<Vec<crate::payload::Button>>) -> Result<String, Error> {
         if o.mentions.len() > MAX_MENTIONS {
             return Err(Error::Usage(format!("at most {MAX_MENTIONS} mentions")));
         }
@@ -210,7 +215,8 @@ impl Session {
         let id = new_id();
         let mentions = o.mentions.iter().map(|m| m.to_hex()).collect();
         let data = crate::channel::with_re(text_data_in(fmt, preview.as_ref(), o.silent, o.topic.as_deref()), o.reply_to.as_deref());
-        let p = Payload::Text { id: id.clone(), text: text.to_string(), fmt, mentions, all: o.all, preview, silent: o.silent, fwd: false, topic: o.topic.clone(), re: o.reply_to.clone() };
+        let data = crate::bots::with_kb(data, &kb);
+        let p = Payload::Text { id: id.clone(), text: text.to_string(), fmt, mentions, all: o.all, preview, silent: o.silent, fwd: false, topic: o.topic.clone(), re: o.reply_to.clone(), kb };
         // Stored in the history with the outbox item, before it goes out.
         self.queue_payload(gid, &p, Some(&id), |s| s.store(gid, &id, &me, "text", Some(text.to_string()), data, None).map(|_| ()))?;
         self.set_draft(gid, "")?;
@@ -343,7 +349,7 @@ impl Session {
         let request = matches!(self.group_status(gid)?, GroupStatus::Request { .. });
         let name = self.names(gid)?.get(&from.to_hex()).cloned();
         match p {
-            Payload::Text { id, text, fmt, mentions, all, preview, silent, fwd, topic, re } => {
+            Payload::Text { id, text, fmt, mentions, all, preview, silent, fwd, topic, re, kb } => {
                 let topic = match self.receive_topic(gid, &from, topic)? {
                     Ok(t) => t,
                     Err(why) => {
@@ -370,6 +376,16 @@ impl Session {
                     }
                 };
                 let data = crate::channel::with_re(crate::forward::with_fwd(text_data_in(formatted, preview.as_ref(), silent, topic.as_deref()), fwd), re.as_deref());
+                // Buttons count only on a bot's message, within the limits.
+                let bot_account = self.bot_member(gid, &from)?;
+                let bot = bot_account.is_some();
+                let buttons = if bot && crate::bots::valid_keyboard(&kb) { kb } else { Vec::new() };
+                // A bot is named by its username, not a name it chose.
+                let name = match bot_account.as_deref().map(|b| self.cached_bot(b)).transpose()?.flatten() {
+                    Some(i) => Some(i.username),
+                    None => name,
+                };
+                let data = crate::bots::with_kb(data, &buttons);
                 if !self.store(gid, &id, &from, "text", Some(text.clone()), data, franking)? {
                     refuse(events, "duplicate message id");
                     return Ok(());
@@ -378,7 +394,7 @@ impl Session {
                 if let Some(t) = &topic {
                     self.note_topic_message(gid, t)?;
                 }
-                events.push(Event::Text { group: gid.to_vec(), id, from, name, text, request, formatted, mentions_me, preview, silent });
+                events.push(Event::Text { group: gid.to_vec(), id, from, name, text, request, formatted, mentions_me, preview, silent, bot, buttons });
             }
             Payload::Edit { id, text } => match self.changeable_by(gid, &id, &from, "chat.edit")? {
                 Ok(m) if m.kind == "text" => {

@@ -105,6 +105,11 @@ pub struct SendResp {
     /// idempotency key; nothing was delivered now. The device lists are not
     /// stored (they would link the sender to its recipients) and are empty.
     pub replayed: bool,
+    /// A bot's send only: devices it may not reach (people who never
+    /// contacted it and share no group with it, PROTOCOL.md 8.16); nothing
+    /// was delivered to them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub refused_devices: Vec<String>,
 }
 
 /// HMAC-SHA-256 under `key` over the label, the body and the sorted,
@@ -201,6 +206,11 @@ pub async fn send(
         r
     });
     let sender = req.device.device_id.as_str();
+    // A bot reaches only people who contacted it and its groups.
+    let (unique, refused) = match &req.device.bot {
+        Some(bot) => crate::bots::may_reach(&state.db, bot, sender, &unique).await?,
+        None => (unique, Vec::new()),
+    };
 
     // The lookup, the delivery and the record are one transaction, so two
     // concurrent requests with the same key deliver once.
@@ -233,13 +243,14 @@ pub async fn send(
                 unknown_devices: vec![],
                 full_devices: vec![],
                 replayed: true,
+                refused_devices: vec![],
             }));
         }
     }
     // Fan-out to many mailboxes costs more (not charged again for a replay).
     req.device.charge_outreach(&state, (unique.len() / 100) as f64)?;
 
-    let d = deliver(&mut tx, cfg, &bytes, unique).await?;
+    let mut d = deliver(&mut tx, cfg, &bytes, unique, req.device.bot.as_deref()).await?;
     if let (Some(key), Some(record)) = (&key, &record) {
         sqlx::query(
             "INSERT INTO idempotency_keys (device_id, key, request_hash, delivered, created_day) VALUES (?, ?, ?, ?, ?)",
@@ -271,6 +282,10 @@ pub async fn send(
         unknown_devices: d.unknown_devices,
         full_devices: d.full_devices,
         replayed: false,
+        refused_devices: {
+            d.refused_devices.extend(refused);
+            d.refused_devices
+        },
     }))
 }
 
@@ -293,30 +308,43 @@ pub struct Delivery {
     pub delivered: Vec<String>,
     pub unknown_devices: Vec<String>,
     pub full_devices: Vec<String>,
+    /// Bots' gateway devices while `server.bot_platform` is released: they
+    /// get nothing, so a bot cannot read later what it was sent while the
+    /// platform was off (PROTOCOL.md 8.16).
+    pub refused_devices: Vec<String>,
 }
 
 /// Stores `bytes` once and adds a mailbox entry for every known device whose
 /// mailbox is not full, inside the caller's transaction. The caller notifies
-/// the waiters after committing.
+/// the waiters after committing. `from_bot`: the sender is this bot's
+/// device; receivers are told (a person's sends never record a sender).
 pub async fn deliver(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     cfg: &crate::Config,
     bytes: &[u8],
     devices: Vec<String>,
+    from_bot: Option<&str>,
 ) -> ApiResult<Delivery> {
     let mut delivered = Vec::new();
     let mut unknown_devices = Vec::new();
     let mut full_devices = Vec::new();
+    let mut refused_devices = Vec::new();
+    let bots_off: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM features WHERE key = ? AND state = 'released')")
+        .bind(crate::features::BOT_PLATFORM)
+        .fetch_one(&mut **tx)
+        .await?;
     let blob_id: i64 =
-        sqlx::query("INSERT INTO blobs (body, received_at) VALUES (?, ?) RETURNING id")
+        sqlx::query("INSERT INTO blobs (body, received_at, from_bot) VALUES (?, ?, ?) RETURNING id")
             .bind(bytes)
             .bind(round_to_minute(now_secs()))
+            .bind(from_bot)
             .fetch_one(&mut **tx)
             .await?
             .try_get("id")?;
     for device_id in devices {
         let row = sqlx::query(
             "SELECT EXISTS (SELECT 1 FROM devices WHERE id = ?1) AS known, \
+             EXISTS (SELECT 1 FROM bot_devices WHERE device_id = ?1) AS bot, \
              (SELECT COUNT(*) FROM (SELECT 1 FROM deliveries WHERE device_id = ?1 LIMIT ?2)) AS pending",
         )
         .bind(&device_id)
@@ -325,8 +353,11 @@ pub async fn deliver(
         .await?;
         let known: bool = row.try_get("known")?;
         let pending: i64 = row.try_get("pending")?;
+        let bot: bool = row.try_get("bot")?;
         if !known {
             unknown_devices.push(device_id);
+        } else if bot && bots_off {
+            refused_devices.push(device_id);
         } else if pending >= cfg.max_mailbox_messages as i64 {
             full_devices.push(device_id);
         } else {
@@ -345,7 +376,7 @@ pub async fn deliver(
             .execute(&mut **tx)
             .await?;
     }
-    Ok(Delivery { delivered, unknown_devices, full_devices })
+    Ok(Delivery { delivered, unknown_devices, full_devices, refused_devices })
 }
 
 #[derive(Deserialize)]
@@ -360,6 +391,9 @@ pub struct Message {
     pub body: String,
     /// Unix seconds, rounded down to the minute.
     pub received_at: i64,
+    /// Sent by this bot's device (PROTOCOL.md 8.16); absent for people.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bot: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -372,7 +406,7 @@ pub struct FetchResp {
 async fn load(state: &AppState, device_id: &str) -> ApiResult<FetchResp> {
     let limit = state.cfg.fetch_limit as i64;
     let rows = sqlx::query(
-        "SELECT d.id AS id, b.body AS body, b.received_at AS received_at \
+        "SELECT d.id AS id, b.body AS body, b.received_at AS received_at, b.from_bot AS from_bot \
          FROM deliveries d JOIN blobs b ON b.id = d.blob_id \
          WHERE d.device_id = ? ORDER BY d.seq LIMIT ?",
     )
@@ -388,6 +422,7 @@ async fn load(state: &AppState, device_id: &str) -> ApiResult<FetchResp> {
             id: r.try_get("id")?,
             body: b64(&body),
             received_at: r.try_get("received_at")?,
+            bot: r.try_get("from_bot")?,
         });
     }
     Ok(FetchResp { messages, more })
@@ -408,6 +443,14 @@ impl Drop for Subscription<'_> {
     }
 }
 
+fn disabled() -> ApiError {
+    ApiError::new(
+        axum::http::StatusCode::UNAUTHORIZED,
+        "BOT_DEVICE_DISABLED",
+        "this gateway device must register again with the bot's current token",
+    )
+}
+
 /// `GET /v1/messages?wait=N`
 pub async fn fetch(
     State(state): State<AppState>,
@@ -418,6 +461,7 @@ pub async fn fetch(
         query.map_err(|_| ApiError::bad_request("wait must be a non-negative integer"))?;
     let wait = q.wait.unwrap_or(0).min(state.cfg.long_poll_max_secs);
     let device_id = req.device.device_id.as_str();
+    let bot = req.device.bot.is_some();
     if wait == 0 {
         return Ok(Json(load(&state, device_id).await?));
     }
@@ -434,11 +478,18 @@ pub async fn fetch(
         let notified = notify.notified();
         tokio::pin!(notified);
         notified.as_mut().enable();
+        // A bot's token rotated during the wait: its device is cut off now.
+        if bot && !crate::bots::device_active(&state.db, device_id).await? {
+            return Err(disabled());
+        }
         let resp = load(&state, device_id).await?;
         if !resp.messages.is_empty() || Instant::now() >= deadline {
             break resp;
         }
         if tokio::time::timeout_at(deadline, notified).await.is_err() {
+            if bot && !crate::bots::device_active(&state.db, device_id).await? {
+                return Err(disabled());
+            }
             break load(&state, device_id).await?;
         }
     };

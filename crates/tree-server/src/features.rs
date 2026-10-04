@@ -27,8 +27,9 @@ pub const SERVER_FLAGS: &[&str] =
     &[SIGNUPS, BOT_PLATFORM, CALLS, PUBLIC_SPACES, NEW_ACCOUNT_LIMITS, REPORT_LIMITS, GIF_RELAY, MAP_RELAY];
 
 /// Flags that start released: the relays work only once the operator
-/// applies them (and configures an upstream, PROTOCOL.md 8.12).
-pub const START_RELEASED: &[&str] = &[GIF_RELAY, MAP_RELAY];
+/// applies them (and configures an upstream, PROTOCOL.md 8.12), and the bot
+/// platform only once the operator opens it (PROTOCOL.md 8.16).
+pub const START_RELEASED: &[&str] = &[GIF_RELAY, MAP_RELAY, BOT_PLATFORM];
 
 const APPLIED: &str = "applied";
 const RELEASED: &str = "released";

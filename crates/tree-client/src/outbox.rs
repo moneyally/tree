@@ -105,7 +105,7 @@ impl Session {
             if self.api.receiving() || self.client.outbox_unsent(Some(gid))?.iter().any(|i| i.state != OutboxState::Failed) {
                 return Ok(0);
             }
-            let to = self.other_devices(gid)?;
+            let (to, _) = self.lane_recipients(gid, &p.encode(), self.other_devices(gid)?)?;
             if to.is_empty() {
                 return Ok(0);
             }
@@ -150,16 +150,22 @@ impl Session {
         if slow {
             self.note_slow_send(gid)?;
         }
-        let to = self.other_devices(gid)?;
-        if to.is_empty() && upload.is_none() {
-            local(self)?;
-            return Ok(0);
-        }
         let inner = p.encode();
         // Inside a receive batch nothing goes to the network (F-024): the
         // item is sealed now only if that needs no server call (a chat
         // message needs the franking tag), and it is sent after the batch.
         let receiving = self.api.receiving();
+        // Bot lanes (`bots.rs`): which devices are bots' is asked now if
+        // anything is new (outside a receive batch). Devices nobody could
+        // ask about yet get the item only after a check at its attempt.
+        if !receiving {
+            let _ = self.refresh_lane(gid, false);
+        }
+        let (to, unchecked) = self.lane_recipients(gid, &inner, self.other_devices(gid)?)?;
+        if to.is_empty() && upload.is_none() {
+            local(self)?;
+            return Ok(0);
+        }
         // Seal now unless it is a file, or an older item of this group still
         // waits for its seal (it must keep its place).
         let behind_unsealed =
@@ -177,6 +183,9 @@ impl Session {
         let local_id = upload.as_ref().map(|(l, _)| l.clone()).unwrap_or_else(new_local_id);
         let mut item = OutboxItem::new(&local_id, gid, message_id, now());
         self.client.begin_batch()?;
+        if unchecked {
+            self.client.set_app_data(&crate::bots::inner_key(&local_id), Some(&inner))?;
+        }
         let r = self.enqueue_in_batch(gid, &mut item, encoded, inner, to, |s| {
             if let Some((l, st)) = &upload {
                 s.save_upload(l, st)?;
@@ -283,7 +292,11 @@ impl Session {
                 Ok(e) => e,
                 Err(e) => return self.after_failure(&item, due, e),
             };
-            let to = self.other_devices(&gid)?;
+            if let Err(e) = self.refresh_lane(&gid, false) {
+                return self.after_failure(&item, due, e);
+            }
+            let (to, _) = self.lane_recipients(&gid, &inner, self.other_devices(&gid)?)?;
+            self.client.set_app_data(&crate::bots::inner_key(&item.local_id), None)?;
             if to.is_empty() {
                 self.client.outbox_mark_sent(&item.local_id, now())?;
                 self.upload_finished(&item.local_id)?;
@@ -311,7 +324,19 @@ impl Session {
         // (F-028): a device removed since the item was sealed gets nothing,
         // and the server never stores it for that device.
         let current = self.other_devices(&gid)?;
-        let to: Vec<String> = item.recipients.iter().filter(|r| current.contains(r)).cloned().collect();
+        let mut to: Vec<String> = item.recipients.iter().filter(|r| current.contains(r)).cloned().collect();
+        // Sealed while some devices could not be checked for bots: check
+        // them now, before anything goes out (`bots.rs`).
+        if let Some(inner) = self.client.app_data(&crate::bots::inner_key(&item.local_id))? {
+            if let Err(e) = self.refresh_lane(&gid, false) {
+                return self.after_failure(&item, due, e);
+            }
+            let (checked, unchecked) = self.lane_recipients(&gid, &inner, to)?;
+            to = checked;
+            if !unchecked {
+                self.client.set_app_data(&crate::bots::inner_key(&item.local_id), None)?;
+            }
+        }
         if to.is_empty() {
             self.client.outbox_mark_sent(&item.local_id, now())?;
             self.upload_finished(&item.local_id)?;
@@ -421,6 +446,7 @@ impl Session {
             return Err(Error::Usage("only a failed message can be cancelled".into()));
         };
         self.upload_cancelled(&item.local_id)?;
+        self.client.set_app_data(&crate::bots::inner_key(&item.local_id), None)?;
         if let Some(m) = &item.message_id {
             self.client.remove_message(&item.group_id, m)?;
         }

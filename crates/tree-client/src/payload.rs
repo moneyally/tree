@@ -42,6 +42,10 @@ pub enum Payload {
         /// comment on the admins' post `re` (`channel.comments`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         re: Option<String>,
+        /// Inline buttons under the message, rows of buttons (a bot's
+        /// message only; receivers ignore them from people, APP_PROTOCOL.md 11).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        kb: Vec<Vec<Button>>,
     },
     /// The sender replaces the text of its own message `id` (chat.edit).
     Edit { id: String, text: String },
@@ -196,6 +200,29 @@ pub enum Payload {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         chat: bool,
     },
+    /// The sender pressed button `data` under the bot's message `msg`
+    /// (APP_PROTOCOL.md 11). Sent only to the devices of bot member `bot`
+    /// (hex); `id` (random hex) names this press for the bot's answer.
+    Callback { id: String, msg: String, data: String, bot: String },
+    /// The bot's answer to press `id`, sent only to the devices of member
+    /// `to` (hex), who pressed: a short text the app shows (`alert`: as a
+    /// dialog) or nothing (the press was received).
+    CallbackAnswer {
+        id: String,
+        to: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        alert: bool,
+    },
+}
+
+/// An inline button: the text shown and the data the bot gets when it is
+/// pressed (1 to 64 characters each, see [`crate::bots::valid_keyboard`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Button {
+    pub text: String,
+    pub data: String,
 }
 
 /// A topic as a `topics` list carries it.
@@ -471,7 +498,7 @@ mod tests {
 
     #[test]
     fn round_trip_and_format() {
-        let t = Payload::Text { id: "01".into(), text: "안녕".into(), fmt: false, mentions: vec![], all: false, preview: None, silent: false, fwd: false, topic: None, re: None };
+        let t = Payload::Text { id: "01".into(), text: "안녕".into(), fmt: false, mentions: vec![], all: false, preview: None, silent: false, fwd: false, topic: None, re: None, kb: vec![] };
         assert_eq!(String::from_utf8(t.encode()).unwrap(), r#"{"t":"text","id":"01","text":"안녕"}"#);
         for p in [
             Payload::Edit { id: "01".into(), text: "x".into() },
@@ -501,7 +528,7 @@ mod tests {
         let q = Payload::Leave { quiet: true };
         assert_eq!(q.encode(), br#"{"t":"leave","quiet":true}"#.to_vec());
         assert_eq!(Payload::decode(&q.encode()), Some(q));
-        let s = Payload::Text { id: "02".into(), text: "shh".into(), fmt: false, mentions: vec![], all: false, preview: None, silent: true, fwd: false, topic: None, re: None };
+        let s = Payload::Text { id: "02".into(), text: "shh".into(), fmt: false, mentions: vec![], all: false, preview: None, silent: true, fwd: false, topic: None, re: None, kb: vec![] };
         assert_eq!(String::from_utf8(s.encode()).unwrap(), r#"{"t":"text","id":"02","text":"shh","silent":true}"#);
         assert_eq!(Payload::decode(&s.encode()), Some(s));
         let r = Payload::RemoveDevice { members: vec!["ab".into()] };
@@ -558,7 +585,7 @@ mod group_tests {
     /// when unused, so older apps read texts and files unchanged.
     #[test]
     fn wave3_payloads() {
-        let t = Payload::Text { id: "01".into(), text: "hi".into(), fmt: false, mentions: vec![], all: false, preview: None, silent: false, fwd: false, topic: Some("t1".into()), re: None };
+        let t = Payload::Text { id: "01".into(), text: "hi".into(), fmt: false, mentions: vec![], all: false, preview: None, silent: false, fwd: false, topic: Some("t1".into()), re: None, kb: vec![] };
         assert_eq!(String::from_utf8(t.encode()).unwrap(), r#"{"t":"text","id":"01","text":"hi","topic":"t1"}"#);
         let all = [
             t,
@@ -609,7 +636,7 @@ mod rich_tests {
             assert_eq!(Payload::decode(&p.encode()), Some(p.clone()));
             assert!(!matches!(p, Payload::Vote { .. } | Payload::Pin { .. } | Payload::PollClose { .. }) || !p.is_franked_kind());
         }
-        let f = Payload::Text { id: "03".into(), text: "hi".into(), fmt: false, mentions: vec![], all: false, preview: None, silent: false, fwd: true, topic: None, re: None };
+        let f = Payload::Text { id: "03".into(), text: "hi".into(), fmt: false, mentions: vec![], all: false, preview: None, silent: false, fwd: true, topic: None, re: None, kb: vec![] };
         assert_eq!(String::from_utf8(f.encode()).unwrap(), r#"{"t":"text","id":"03","text":"hi","fwd":true}"#);
         assert_eq!(Payload::decode(&f.encode()), Some(f));
         // A file reference without `fwd` (older apps) reads as not forwarded.

@@ -7,6 +7,7 @@
 //! or in `tree-core`.
 
 pub mod api;
+pub mod forward;
 pub mod franking;
 pub mod invites;
 pub mod link;
@@ -16,9 +17,14 @@ pub mod messages;
 pub mod organize;
 pub mod outbox;
 pub mod payload;
+pub mod pins;
+pub mod polls;
 pub mod refresh;
 pub mod requests;
+pub mod rich;
+pub mod schedule;
 pub mod settings;
+pub mod storage_clean;
 pub mod username;
 
 pub use requests::GroupStatus;
@@ -166,6 +172,13 @@ pub enum Event {
     /// attempt failed. The app offers retry ([`Session::retry_send`]) and
     /// cancel ([`Session::cancel_send`]) with `local_id`.
     SendFailed { group: Vec<u8>, id: Option<String>, local_id: String, reason: String },
+    /// Message `id` was pinned (or unpinned) for the chat (`chat.pins`);
+    /// read the pins again with [`Session::pins`].
+    Pinned { group: Vec<u8>, id: String, from: MemberId, pinned: bool },
+    /// A poll arrived (`chat.polls`); see [`Session::poll`].
+    Poll { group: Vec<u8>, id: String, from: MemberId, name: Option<String>, question: String, request: bool },
+    /// Votes or the state of poll `id` changed; read it again.
+    PollUpdated { group: Vec<u8>, id: String },
 }
 
 /// Recovery as the server has it (PROTOCOL.md 8.6).
@@ -990,6 +1003,8 @@ impl Session {
                 self.client.set_app_data(&key, None)?;
             }
         }
+        // Scheduled messages that came due, storage clean-up (`rich.rs`).
+        events.extend(self.after_sync()?);
         events.extend(self.send_pending()?);
         Ok(events)
     }
@@ -1099,6 +1114,9 @@ impl Session {
                     }
                 }
                 self.on_message(gid, from, p, franking, events)?;
+            }
+            Some(p @ (Payload::Pin { .. } | Payload::Poll(_) | Payload::Vote { .. } | Payload::PollClose { .. })) => {
+                self.on_rich(gid, from, p, franking, events)?
             }
             Some(Payload::Roster { devices, names, accounts, link }) => {
                 // Only entries for current members are taken; names only as

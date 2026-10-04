@@ -15,7 +15,7 @@ One JSON object per application message, UTF-8, field `t` names the type:
 
 | `t` | Fields | Meaning | Who may send |
 | --- | --- | --- | --- |
-| `text` | `id` (16 random bytes, hex), `text`; optional `fmt` (true: Tree markup, 1.1), `mentions` (member ids, at most 50), `all` (@all), `preview` (`url`, `title`, `description`: made by the sender's app, which fetched the page; receivers never fetch it; shown only while the receiver's `user.link_preview` is applied), `silent` (true: silent send, receivers' apps do not notify, 6.1) | a chat message | any member; `fmt` only while `chat.formatting` is applied; `all` as `chat.mention_all` allows |
+| `text` | `id` (16 random bytes, hex), `text`; optional `fmt` (true: Tree markup, 1.1), `mentions` (member ids, at most 50), `all` (@all), `preview` (`url`, `title`, `description`: made by the sender's app, which fetched the page; receivers never fetch it; shown only while the receiver's `user.link_preview` is applied), `silent` (true: silent send, receivers' apps do not notify, 6.1), `fwd` (true: forwarded from another chat, 6.2; the original sender is not named) | a chat message | any member; `fmt` only while `chat.formatting` is applied; `all` as `chat.mention_all` allows |
 | `edit` | `id`, `text` | replaces the text of the sender's own message `id` | its sender, if `chat.edit` is applied, within the window |
 | `delete` | `id` | deletes the sender's own message `id` for everyone | its sender, if `chat.delete_for_all` is applied, within the window |
 | `react` | `id`, `emoji` (1 to 8 characters), `remove` (optional) | adds or takes back a reaction | any member, if `chat.reactions` is applied |
@@ -26,8 +26,12 @@ One JSON object per application message, UTF-8, field `t` names the type:
 | `read` | `ids` (at most 100 message ids) | the sender read these messages | any member, while its `user.read_receipts` is applied; shown only while the receiver's is applied too |
 | `typing` | `on` | the sender started or stopped typing; never stored | any member, both sides `user.typing` |
 | `seen` | — | the sender's app is open; the receiver records its own time | any member, both sides `user.last_seen` (released by default) |
-| `file` | `msg_id`, `view_once` (optional), `voice` (optional), `duration_ms` (optional: voice, video), `id`, `key` (base64, the 32-byte file secret), `size` (plaintext bytes), `pt_sha256` (hex), `name` (at most 255 characters), `mime` (at most 127), `v` (format, 2), `width` and `height` (optional, pixels), `thumb` (optional, base64 JPEG or PNG preview made by the sender, at most 32 KiB) | an encrypted attachment (PROTOCOL.md 6.12); a reference that does not fit is dropped | any member, if `chat.media` is applied (and `chat.view_once` for view-once, `chat.voice` for voice) |
-| `franked` | `p` (the inner `text`, `edit` or `file` payload as a JSON string), `k` (base64), `tag` (base64), `m` (minute) | how every `text`, `edit` and `file` is sent: the inner payload with its franking (PROTOCOL.md 8.5); the receiver keeps `p`, `k`, `tag`, `m` to be able to report it | any member |
+| `file` | `msg_id`, `fwd` (optional: forwarded), `view_once` (optional), `voice` (optional), `duration_ms` (optional: voice, video), `id`, `key` (base64, the 32-byte file secret), `size` (plaintext bytes), `pt_sha256` (hex), `name` (at most 255 characters), `mime` (at most 127), `v` (format, 2), `width` and `height` (optional, pixels), `thumb` (optional, base64 JPEG or PNG preview made by the sender, at most 32 KiB) | an encrypted attachment (PROTOCOL.md 6.12); a reference that does not fit is dropped | any member, if `chat.media` is applied (and `chat.view_once` for view-once, `chat.voice` for voice) |
+| `pin` | `id`, `ttl` (optional: seconds, 1 s to 365 days, counted from arrival on each device; none: until unpinned), `remove` (optional: unpin) | pins or unpins message `id` for the whole chat (6.2) | an admin, or either member of a 1:1 chat, if `chat.pins` is applied |
+| `poll` | `id`, `q` (question, at most 300 characters), `opts` (2 to 10 options, 1 to 100 characters each), `multi` (optional: several choices), `anon` (optional: apps do not show who voted), `close_in` (optional: seconds, 1 s to 30 days from arrival) | a poll; franked like a text (it can be reported) | any member, if `chat.polls` is applied |
+| `vote` | `id` (the poll), `choices` (option indexes; empty: take the vote back) | the sender's whole vote; the latest one per member counts | any member, if `chat.polls` is applied, before the poll closed |
+| `poll_close` | `id` | closes the poll for everyone | the poll's creator, if `chat.polls` is applied |
+| `franked` | `p` (the inner `text`, `edit`, `file` or `poll` payload as a JSON string), `k` (base64), `tag` (base64), `m` (minute) | how every `text`, `edit` and `file` is sent: the inner payload with its franking (PROTOCOL.md 8.5); the receiver keeps `p`, `k`, `tag`, `m` to be able to report it | any member |
 
 ```json
 {"t":"text","text":"안녕"}
@@ -36,15 +40,24 @@ One JSON object per application message, UTF-8, field `t` names the type:
 {"t":"leave"}
 {"t":"leave","quiet":true}
 {"t":"text","id":"…","text":"늦은 밤","silent":true}
+{"t":"text","id":"…","text":"worth sharing","fwd":true}
+{"t":"pin","id":"…","ttl":86400}
+{"t":"poll","id":"…","q":"Lunch?","opts":["noodles","rice"],"anon":true}
+{"t":"vote","id":"…","choices":[1]}
+{"t":"poll_close","id":"…"}
 ```
+
+Older apps read a `text` or `file` with `fwd` as an ordinary message (unknown
+fields are ignored), and drop `pin`, `poll`, `vote` and `poll_close` as
+unsupported types (a franked `poll` as a malformed franked payload).
 
 `silent` and `quiet` are per message: there is no setting for them, the
 sender chooses each time. Both are inside the end-to-end encrypted payload,
 so the server cannot tell a silent or quiet message from any other. Older
 apps ignore both fields (they notify, and show a "left" line).
 
-A `franked` payload whose `p` is not a `text`, `edit` or `file` is dropped,
-and so are `text`, `edit` and `file` sent without franking.
+A `franked` payload whose `p` is not a `text`, `edit`, `file` or `poll` is
+dropped, and so are `text`, `edit`, `file` and `poll` sent without franking.
 
 ### 1.1 Formatting markup (`fmt: true`)
 
@@ -98,6 +111,10 @@ sending device before sending and by every receiving device on arrival
 | `chat.voice` | applied | voice messages (files with `voice`) allowed |
 | `chat.formatting` | applied | markup shown; released: plain text |
 | `chat.mention_all` | applied, option `admins` (default) or `all` | who may send @all; a refused @all is ignored by receivers (the text still arrives); released: nobody |
+| `chat.pins` | applied | admins (or either member of a 1:1 chat) pin messages for everyone (6.2); released: pins are refused and dropped, stored pins are not shown |
+| `chat.polls` | applied | polls, votes and closing (6.2); released: refused when sending, dropped when received |
+| `chat.forwarding` | applied | messages of this chat may be forwarded, saved and copied; released: the client refuses to forward them and the apps hide forward, save and copy (6.2). Binds honest apps only: a modified app or a screenshot cannot be stopped |
+| `chat.export` | applied | the chat's history may be exported to a local file (6.2); released: refused |
 | `chat.screenshot_block` | released | apps block screenshots of the chat for every member; a user can also block them for themselves (`screenshot/<group>`). It stops honest apps' screenshot function, not cameras or modified apps |
 
 Durations are whole seconds (`90`) or a whole number with one unit, `s`,
@@ -203,6 +220,24 @@ server learns none of it.
 | Stranger labels | `stranger_labels(account)`: not a contact, no group in common (other than this one), name not verified; `None` while `user.stranger_labels` is released. Apps show them in a 1:1 chat's header and next to requests |
 | Username link | `user.username_link` (PROTOCOL.md 8.4): `username_link` / `username_qr` (the same text, `tree://u/<token>`), `reset_username_link`, `find_by_link`, `add_contact_by_link` |
 
+### 6.2 Rich chats, wave 2 part A
+
+Modules `pins.rs`, `polls.rs`, `schedule.rs`, `forward.rs`,
+`storage_clean.rs` and `rich.rs` in `crates/tree-client/src`. Everything a
+member sees travels inside MLS application messages (section 1); the
+server learns nothing new from any of it (it sees ciphertext of the usual
+padded sizes, as for any message).
+
+| Feature | Rule |
+| --- | --- |
+| Pinned messages (`chat.pins`) | `pin_message(group, id, ttl)` with the choices 24 h, 7 days, 30 days, until unpinned (`PIN_CHOICES`), `unpin_message`, `pins` (newest first), `may_pin`. Shared state: every device applies the same `pin` messages in the server's order, checking the sender (admin, or a chat of two members), `chat.pins`, and that the message is in its history and not deleted. At most 10 per chat: the sender refuses an eleventh, a receiver that would hold more drops the oldest. Expiry is counted from arrival on each device's own clock; expired pins drop off when read. A member who joins later does not learn earlier pins (no history sharing yet) |
+| Polls (`chat.polls`) | `create_poll` (question, 2-10 options, single or multiple choice, anonymous or not, optional close time), `vote` (the whole vote; empty takes it back), `retract_vote`, `close_poll` (creator only), `poll` (tally). Each device counts from the authenticated MLS votes it received: one vote state per member, the latest wins; votes that do not fit the poll or arrive after it closed on this device are dropped; members who left are not counted. **Anonymous** only means the apps do not show who voted for what: every vote is still an MLS message authenticated as its sender and delivered to every member's device, so each device (and a modified app) knows who voted for what. The server sees ciphertext only |
+| Scheduled messages | `schedule_text(group, text, at, silent)`, `scheduled`, `edit_scheduled`, `cancel_scheduled`. Kept on this device only (`sched/<id>`) until the time; then the text enters the outbox (PROTOCOL.md 6.13) and is sealed, franked and sent like any message. The server never holds the plaintext and does not schedule: the app must be running at that time, or the next sync after it sends the message (late). Not in the history until sent. If it cannot be sent when due (left the chat, a setting forbids it) sync reports `SendFailed` with the schedule id. Texts only, at most a year ahead |
+| Forwarding (`chat.forwarding`) | `forward(from, id, to)` sends a text, or a file reference (the same encrypted attachment, not view-once), as a new message with `fwd`, sent by the forwarding member; the original sender is not named. While the source chat released `chat.forwarding` the client refuses, and the apps hide forward, save and copy for its messages (`forwarding_allowed`). This binds honest apps only: a modified app, a screenshot or a camera cannot be prevented, and the destination cannot tell where a forwarded message came from |
+| Reminders | `remind_me(group, id, at)`, `reminders`, `cancel_reminder`, `due_reminders` (each due reminder once; the app shows a local notification). Device only (`remind/<id>`); the message text is read when the reminder fires, never copied |
+| Chat export (`chat.export`) | `export_chat` (plain text and JSON), `export_chat_to(group, prefix)` writes `<prefix>.txt` and `<prefix>.json`; any member may export while applied, refused while released. The files are not encrypted; franking records, keys and file contents are not exported. The setting is changed by the chat's admins, as every chat key (PROTOCOL.md 6.11) |
+| Storage clean-up (`user.storage_clean`) | `download_to_cache(file, dir)` opens a file into the app's media folder and records it (`media/<attachment id>`); while the setting is applied (option: duration 1 s to 365 days, default `90d`, the apps offer 30 days, 90 days, a year), every sync (at most once an hour) and `clean_storage` delete cached files downloaded longer ago, and their records. Message texts and file references stay (a file can be downloaded again while the server keeps the blob, 30 days); files the user saved elsewhere are never touched. Released (default): nothing is deleted |
+
 ## 7. What the client stores
 
 In the same encrypted database as the core (`tree_app` table, SCHEMA.md):
@@ -246,5 +281,11 @@ both are deleted when done and with the account.
 | `linkjoin/<nonce hex>` | the user opened a link of this owner and sent this nonce: owner account and time (one day, used once) |
 | `feature/user.recovery_phrase` | applied while the server holds a recovery key for the account, as last reported by the server (the phrase itself is never stored) |
 | `recovery/release_at` | when the server drops the recovery key after a release without the phrase (unix seconds) |
+| `pins/<group hex>` | the chat's pins: message id, who pinned, when this device received it, until when (6.2) |
+| `poll/<group hex>/<poll id>` | the votes counted on this device (member id -> option indexes) and whether the creator closed it; the poll itself is a history message of kind `poll` |
+| `sched/<id>` | a scheduled message: group, text, time, silent (until sent) |
+| `remind/<id>` | a reminder: group, message id, time |
+| `media/<attachment id>` | a downloaded file in the app's media folder: path, when, size (`user.storage_clean`) |
+| `media_clean/last` | when the storage clean-up last ran |
 | table `tree_messages` | message history with franking records (SCHEMA.md 1.2); also `left` / `removed` lines about members who went (6.1) |
 | table `tree_outbox` | messages being sent: sealed bytes, recipients, idempotency key, state (SCHEMA.md 1.2) |

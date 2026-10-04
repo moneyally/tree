@@ -152,6 +152,8 @@ const SECURITY_KEYS: &[&str] = &[
     "chat.screenshot_block",
     "chat.view_once",
     "chat.private_to_public",
+    "chat.forwarding",
+    "chat.export",
     "user.app_lock",
     "user.notification_content",
     "user.key_change_warning",
@@ -395,6 +397,9 @@ pub fn option_format(key: &str) -> OptionFormat {
         // How the app unlocks (no option: the passphrase).
         "user.app_lock" => OneOf(&["passphrase", "pin", "bio"]),
         "user.auto_download" => AutoDownload { default: AUTO_DOWNLOAD_DEFAULT },
+        // Downloaded media older than this is deleted from the device
+        // (no option: 90 days).
+        "user.storage_clean" => Duration { min: 1, max: 365 * DAY, default: Some("90d") },
         k if standard_features().iter().any(|f| f.key == k) => Nothing,
         _ => Free,
     }
@@ -463,6 +468,7 @@ pub fn option_seconds(key: &str, option: Option<&str>) -> Option<i64> {
 pub fn option_choices(key: &str) -> Vec<String> {
     let v: &[&str] = match (key, option_format(key)) {
         ("chat.disappearing", _) => &["5m", "1h", "1d", "7d", "30d"],
+        ("user.storage_clean", _) => &["30d", "90d", "365d"],
         (_, OptionFormat::Duration { .. }) => &["15m", "1h", "1d", "7d"],
         (_, OptionFormat::OneOf(words)) => words,
         (_, OptionFormat::AutoDownload { .. }) => &["wifi:5m", "wifi:20m", "wifi:100m", "wifi+mobile:5m", "wifi+mobile:20m", "never"],
@@ -581,6 +587,14 @@ pub fn standard_features() -> Vec<Feature> {
         feat("chat.formatting", Chat, Applied, 1),
         feat("chat.view_once", Chat, Applied, 1),
         feat("chat.mention_all", Chat, Applied, 1),
+        // Rich chats (design stage 3, PRODUCT_PLAN.md wave 2 part A):
+        // pinned messages and polls (admins, or either person in a 1:1,
+        // pin); forwarding out of the chat and exporting it (apps hide
+        // forward / save / copy and the client refuses while released).
+        feat("chat.pins", Chat, Applied, 3),
+        feat("chat.polls", Chat, Applied, 3),
+        feat("chat.forwarding", Chat, Applied, 3),
+        feat("chat.export", Chat, Applied, 3),
         // user
         feat("user.read_receipts", User, Applied, 1),
         feat("user.typing", User, Applied, 1),
@@ -614,6 +628,9 @@ pub fn standard_features() -> Vec<Feature> {
         feat("user.drafts", User, Applied, 1),
         feat("user.unarchive_on_message", User, Applied, 1),
         feat("user.username_link", User, Released, 1),
+        // Deletes downloaded media files older than the option on this
+        // device (message texts stay).
+        feat("user.storage_clean", User, Released, 3),
         // server flags
         feat("server.signups", Server, Applied, 1),
         // Anti-spam (design: limits for new accounts and for accounts with

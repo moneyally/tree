@@ -371,6 +371,7 @@ impl Session {
             width: o.meta.width,
             height: o.meta.height,
             thumb: o.meta.thumb.as_deref().map(api::b64),
+            fwd: false,
         };
         let total = attachment::ciphertext_len(size);
         let st = UploadState { group: hex::encode(gid), msg_id: info.msg_id.clone(), total, upload_id: None, done: false, paused: false };

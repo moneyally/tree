@@ -121,7 +121,7 @@ object Strings {
         "paused" to "멈춤",
         "save_as" to "다른 이름으로 저장",
         "downloaded" to "받음",
-    )
+    ) + RichStrings.ko
 
     private val en = mapOf(
         "app" to "Tree",
@@ -237,7 +237,7 @@ object Strings {
         "paused" to "paused",
         "save_as" to "Save as",
         "downloaded" to "downloaded",
-    )
+    ) + RichStrings.en
 
     fun t(key: String): String = (if (lang == Lang.KO) ko[key] else null) ?: en[key] ?: key
 

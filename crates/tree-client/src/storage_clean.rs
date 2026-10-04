@@ -144,6 +144,8 @@ mod tests {
             view_once: false,
             voice: false,
             duration_ms: None,
+            gif: false,
+            video_note: false,
             id: "../../etc/passwd".into(),
             key: String::new(),
             size: 0,

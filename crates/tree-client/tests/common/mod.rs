@@ -17,12 +17,11 @@ pub struct Env {
 }
 
 impl Env {
-    pub
-    fn new(tag: &str) -> Self {
+    pub fn new(tag: &str) -> Self {
         Self::with(tag, |_| {})
     }
 
-    /// A server with some settings changed.
+    /// A server with a changed configuration (e.g. relays with a fake upstream).
     pub fn with(tag: &str, tweak: impl FnOnce(&mut Config)) -> Self {
         let dir = std::env::temp_dir().join(format!("tree-e2e-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

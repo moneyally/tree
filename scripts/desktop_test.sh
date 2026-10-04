@@ -9,7 +9,8 @@ cargo build -q -p tree-server -p tree-ffi
 DIR=$(mktemp -d)
 PORT=${PORT:-18200}
 trap 'kill $SERVER 2>/dev/null || true; rm -rf "$DIR"' EXIT
-DATABASE_URL="sqlite://$DIR/server.db" BIND_ADDR="127.0.0.1:$PORT" POW_BITS=8 RUST_LOG=warn \
+# Every model test signs up its own accounts: more than the default per-IP burst.
+DATABASE_URL="sqlite://$DIR/server.db" BIND_ADDR="127.0.0.1:$PORT" POW_BITS=8 RUST_LOG=warn SIGNUP_BURST=50 \
   ATTACHMENT_DIR="$DIR/att" "$BIN/tree-server" &
 SERVER=$!
 sleep 1

@@ -437,6 +437,42 @@ invite request), the server POSTs the body `wake` (`text/plain`) to the
 endpoint, at most once per `PUSH_INTERVAL_SECS`, without following
 redirects. A `404` or `410` from the gateway deletes the endpoint.
 
+## Relays: GIF search and map tiles (PROTOCOL.md 8.12)
+
+Off unless the operator applies `server.gif_relay` / `server.map_relay`
+(released by default) **and** sets `GIF_PROVIDER_URL` / `MAP_TILE_URL`.
+Otherwise every endpoint below except the status answers `503
+RELAY_UNAVAILABLE`. The upstream request is built fresh: no client address,
+forwarding header, device id or Tree header; user agent `tree-relay/1`.
+Nothing is stored or logged beyond the route template.
+
+### `GET /v1/relay` — which relays exist (public)
+
+`200` → `{ "gif": true, "map": false }`.
+
+### `POST /v1/relay/gif/search` — search (signed)
+
+`{ "q": "1 to 100 characters", "limit": 20 }` (1 to 50) → `200
+{ "results": [{ "media": "<opaque id>", "preview": "<opaque id>" | null,
+"title": "…", "width": 320, "height": 240 }] }`. The server asks
+`GET <GIF_PROVIDER_URL>?q=…&limit=…` (`Authorization: Bearer
+<GIF_PROVIDER_KEY>` if set) and expects `{ "results": [{ "title", "url",
+"preview"?, "width"?, "height"? }] }`; results whose URL is not https (or
+has credentials, an IP literal or localhost) are left out. `400` for a bad
+query, `502 RELAY_UPSTREAM` if the provider fails. Costs 1 rate token.
+
+### `GET /v1/relay/gif/media/{id}` — a GIF or preview from a search (signed)
+
+`200` with the bytes and their type (`image/*` or `video/*` only, at most
+`RELAY_MAX_BYTES`), `Cache-Control: no-store`. `404` for an unknown or
+expired id (ids live one hour, in memory), `502 RELAY_UPSTREAM` for
+anything else the upstream answers. Costs 1 rate token.
+
+### `GET /v1/relay/map/{z}/{x}/{y}` — a map tile (signed)
+
+Zoom 0 to 19, `x` and `y` below 2^z (else `400`). `200` with the image
+(`image/*` only). Costs 0.25 rate tokens.
+
 ## Invite links (PROTOCOL.md 8.7)
 
 ### `POST /v1/invites` — register a link
@@ -555,7 +591,9 @@ Every flag has apply and release. Both are idempotent and return the current sta
 `200` → `{ "features": [{ "key": "server.signups", "state": "applied", "changed_at": 1790834908 }, ...] }`
 
 Flags: `server.signups`, `server.bot_platform`, `server.calls`, `server.public_spaces`,
-`server.new_account_limits`, `server.report_limits` (anti-spam, PROTOCOL.md 8.9).
+`server.new_account_limits`, `server.report_limits` (anti-spam, PROTOCOL.md 8.9),
+`server.gif_relay`, `server.map_relay` (relays, PROTOCOL.md 8.12; these two
+start released).
 
 ### `POST /v1/features/{key}/apply`, `POST /v1/features/{key}/release`
 
@@ -587,6 +625,7 @@ Errors: `UNAUTHORIZED`, `UNKNOWN_FEATURE`.
 | message sender | **no** (not with the message) |
 | idempotency records (`POST /v1/messages` with a key) | sending device, key, request hash, delivered count, day; until the message TTL, at most `MAX_IDEMPOTENCY_KEYS` per device, deleted with the device; never recipients, body or message id |
 | IP addresses | **no** (signup rate limit keeps them in memory only) |
+| relays | **no**: search words and tile coordinates are passed on and forgotten; media ids (opaque id -> provider URL) in memory for one hour |
 | operator flag changes | key, state, time, optional reason |
 | franking | the server key only; nothing per message |
 | reports | reported and reporting account, reason, the reported messages' plaintext as the reporter sent it, verified flags, day; until the operator deletes them |
@@ -622,4 +661,9 @@ Logs contain method, route template, status and latency only.
 | `PUSH_ALLOWED_HOSTS` | empty = push off; comma-separated gateway host names (e.g. a self-hosted UnifiedPush server) |
 | `PUSH_INTERVAL_SECS` | `5` (at most one wake-up per device this often) |
 | `PUSH_ALLOW_HTTP` | `false` (tests only) |
+| `GIF_PROVIDER_URL` | unset = no GIF relay (no default provider) |
+| `GIF_PROVIDER_KEY` | unset; sent to the provider as a bearer token; environment only, never in git |
+| `MAP_TILE_URL` | unset = no map relay; a template with `{z}`, `{x}`, `{y}` |
+| `RELAY_MAX_BYTES` | `8388608` (largest answer passed on) |
+| `RELAY_ALLOW_HTTP` | `false` (tests only: http and local upstreams) |
 | `RUST_LOG` | `info` |

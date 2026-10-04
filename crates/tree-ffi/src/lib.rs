@@ -12,6 +12,8 @@ use tree_client::{CommitOutcome, Event, FileInfo, GroupStatus, LinkStatus, Media
 uniffi::setup_scaffolding!();
 
 mod rich;
+mod rich_media;
+pub use rich_media::*;
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum TreeError {
@@ -71,6 +73,10 @@ pub struct Attachment {
     pub view_once: bool,
     pub voice: bool,
     pub duration_ms: Option<u64>,
+    /// A GIF found through the relay (`chat.gifs`).
+    pub gif: bool,
+    /// A round video note (`chat.video_notes`).
+    pub video_note: bool,
     /// Server attachment id (empty while the sender's upload runs).
     pub id: String,
     /// The file secret (base64).
@@ -96,6 +102,8 @@ impl From<FileInfo> for Attachment {
             view_once: f.view_once,
             voice: f.voice,
             duration_ms: f.duration_ms,
+            gif: f.gif,
+            video_note: f.video_note,
             id: f.id,
             key: f.key,
             size: f.size,
@@ -117,6 +125,8 @@ impl From<Attachment> for FileInfo {
             view_once: f.view_once,
             voice: f.voice,
             duration_ms: f.duration_ms,
+            gif: f.gif,
+            video_note: f.video_note,
             id: f.id,
             key: f.key,
             size: f.size,
@@ -151,6 +161,8 @@ impl From<MediaOptions> for SendOptions {
             view_once: o.view_once,
             voice: o.voice,
             meta: MediaMeta { width: o.width, height: o.height, duration_ms: o.duration_ms, thumb: o.thumbnail },
+            // GIFs and video notes have their own calls (`send_gif`, `send_video_note`).
+            ..Default::default()
         }
     }
 }
@@ -241,6 +253,17 @@ pub enum TreeEvent {
     Poll { group: String, id: String, from: String, name: Option<String>, question: String, request: bool },
     /// Votes or the state of a poll changed.
     PollUpdated { group: String, id: String },
+    /// A sticker: item `index` of pack `pack` (`sticker_image`).
+    Sticker { group: String, id: String, from: String, name: Option<String>, pack: String, index: u32, emoji: String, request: bool },
+    /// A place or live location (`location`).
+    Location { group: String, id: String, from: String, name: Option<String>, live: bool, request: bool },
+    LocationUpdated { group: String, id: String, from: String, stopped: bool },
+    /// An event to answer (`chat_event`).
+    ChatEvent { group: String, id: String, from: String, name: Option<String>, title: String, request: bool },
+    ChatEventChanged { group: String, id: String, from: String, cancelled: bool },
+    Rsvp { group: String, id: String, from: String, answer: String },
+    /// A member's photo changed (`member_photo`).
+    ProfilePhoto { group: String, member: String, removed: bool },
 }
 
 fn ids(v: Vec<MemberId>) -> Vec<String> {
@@ -301,6 +324,21 @@ impl From<Event> for TreeEvent {
                 TreeEvent::Poll { group: h(group), id, from: from.to_hex(), name, question, request }
             }
             Event::PollUpdated { group, id } => TreeEvent::PollUpdated { group: h(group), id },
+            Event::Sticker { group, id, from, name, pack, index, emoji, request } => {
+                TreeEvent::Sticker { group: h(group), id, from: from.to_hex(), name, pack, index, emoji, request }
+            }
+            Event::Location { group, id, from, name, live, request } => {
+                TreeEvent::Location { group: h(group), id, from: from.to_hex(), name, live, request }
+            }
+            Event::LocationUpdated { group, id, from, stopped } => TreeEvent::LocationUpdated { group: h(group), id, from: from.to_hex(), stopped },
+            Event::ChatEvent { group, id, from, name, title, request } => {
+                TreeEvent::ChatEvent { group: h(group), id, from: from.to_hex(), name, title, request }
+            }
+            Event::ChatEventChanged { group, id, from, cancelled } => {
+                TreeEvent::ChatEventChanged { group: h(group), id, from: from.to_hex(), cancelled }
+            }
+            Event::Rsvp { group, id, from, answer } => TreeEvent::Rsvp { group: h(group), id, from: from.to_hex(), answer },
+            Event::ProfilePhoto { group, member, removed } => TreeEvent::ProfilePhoto { group: h(group), member: member.to_hex(), removed },
         }
     }
 }
@@ -310,7 +348,8 @@ pub struct Message {
     pub id: String,
     pub sender: String,
     pub received_at: i64,
-    /// `text`, `file`, or a line about a member who went: `left` (asked to
+    /// `text`, `file`, `sticker` (`text`: its emoji), `location` (`text`: its
+    /// label), `event` (`text`: its title), or a line about a member who went: `left` (asked to
     /// leave) or `removed` (`sender` is that member, `who` its name). A
     /// quiet leave has no line.
     pub kind: String,

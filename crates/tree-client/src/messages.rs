@@ -18,6 +18,7 @@
 //! | `chat.formatting` | applied | formatting markup is shown; released: shown as plain text |
 //! | `chat.mention_all` | applied, option `admins` (default) or `all` | who may @all; otherwise the @all is ignored |
 //! | `chat.screenshot_block` | released | the apps block screenshots of the chat (also per user) |
+//! | `chat.gifs`, `chat.video_notes` | applied | files flagged as a GIF / a video note allowed (`relay.rs`, `rich_media.rs`) |
 //!
 //! Windows are measured with this device's own clock from when it received
 //! (or sent) the original, never from a time the sender claims.
@@ -265,7 +266,7 @@ impl Session {
             return Err(Error::Usage("the message was deleted".into()));
         }
         let me = self.member_id().to_hex();
-        self.queue_payload(gid, &Payload::React { id: id.into(), emoji: emoji.into(), remove }, None, |s| {
+        self.queue_payload(gid, &Payload::React { id: id.into(), emoji: emoji.into(), remove, sticker: None }, None, |s| {
             Ok(s.client.react(gid, id, &me, emoji, remove)?)
         })?;
         Ok(())
@@ -357,7 +358,7 @@ impl Session {
                 }
                 Err(why) => refuse(events, why),
             },
-            Payload::React { id, emoji, remove } => {
+            Payload::React { id, emoji, remove, sticker } => {
                 if !self.chat_allows(gid, "chat.reactions")? {
                     refuse(events, "reactions are released in this group (chat.reactions)");
                     return Ok(());
@@ -366,6 +367,12 @@ impl Session {
                     refuse(events, "malformed reaction");
                     return Ok(());
                 }
+                // A custom emoji counts as itself only while the chat
+                // allows stickers; otherwise as its plain emoji.
+                let emoji = match sticker {
+                    Some(st) => self.custom_reaction_key(gid, &st)?.unwrap_or(emoji),
+                    None => emoji,
+                };
                 match self.client.message(gid, &id)? {
                     Some(m) if !m.deleted => {
                         self.client.react(gid, &id, &from.to_hex(), &emoji, remove)?;
@@ -385,6 +392,14 @@ impl Session {
                 }
                 if file.view_once && !self.chat_allows(gid, "chat.view_once")? {
                     refuse(events, "view-once files are released in this group (chat.view_once)");
+                    return Ok(());
+                }
+                if file.gif && !self.chat_allows(gid, "chat.gifs")? {
+                    refuse(events, "GIFs are released in this group (chat.gifs)");
+                    return Ok(());
+                }
+                if file.video_note && !self.chat_allows(gid, "chat.video_notes")? {
+                    refuse(events, "video notes are released in this group (chat.video_notes)");
                     return Ok(());
                 }
                 if !file.is_valid() || file.id.is_empty() {

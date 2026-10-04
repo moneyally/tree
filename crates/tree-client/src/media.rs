@@ -66,6 +66,10 @@ pub enum Source<'a> {
 pub struct SendOptions {
     pub view_once: bool,
     pub voice: bool,
+    /// Found through the GIF relay (`chat.gifs`).
+    pub gif: bool,
+    /// A round video note (`chat.video_notes`; length in `meta`).
+    pub video_note: bool,
     pub meta: MediaMeta,
 }
 
@@ -323,6 +327,8 @@ impl Session {
         if !self.chat_feature(gid, "chat.media")?.0
             || (o.view_once && !self.chat_feature(gid, "chat.view_once")?.0)
             || (o.voice && !self.chat_feature(gid, "chat.voice")?.0)
+            || (o.gif && !self.chat_feature(gid, "chat.gifs")?.0)
+            || (o.video_note && !self.chat_feature(gid, "chat.video_notes")?.0)
         {
             return Err(Error::Feature("LOCKED_BY_CHAT".into()));
         }
@@ -361,6 +367,8 @@ impl Session {
             view_once: o.view_once,
             voice: o.voice,
             duration_ms: o.meta.duration_ms,
+            gif: o.gif,
+            video_note: o.video_note,
             id: String::new(),
             key: api::b64(&fk.secret[..]),
             size,
@@ -394,6 +402,30 @@ impl Session {
             info.id = id;
         }
         Ok(info)
+    }
+
+    /// Uploads a small ciphertext at once, part by part, and returns its
+    /// attachment id (sticker images and manifests, profile photos: blobs
+    /// that are not a message of their own, so not in the outbox).
+    pub(crate) fn upload_now(&self, ct: &[u8]) -> Result<String, Error> {
+        let total = ct.len() as u64;
+        let mut status = self.api.upload_create(&self.creds, total)?;
+        if status.size != total || status.chunk_size == 0 {
+            return Err(Error::Protocol("the server's upload does not match the file".into()));
+        }
+        let cs = status.chunk_size;
+        while !status.complete && status.received < status.chunks {
+            let start = status.received * cs;
+            let end = (start + cs).min(total);
+            if start >= total {
+                return Err(Error::Protocol("the server's upload does not match the file".into()));
+            }
+            status = self.api.upload_part(&self.creds, &status.id, status.received, &ct[start as usize..end as usize])?;
+        }
+        if !status.complete {
+            return Err(Error::Protocol("the upload did not complete".into()));
+        }
+        Ok(status.id)
     }
 
     pub(crate) fn upload_state(&self, local_id: &str) -> Result<Option<UploadState>, Error> {

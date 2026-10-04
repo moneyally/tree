@@ -129,6 +129,9 @@ class AppModel(
     var downloadDir: java.io.File? = null
 
 
+    /** Stickers, GIFs, locations, events, video notes, photos, per-chat profiles. */
+    val rich = RichChats(this)
+
     internal suspend fun <T> call(block: (TreeSession) -> T): T? {
         val s = session ?: return null
         return try {
@@ -310,6 +313,9 @@ class AppModel(
             is TreeEvent.KeyChanged -> _state.update { it.copy(notice = Strings.t("key_changed")) }
             is TreeEvent.SendFailed -> _state.update { it.copy(notice = Strings.t("send_failed")) }
             is TreeEvent.Poll -> maybeNotify(e.group, false, e.question)
+            is TreeEvent.Sticker -> maybeNotify(e.group, false, e.emoji)
+            is TreeEvent.Location -> maybeNotify(e.group, false, Strings.t("location"))
+            is TreeEvent.ChatEvent -> maybeNotify(e.group, false, e.title)
             else -> {}
         }
     }
@@ -362,6 +368,7 @@ class AppModel(
             )
         }
         loadRich()
+        rich.refresh(open, messages)
     }
 
     suspend fun openChat(group: String?) {

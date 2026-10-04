@@ -102,8 +102,12 @@ Part A, **built** (branch `claude/rich-chats-a`; APP_PROTOCOL.md 6.2):
 | Chat export, plain text and JSON (`chat.export`) | built |
 | Storage clean-up of downloaded media (`user.storage_clean`) | built |
 
-Part B (stickers, GIF relay, location, events, video notes, profile
-photos, per-chat profiles) is built on another branch.
+Part B, **built** (branch `claude/rich-chats-b`; APP_PROTOCOL.md 8,
+PROTOCOL.md 8.12): stickers and custom emoji packs, GIF search through the
+relay, location and live location with the optional map tile relay,
+events with replies, round video notes, profile photos, per-chat profiles
+(display name and photo; separate keys per chat are a later step). Both
+parts are merged in `claude/wave2`.
 
 ## Wave 3 — groups and communities
 

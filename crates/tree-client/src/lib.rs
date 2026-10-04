@@ -7,11 +7,13 @@
 //! or in `tree-core`.
 
 pub mod api;
+pub mod chat_events;
 pub mod forward;
 pub mod franking;
 pub mod invites;
 pub mod link;
 pub mod links;
+pub mod location;
 pub mod media;
 pub mod messages;
 pub mod organize;
@@ -19,11 +21,15 @@ pub mod outbox;
 pub mod payload;
 pub mod pins;
 pub mod polls;
+pub mod profile;
 pub mod refresh;
+pub mod relay;
 pub mod requests;
 pub mod rich;
+pub mod rich_media;
 pub mod schedule;
 pub mod settings;
+pub mod stickers;
 pub mod storage_clean;
 pub mod username;
 
@@ -179,6 +185,24 @@ pub enum Event {
     Poll { group: Vec<u8>, id: String, from: MemberId, name: Option<String>, question: String, request: bool },
     /// Votes or the state of poll `id` changed; read it again.
     PollUpdated { group: Vec<u8>, id: String },
+    /// A sticker arrived (`chat.stickers`): item `index` of pack `pack`
+    /// (the manifest's attachment id); [`Session::sticker_image`] fetches it.
+    Sticker { group: Vec<u8>, id: String, from: MemberId, name: Option<String>, pack: String, index: u32, emoji: String, request: bool },
+    /// A place or a live location arrived (`chat.location`);
+    /// [`Session::location`] gives its current state.
+    Location { group: Vec<u8>, id: String, from: MemberId, name: Option<String>, live: bool, request: bool },
+    /// A live location moved, or ended (`stopped`).
+    LocationUpdated { group: Vec<u8>, id: String, from: MemberId, stopped: bool },
+    /// An event arrived (`chat.events`); [`Session::chat_event`] gives it
+    /// with its replies.
+    ChatEvent { group: Vec<u8>, id: String, from: MemberId, name: Option<String>, title: String, request: bool },
+    /// The creator changed or cancelled event `id`.
+    ChatEventChanged { group: Vec<u8>, id: String, from: MemberId, cancelled: bool },
+    /// A member answered event `id` (`going`, `maybe` or `not`).
+    Rsvp { group: Vec<u8>, id: String, from: MemberId, answer: String },
+    /// A member set (or `removed`) its profile photo in this group;
+    /// [`Session::member_photo`] fetches it.
+    ProfilePhoto { group: Vec<u8>, member: MemberId, removed: bool },
 }
 
 /// Recovery as the server has it (PROTOCOL.md 8.6).
@@ -998,13 +1022,16 @@ impl Session {
         for key in self.client.app_data_keys("announce/")? {
             let gid = hex::decode(&key["announce/".len()..]).map_err(|_| Error::Protocol("bad key".into()))?;
             if !self.other_devices(&gid)?.is_empty() {
-                let name = self.name().to_string();
-                self.send_payload(&gid, &Payload::Profile { name })?;
+                let (name, chat) = self.profile_name_for(&gid)?;
+                self.send_payload(&gid, &Payload::Profile { name, chat })?;
                 self.client.set_app_data(&key, None)?;
             }
         }
         // Scheduled messages that came due, storage clean-up (`rich.rs`).
         events.extend(self.after_sync()?);
+        // Live locations due for an update, profile photos and per-chat
+        // profiles the groups should have (`rich_media.rs`).
+        self.rich_sync()?;
         events.extend(self.send_pending()?);
         Ok(events)
     }
@@ -1106,14 +1133,31 @@ impl Session {
             other => (other, None),
         };
         match payload {
-            Some(p @ (Payload::Text { .. } | Payload::Edit { .. } | Payload::Delete { .. } | Payload::React { .. } | Payload::File(_))) => {
+            Some(
+                p @ (Payload::Text { .. }
+                | Payload::Edit { .. }
+                | Payload::Delete { .. }
+                | Payload::React { .. }
+                | Payload::File(_)
+                | Payload::Sticker { .. }
+                | Payload::Location(_)
+                | Payload::LiveLocation { .. }
+                | Payload::ChatEvent(_)
+                | Payload::EventEdit { .. }
+                | Payload::Rsvp { .. }
+                | Payload::ProfilePhoto { .. }),
+            ) => {
                 if let Some(a) = self.map(&accounts_key(gid))?.get(&from.to_hex()) {
                     if self.is_blocked(a)? {
                         events.push(Event::Dropped { reason: "from a blocked account".into() });
                         return Ok(());
                     }
                 }
-                self.on_message(gid, from, p, franking, events)?;
+                if rich_media::is_rich_media(&p) {
+                    self.on_rich_media(gid, from, p, franking, events)?;
+                } else {
+                    self.on_message(gid, from, p, franking, events)?;
+                }
             }
             Some(p @ (Payload::Pin { .. } | Payload::Poll(_) | Payload::Vote { .. } | Payload::PollClose { .. })) => {
                 self.on_rich(gid, from, p, franking, events)?
@@ -1178,7 +1222,12 @@ impl Session {
                 }
                 events.push(Event::RosterUpdated { group: gid.to_vec() });
             }
-            Some(Payload::Profile { name }) => {
+            Some(Payload::Profile { name, chat }) => {
+                // A name for this chat only counts while the chat allows them.
+                if chat && !self.chat_feature(gid, "chat.allow_per_chat_profiles")?.0 {
+                    events.push(Event::Dropped { reason: "per-chat names are released in this group (chat.allow_per_chat_profiles)".into() });
+                    return Ok(());
+                }
                 let mut known = self.names(gid)?;
                 known.insert(from.to_hex(), name.clone());
                 self.save_names(gid, &known)?;

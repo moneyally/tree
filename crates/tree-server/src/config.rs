@@ -76,6 +76,34 @@ pub struct Config {
     pub push_allow_http: bool,
     /// `PUSH_INTERVAL_SECS`: at most one wake-up per device this often.
     pub push_interval_secs: u64,
+    /// `GIF_PROVIDER_URL`: the GIF search endpoint the relay asks
+    /// (PROTOCOL.md 8.12). Unset = no GIF relay (there is no default
+    /// provider).
+    pub gif_provider_url: Option<String>,
+    /// `GIF_PROVIDER_KEY`: sent to the provider as a bearer token, if set.
+    /// From the environment only; never in git.
+    pub gif_provider_key: Option<Secret>,
+    /// `MAP_TILE_URL`: tile URL template with `{z}`, `{x}`, `{y}`. Unset =
+    /// no map relay.
+    pub map_tile_url: Option<String>,
+    /// `RELAY_MAX_BYTES`: largest answer the relays pass on.
+    pub relay_max_bytes: usize,
+    /// `RELAY_ALLOW_HTTP`: allow `http://` and local upstreams (tests only).
+    pub relay_allow_http: bool,
+}
+
+/// A configured secret: never printed by `Debug`.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Secret(pub String);
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Secret(..)")
+    }
+}
+
+fn env_opt(name: &str) -> Option<String> {
+    std::env::var(name).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
 }
 
 impl Default for Config {
@@ -112,6 +140,11 @@ impl Default for Config {
             push_allowed_hosts: Vec::new(),
             push_allow_http: false,
             push_interval_secs: 5,
+            gif_provider_url: None,
+            gif_provider_key: None,
+            map_tile_url: None,
+            relay_max_bytes: 8 * 1024 * 1024,
+            relay_allow_http: false,
         }
     }
 }
@@ -203,6 +236,11 @@ impl Config {
                 .collect(),
             push_allow_http: env_parse("PUSH_ALLOW_HTTP", d.push_allow_http)?,
             push_interval_secs: env_parse("PUSH_INTERVAL_SECS", d.push_interval_secs)?,
+            gif_provider_url: env_opt("GIF_PROVIDER_URL"),
+            gif_provider_key: env_opt("GIF_PROVIDER_KEY").map(Secret),
+            map_tile_url: env_opt("MAP_TILE_URL"),
+            relay_max_bytes: env_parse("RELAY_MAX_BYTES", d.relay_max_bytes)?,
+            relay_allow_http: env_parse("RELAY_ALLOW_HTTP", d.relay_allow_http)?,
         };
         cfg.validate()?;
         Ok(cfg)
@@ -242,6 +280,12 @@ impl Config {
         if self.purge_interval_secs == 0 {
             return Err(ConfigError("PURGE_INTERVAL_SECS must be positive".into()));
         }
+        if self.relay_max_bytes == 0 {
+            return Err(ConfigError("RELAY_MAX_BYTES must be positive".into()));
+        }
+        if self.map_tile_url.as_deref().is_some_and(|t| !(t.contains("{z}") && t.contains("{x}") && t.contains("{y}"))) {
+            return Err(ConfigError("MAP_TILE_URL must contain {z}, {x} and {y}".into()));
+        }
         Ok(())
     }
 }
@@ -260,7 +304,19 @@ mod tests {
         set("TRUST_FORWARDED_FOR", "true");
         set("PUSH_ALLOWED_HOSTS", " Push.Example , other.example:8443 ,");
         set("ADMIN_TOKEN_SHA256", &"ab".repeat(32));
+        set("GIF_PROVIDER_URL", " https://gifs.example/search ");
+        set("GIF_PROVIDER_KEY", "not-a-real-key");
+        set("MAP_TILE_URL", "https://tiles.example/{z}/{x}/{y}.png");
         let c = Config::from_env().unwrap();
+        assert_eq!(c.gif_provider_url.as_deref(), Some("https://gifs.example/search"));
+        assert_eq!(c.gif_provider_key, Some(Secret("not-a-real-key".into())));
+        assert!(!format!("{c:?}").contains("not-a-real-key"), "the key is never printed");
+        assert_eq!(c.map_tile_url.as_deref(), Some("https://tiles.example/{z}/{x}/{y}.png"));
+        set("MAP_TILE_URL", "https://tiles.example/tile.png");
+        assert!(Config::from_env().is_err(), "a template needs z, x and y");
+        for k in ["GIF_PROVIDER_URL", "GIF_PROVIDER_KEY", "MAP_TILE_URL"] {
+            std::env::remove_var(k);
+        }
         assert_eq!((c.pow_bits, c.max_recipients, c.trust_forwarded_for), (12, 77, true));
         assert_eq!(c.push_allowed_hosts, vec!["push.example".to_string(), "other.example:8443".into()]);
         assert_eq!(c.admin_token_sha256, Some([0xab; 32]));
@@ -296,6 +352,7 @@ mod tests {
             |c| c.signup_burst = 0.5,
             |c| c.purge_interval_secs = 0,
             |c| c.push_interval_secs = 0,
+            |c| c.relay_max_bytes = 0,
         ];
         for (i, f) in bad.into_iter().enumerate() {
             let mut c = Config::default();

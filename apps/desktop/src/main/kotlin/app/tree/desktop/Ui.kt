@@ -250,6 +250,7 @@ private fun ChatRow(model: AppModel, c: Chat, requests: Boolean) {
     val scope = rememberCoroutineScope()
     var menu by remember { mutableStateOf(false) }
     Row(verticalAlignment = Alignment.CenterVertically) {
+        ChatPhoto(model, c)
         Column(Modifier.weight(1f).clickable { scope.launch { model.openChat(c.id) } }.padding(8.dp)) {
             val marks = listOfNotNull(
                 "^".takeIf { c.pinned },
@@ -358,6 +359,7 @@ private fun GroupSettingsPanel(model: AppModel, state: UiState, group: String) {
     state.chatFeatures.forEach { f ->
         FeatureRow(model, f, switchable = true) { on, option -> scope.launch { model.setChatFeature(group, f.key, on, option) } }
     }
+    ChatProfilePanel(model, group)
 }
 
 @Composable
@@ -371,7 +373,10 @@ private fun ChatView(model: AppModel, state: UiState, chat: Chat) {
     var link by remember(chat.id) { mutableStateOf<String?>(null) }
     var editing by remember(chat.id) { mutableStateOf<Pair<String, Raster>?>(null) }
     Column(Modifier.fillMaxSize().padding(8.dp)) {
-        Text(chat.title, style = MaterialTheme.typography.titleLarge)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            ChatPhoto(model, chat, 36)
+            Text(" " + chat.title, style = MaterialTheme.typography.titleLarge)
+        }
         // Who this person is to the user (user.stranger_labels), and the mute.
         labelText(chat)?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
         muteNote(chat)?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
@@ -413,7 +418,8 @@ private fun ChatView(model: AppModel, state: UiState, chat: Chat) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     val who = state.names[m.sender]?.ifEmpty { Strings.t("me") } ?: m.sender.take(6)
                     val read = if (m.id in state.readMine) "  ✓ " + Strings.t("read") else ""
-                    Text("$who: $body$read", Modifier.weight(1f).padding(4.dp))
+                    if (isRich(state, m)) Box(Modifier.weight(1f)) { RichMessage(model, state, chat, m, who) }
+                    else Text("$who: $body$read", Modifier.weight(1f).padding(4.dp))
                     // Own messages on their way: a small marker; failed ones offer retry and cancel.
                     when (m.status) {
                         "pending" -> Text("… " + Strings.t("pending"), style = MaterialTheme.typography.bodySmall)
@@ -470,6 +476,7 @@ private fun ChatView(model: AppModel, state: UiState, chat: Chat) {
             Text(Strings.t("silent"), style = MaterialTheme.typography.bodySmall)
             Button(onClick = { scope.launch { if (model.send(chat.id, draft, silent)) { model.typing(chat.id, false); draft = "" } } }) { Text(Strings.t("send")) }
         }
+        if (chat.status != "request") RichComposer(model, state, chat)
     }
 }
 
@@ -516,6 +523,7 @@ private fun Settings(model: AppModel, state: UiState) {
             Text(Strings.t("recovery_note"))
             SelectionContainer { Text(it, style = MaterialTheme.typography.titleMedium) }
         }
+        ProfilePhotoPanel(model, state)
         TextButton(onClick = { confirmDelete = true }) { Text(Strings.t("delete_account")) }
         StorageCleanButton(model, state)
         HorizontalDivider(Modifier.padding(vertical = 8.dp))

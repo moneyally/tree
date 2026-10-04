@@ -133,7 +133,9 @@ pub struct MediaEditPlan {
 impl MediaEditPlan {
     pub fn new(source_width: u32, source_height: u32) -> Result<Self, TreeError> {
         if source_width == 0 || source_height == 0 {
-            return Err(TreeError::FileCrypto("media dimensions must be non-zero".into()));
+            return Err(TreeError::FileCrypto(
+                "media dimensions must be non-zero".into(),
+            ));
         }
         Ok(Self {
             source_width,
@@ -146,7 +148,9 @@ impl MediaEditPlan {
 
     pub fn push(&mut self, op: EditOperation) -> Result<(), TreeError> {
         if self.operations.len() >= MAX_EDIT_OPERATIONS {
-            return Err(TreeError::FileCrypto("too many media edit operations".into()));
+            return Err(TreeError::FileCrypto(
+                "too many media edit operations".into(),
+            ));
         }
         validate_edit_operation(&op)?;
         self.operations.push(op);
@@ -166,7 +170,9 @@ impl MediaEditPlan {
     }
 
     pub fn validate(&self) -> Result<(), TreeError> {
-        for op in &self.operations { validate_edit_operation(op)?; }
+        for op in &self.operations {
+            validate_edit_operation(op)?;
+        }
         Ok(())
     }
 
@@ -192,9 +198,14 @@ impl MediaEditPlan {
 fn validate_edit_operation(op: &EditOperation) -> Result<(), TreeError> {
     match op {
         EditOperation::Crop(r) => {
-            if r.width == 0 || r.height == 0 || r.x.checked_add(r.width).is_none() || r.y.checked_add(r.height).is_none() {
-
-                return Err(TreeError::FileCrypto("crop dimensions must be non-zero".into()));
+            if r.width == 0
+                || r.height == 0
+                || r.x.checked_add(r.width).is_none()
+                || r.y.checked_add(r.height).is_none()
+            {
+                return Err(TreeError::FileCrypto(
+                    "crop dimensions must be non-zero".into(),
+                ));
             }
         }
         EditOperation::Adjust(a) => {
@@ -205,12 +216,16 @@ fn validate_edit_operation(op: &EditOperation) -> Result<(), TreeError> {
                 || a.sharpness > 100
                 || a.blur > 100
             {
-                return Err(TreeError::FileCrypto("media adjustment is out of range".into()));
+                return Err(TreeError::FileCrypto(
+                    "media adjustment is out of range".into(),
+                ));
             }
         }
         EditOperation::Draw(s) => {
             if s.points.is_empty() || s.points.len() > MAX_STROKE_POINTS {
-                return Err(TreeError::FileCrypto("draw stroke point count is invalid".into()));
+                return Err(TreeError::FileCrypto(
+                    "draw stroke point count is invalid".into(),
+                ));
             }
             if s.brush.width == 0 || s.brush.opacity == 0 || s.brush.sensitivity > 100 {
                 return Err(TreeError::FileCrypto("brush settings are invalid".into()));
@@ -229,12 +244,12 @@ fn validate_edit_operation(op: &EditOperation) -> Result<(), TreeError> {
                 return Err(TreeError::FileCrypto("sticker scale is invalid".into()));
             }
         }
-        EditOperation::Rotate(_)
-        | EditOperation::FlipHorizontal
-        | EditOperation::FlipVertical => {}
+        EditOperation::Rotate(_) | EditOperation::FlipHorizontal | EditOperation::FlipVertical => {}
         EditOperation::RotateBy(deg) => {
             if !(-180..=180).contains(deg) {
-                return Err(TreeError::FileCrypto("rotation angle is out of range".into()));
+                return Err(TreeError::FileCrypto(
+                        "rotation angle is out of range".into(),
+                    ));
             }
         }
     }
@@ -546,7 +561,11 @@ impl MediaManifest {
             match r.u8()? {
                 0 => (None, None),
                 1 => (Some(r.array::<32>()?), Some(r.array::<32>()?)),
-                _ => return Err(TreeError::Malformed("invalid media edit binding flag".into())),
+                _ => {
+                    return Err(TreeError::Malformed(
+                        "invalid media edit binding flag".into(),
+                    ))
+                }
             }
         };
         if !r.0.is_empty() {
@@ -817,7 +836,9 @@ fn validate_index(
     plaintext_len: usize,
 ) -> Result<(), TreeError> {
     if index >= manifest.chunk_count {
-        return Err(TreeError::FileCrypto("media chunk index is out of range".into()));
+        return Err(TreeError::FileCrypto(
+            "media chunk index is out of range".into(),
+        ));
     }
     let offset = index as u64 * manifest.chunk_size as u64;
     let remaining = manifest.plaintext_size.saturating_sub(offset);
@@ -1016,7 +1037,6 @@ impl MediaEnvelope {
         self.caption = caption.to_string();
         Ok(self)
     }
-
 
     pub fn new(
         media_id: String,
@@ -1339,7 +1359,8 @@ mod tests {
             sharpness: 30,
             warmth: 5,
             blur: 0,
-        })).unwrap();
+        }))
+        .unwrap();
         plan.push(EditOperation::Draw(DrawStroke {
             brush: BrushStyle {
                 width: 12,
@@ -1349,10 +1370,19 @@ mod tests {
                 rotation_deg: 15,
             },
             points: vec![
-                DrawPoint { x_milli: 100, y_milli: 100, pressure: 180 },
-                DrawPoint { x_milli: 200, y_milli: 200, pressure: 220 },
+                DrawPoint {
+                    x_milli: 100,
+                    y_milli: 100,
+                    pressure: 180,
+                },
+                DrawPoint {
+                    x_milli: 200,
+                    y_milli: 200,
+                    pressure: 220,
+                },
             ],
-        })).unwrap();
+        }))
+        .unwrap();
         plan.push(EditOperation::AddText(TextOverlay {
             text: "확인".into(),
             x_milli: 500,
@@ -1364,7 +1394,8 @@ mod tests {
                 bold: true,
                 italic: false,
             },
-        })).unwrap();
+        }))
+        .unwrap();
         assert!(matches!(plan.undo(), Some(EditOperation::AddText(_))));
         assert_eq!(plan.caption, "설명");
     }

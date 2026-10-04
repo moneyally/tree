@@ -8,7 +8,6 @@ mod api;
 
 use std::{collections::BTreeMap, path::Path};
 
-use base64::Engine;
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

@@ -319,7 +319,11 @@ pub struct FetchResp {
     pub cursor: i64,
 }
 
-pub async fn load(state: &AppState, device_id: &str) -> ApiResult<FetchResp> {
+pub async fn load(
+    state: &AppState,
+    device_id: &str,
+    requested_cursor: Option<i64>,
+) -> ApiResult<FetchResp> {
     let limit = state.cfg.fetch_limit as i64;
     let rows = sqlx::query(
         "SELECT d.id AS id, b.body AS body, b.received_at AS received_at \

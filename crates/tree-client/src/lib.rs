@@ -6,7 +6,7 @@
 
 mod api;
 
-use std::{collections::BTreeMap, path::Path};
+use std::{collections::BTreeMap, path::Path, time::{SystemTime, UNIX_EPOCH}};
 
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
@@ -547,33 +547,87 @@ impl Session {
             .is_some())
     }
 
+    /// Queues an MLS message durably and immediately drains the Outbox.
+    /// If transport fails, the message remains persisted and will be retried;
+    /// the caller receives the transport error rather than losing the message.
     pub fn send_text(&self, gid: &[u8], text: &str) -> Result<String, Error> {
-        let roster = self.roster(gid)?;
-        let recipients: Vec<String> = roster
-            .values()
-            .filter(|device| device.as_str() != self.device_id())
-            .cloned()
-            .collect();
-        if recipients.is_empty() {
-            return Err(Error::Usage("group has no other devices".into()));
-        }
-        let (message_id, body) = self.with_group(gid, |group| {
+        let (message_id, _) = self.with_group(gid, |group| {
             group.send_message(&self.client, text.as_bytes())
         })?;
-        let reply = self.api.send_with_idempotency(
-            &self.creds,
-            &recipients,
-            &body,
-            Some(message_id.as_bytes()),
-        )?;
-        let id = reply.body["id"]
-            .as_str()
-            .or_else(|| reply.body["message_id"].as_str())
-            .unwrap_or_default();
-        if id.is_empty() {
-            return Err(Error::Usage("server did not return a message id".into()));
+        self.flush_outbox()?
+            .into_iter()
+            .find(|(local_id, _)| local_id == message_id.as_bytes())
+            .map(|(_, server_id)| server_id)
+            .ok_or_else(|| Error::Usage("message was queued but not sent yet".into()))
+    }
+
+    /// Drains durable outbound messages. Each item keeps its local idempotency
+    /// key across retries and process restarts, so a server-side commit that
+    /// succeeded just before a client crash cannot be duplicated.
+    pub fn flush_outbox(&self) -> Result<Vec<([u8; 16], String)>, Error> {
+        let now = unix_now();
+        self.client.recover_sending_outbox(now)?;
+        let items = self.client.due_outbox(now, 32)?;
+        let mut sent = Vec::new();
+
+        for item in items {
+            if !self.client.mark_outbox_sending(item.local_id, now)? {
+                continue;
+            }
+
+            let result = (|| -> Result<String, Error> {
+                let roster = self.roster(&item.group_id)?;
+                let recipients: Vec<String> = roster
+                    .values()
+                    .filter(|device| device.as_str() != self.device_id())
+                    .cloned()
+                    .collect();
+                if recipients.is_empty() {
+                    return Err(Error::Usage("group has no other devices".into()));
+                }
+                let reply = self.api.send_with_idempotency(
+                    &self.creds,
+                    &recipients,
+                    &item.envelope,
+                    Some(&item.local_id),
+                )?;
+                if !reply.status.is_success() {
+                    return Err(Error::Server {
+                        status: reply.status.as_u16(),
+                        code: reply.code().to_string(),
+                    });
+                }
+                reply.body["id"]
+                    .as_str()
+                    .or_else(|| reply.body["message_id"].as_str())
+                    .map(str::to_string)
+                    .filter(|id| !id.is_empty())
+                    .ok_or_else(|| Error::Usage("server did not return a message id".into()))
+            })();
+
+            match result {
+                Ok(server_id) => {
+                    self.client.mark_outbox_sent(item.local_id, &server_id)?;
+                    sent.push((item.local_id, server_id));
+                }
+                Err(error) if retryable_outbox_error(&error) && item.attempts < 8 => {
+                    let delay = 5_i64
+                        .saturating_mul(1_i64 << item.attempts.min(8))
+                        .min(3600);
+                    self.client.mark_outbox_retry(
+                        item.local_id,
+                        &outbox_error_code(&error),
+                        unix_now().saturating_add(delay),
+                    )?;
+                }
+                Err(error) => {
+                    self.client
+                        .mark_outbox_failed(item.local_id, &outbox_error_code(&error))?;
+                    return Err(error);
+                }
+            }
         }
-        Ok(id.to_string())
+        Ok(sent)
     }
 
     /// Fetches mailbox messages, routes envelopes to the correct local group,
@@ -807,4 +861,28 @@ impl Session {
 pub enum CommitOutcome {
     Accepted { epoch: u64 },
     Lost,
+}
+
+fn unix_now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+fn retryable_outbox_error(error: &Error) -> bool {
+    match error {
+        Error::Server { status, .. } => matches!(status, 408 | 429 | 500..=599),
+        Error::Usage(message) => message.starts_with("HTTP request:"),
+        Error::Tree(_) => false,
+    }
+}
+
+fn outbox_error_code(error: &Error) -> String {
+    match error {
+        Error::Server { status, code } => format!("HTTP_{status}_{code}"),
+        Error::Usage(message) if message.starts_with("HTTP request:") => "NETWORK".into(),
+        Error::Usage(message) => format!("USAGE_{}", message.chars().take(80).collect::<String>()),
+        Error::Tree(_) => "TREE_ERROR".into(),
+    }
 }

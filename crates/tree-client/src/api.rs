@@ -66,7 +66,9 @@ impl Api {
             "auth_pub": b64(&public),
             "pow_nonce": nonce,
         });
-        let value = self.request(key, "", Method::POST, "/v1/accounts", Some(&body))?.ok()?;
+        let value = self
+            .request(key, "", Method::POST, "/v1/accounts", Some(&body))?
+            .ok()?;
         Ok(Creds {
             account_id: field(&value, "account_id")?,
             device_id: field(&value, "device_id")?,
@@ -75,10 +77,12 @@ impl Api {
     }
 
     pub fn key_package_count(&self, c: &Creds) -> Result<u64, ClientError> {
-        let value = self.call(c, Method::GET, "/v1/keypackages/count", None)?.ok()?;
-        value["count"]
-            .as_u64()
-            .ok_or_else(|| ClientError::Usage("server returned an invalid key-package count".into()))
+        let value = self
+            .call(c, Method::GET, "/v1/keypackages/count", None)?
+            .ok()?;
+        value["count"].as_u64().ok_or_else(|| {
+            ClientError::Usage("server returned an invalid key-package count".into())
+        })
     }
 
     pub fn upload_key_packages(
@@ -92,13 +96,15 @@ impl Api {
         let value = self
             .call(c, Method::POST, "/v1/keypackages", Some(&body))?
             .ok()?;
-        value["count"]
-            .as_u64()
-            .ok_or_else(|| ClientError::Usage("server returned an invalid key-package count".into()))
+        value["count"].as_u64().ok_or_else(|| {
+            ClientError::Usage("server returned an invalid key-package count".into())
+        })
     }
 
     pub fn revoke_key_packages(&self, c: &Creds) -> Result<u64, ClientError> {
-        let value = self.call(c, Method::DELETE, "/v1/keypackages", None)?.ok()?;
+        let value = self
+            .call(c, Method::DELETE, "/v1/keypackages", None)?
+            .ok()?;
         value["revoked"]
             .as_u64()
             .ok_or_else(|| ClientError::Usage("server returned an invalid revoke count".into()))
@@ -139,11 +145,7 @@ impl Api {
         self.call(c, Method::POST, "/v1/messages", Some(&request))
     }
 
-    pub fn fetch(
-        &self,
-        c: &Creds,
-        wait: u64,
-    ) -> Result<Vec<(String, Vec<u8>)>, ClientError> {
+    pub fn fetch(&self, c: &Creds, wait: u64) -> Result<Vec<(String, Vec<u8>)>, ClientError> {
         let path = if wait == 0 {
             "/v1/messages".to_string()
         } else {
@@ -278,12 +280,9 @@ fn random<const N: usize>() -> [u8; N] {
 fn solve_pow(auth_pub: &[u8; 32], bits: u32) -> u64 {
     (0u64..)
         .find(|nonce| {
-            let hash = Sha256::digest([
-                &b"tree-signup-v1"[..],
-                auth_pub,
-                &nonce.to_be_bytes()[..],
-            ]
-            .concat());
+            let hash = Sha256::digest(
+                [&b"tree-signup-v1"[..], auth_pub, &nonce.to_be_bytes()[..]].concat(),
+            );
             leading_zero_bits(&hash) >= bits
         })
         .expect("proof-of-work search exhausted")

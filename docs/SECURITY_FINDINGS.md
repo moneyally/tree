@@ -715,3 +715,19 @@ Issues found by testing Tree's own design. Each one has a regression test.
   accounts) and is never removed by a roster; apps show a bot by its
   server-known username with the "bot" label, never a name it chose.
 - **Test:** `tree-client` `bots::attack_tests::a_bot_claiming_to_be_a_person_is_still_a_bot`.
+
+## F-041: privacy mode could cut a bot off from a talkative member (fixed before release)
+
+- **Found:** 2026-10-04, reviewing bot lanes (Wave 5).
+- **What:** with `bot.privacy_mode` applied a bot's device gets only the
+  messages addressed to it, but every message a member sends moves that
+  member's MLS sender ratchet on. A receiver refuses a message more than
+  1,000 generations ahead of the last one it read, so after 1,000 messages
+  not addressed to the bot within one epoch the member's commands,
+  mentions and button presses were unreadable for the bot until the next
+  commit (availability, not confidentiality).
+- **Severity:** low (a bot stops answering one member for a while).
+- **Fix:** devices send their group's bots a contentless `lane_tick` after
+  every 256 of their own application messages (PROTOCOL.md 8.16).
+- **Test:** `tree-bot-gateway` `gateway::a_bot_still_reads_commands_after_many_messages_it_was_not_sent`
+  (fails with the tick disabled).

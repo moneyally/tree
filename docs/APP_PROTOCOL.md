@@ -769,13 +769,14 @@ accordingly.
 ## 11. Bots (Wave 5)
 
 Bots are members like any other device (PROTOCOL.md 8.16): what they send
-and receive are the payloads above. Three additions, all ignored by older
+and receive are the payloads above. Four additions, all ignored by older
 apps:
 
 ```json
 {"t":"text","id":"…","text":"Coffee?","kb":[[{"text":"Yes","data":"vote:yes"},{"text":"No","data":"vote:no"}]]}
 {"t":"callback","id":"<32 hex>","msg":"<message id>","data":"vote:yes","bot":"<bot member id>"}
 {"t":"callback_answer","id":"<32 hex>","to":"<presser member id>","text":"Noted","alert":false}
+{"t":"lane_tick"}
 ```
 
 | Payload | Rules |
@@ -783,6 +784,7 @@ apps:
 | `text` with `kb` | rows of inline buttons: at most 8 rows of at most 8; `text` and `data` 1 to 64 characters, no control characters. Shown only on a bot's message (the server's label); a person's buttons are dropped. Stored with the message (`buttons`) |
 | `callback` | a press of button `data` under bot message `msg`; sent to the devices of member `bot` only. The bot's device takes it only for its own message and a button that message has (otherwise "button press: not this bot's message / no such button"). Not franked |
 | `callback_answer` | the bot's answer to press `id`; sent to the devices of member `to` only. The presser's device takes it only from the bot it pressed, once, at most 200 characters. Not franked |
+| `lane_tick` | no content; a device sends it to the group's bots' devices only, after every 256 of its own application messages in the group (never while `chat.bots` is released), so its MLS sender ratchet stays within the 1,000 generations a receiver accepts although privacy mode keeps most messages from the bot. Ignored on receipt; never counts as speech (slow mode, restrictions and private channels do not hold it back) |
 
 The label: a member is a bot when the server says so (PROTOCOL.md 8.16);
 apps show "bot" next to it and the bot's server-known @username, never a

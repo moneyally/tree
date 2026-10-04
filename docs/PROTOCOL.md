@@ -2022,6 +2022,7 @@ devices, per payload, when they choose recipients:
 | Shared history (`chat.history_share`) | **never** | **never** | **never** |
 | Another member's button press, a bot's answer to someone else | **never** | **never** | **never** |
 | Commits (adds, removals, group settings) | yes (MLS needs them) | yes | yes |
+| `lane_tick` (no content, below) | yes | yes | yes |
 | Anything, while the group releases `chat.bots` | **no** | **no** | **no** |
 
 Senders learn which recipients are bots' devices and each bot's settings
@@ -2031,6 +2032,19 @@ item sealed while such devices could not be checked waits in the outbox
 for the check before it goes out. While the server says the bot platform
 is released, devices are not looked up for 60 seconds (the server delivers
 nothing to bots meanwhile).
+
+**Keeping a bot's ratchet in reach.** An MLS receiver refuses an
+application message more than 1,000 generations ahead of the last one it
+read from that sender (sender ratchet, 6.1: maximum forward distance 1000).
+Privacy mode keeps most messages from a bot, so without help a member who
+wrote 1,000 messages the bot never got could no longer reach it until the
+next commit. Every device therefore sends its group's bots a contentless
+`lane_tick` (APP_PROTOCOL.md 11) after every 256 of its own application
+messages in the group, through the outbox (also from inside a receive
+batch, without network I/O there). It tells the bot only that the sender
+wrote about 256 more messages; the server sees as much from message counts
+anyway. Tested: `a_bot_still_reads_commands_after_many_messages_it_was_not_sent`
+(fails without the tick).
 
 **What privacy mode does not do.** The bot's device holds the group's MLS
 keys: it could decrypt any message of the group if it got the ciphertext.

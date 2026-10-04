@@ -237,6 +237,121 @@ impl crate::storage::StoredProvider {
             .collect()
     }
 
+    pub(crate) fn due_outbox(
+        &self,
+        now: i64,
+        limit: u32,
+    ) -> Result<Vec<OutboxItem>, TreeError> {
+        let mut stmt = self.connection().prepare(
+            "SELECT local_id,group_id,message_id,kind,envelope,state,attempts,next_retry_at,created_at,last_error_code,server_id
+             FROM tree_outbox
+             WHERE (state='queued' OR state='retry') AND next_retry_at <= ?1
+             ORDER BY created_at, local_id LIMIT ?2",
+        ).map_err(storage_err)?;
+        let rows = stmt.query_map(params![now, i64::from(limit.min(1000))], |row| {
+            Ok((
+                row.get::<_, Vec<u8>>(0)?,
+                row.get::<_, Vec<u8>>(1)?,
+                row.get::<_, Option<Vec<u8>>>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, Vec<u8>>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, i64>(7)?,
+                row.get::<_, i64>(8)?,
+                row.get::<_, Option<String>>(9)?,
+                row.get::<_, Option<String>>(10)?,
+            ))
+        }).map_err(storage_err)?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (local, group, message, kind, envelope, state, attempts, next_retry, created, error, server) =
+                row.map_err(storage_err)?;
+            let attempts = u32::try_from(attempts)
+                .map_err(|_| TreeError::Storage("negative outbox attempts".into()))?;
+            let kind = u8::try_from(kind)
+                .map_err(|_| TreeError::Storage("invalid outbox kind".into()))?;
+            out.push(OutboxItem {
+                local_id: parse_id(local, "outbox local_id")?,
+                group_id: group,
+                message_id: message.map(|v| parse_id(v, "outbox message_id").map(MessageId)).transpose()?,
+                kind,
+                envelope,
+                state: OutboxState::parse(&state)?,
+                attempts,
+                next_retry_at: next_retry,
+                created_at: created,
+                last_error_code: error,
+                server_id: server,
+            });
+        }
+        Ok(out)
+    }
+
+    pub(crate) fn mark_outbox_sending(
+        &self,
+        local_id: [u8; 16],
+        now: i64,
+    ) -> Result<bool, TreeError> {
+        let changed = self.connection().execute(
+            "UPDATE tree_outbox SET state='sending', attempts=attempts+1
+             WHERE local_id=?1 AND (state='queued' OR (state='retry' AND next_retry_at <= ?2))",
+            params![local_id.as_slice(), now],
+        ).map_err(storage_err)?;
+        Ok(changed == 1)
+    }
+
+    pub(crate) fn mark_outbox_sent(
+        &self,
+        local_id: [u8; 16],
+        server_id: &str,
+    ) -> Result<(), TreeError> {
+        self.connection().execute(
+            "UPDATE tree_outbox SET state='sent', server_id=?2, last_error_code=NULL
+             WHERE local_id=?1 AND state='sending'",
+            params![local_id.as_slice(), server_id],
+        ).map_err(storage_err)?;
+        Ok(())
+    }
+
+    pub(crate) fn mark_outbox_retry(
+        &self,
+        local_id: [u8; 16],
+        error_code: &str,
+        next_retry_at: i64,
+    ) -> Result<(), TreeError> {
+        self.connection().execute(
+            "UPDATE tree_outbox SET state='retry', last_error_code=?2, next_retry_at=?3
+             WHERE local_id=?1 AND state='sending'",
+            params![local_id.as_slice(), error_code, next_retry_at],
+        ).map_err(storage_err)?;
+        Ok(())
+    }
+
+    pub(crate) fn mark_outbox_failed(
+        &self,
+        local_id: [u8; 16],
+        error_code: &str,
+    ) -> Result<(), TreeError> {
+        self.connection().execute(
+            "UPDATE tree_outbox SET state='failed', last_error_code=?2
+             WHERE local_id=?1 AND state='sending'",
+            params![local_id.as_slice(), error_code],
+        ).map_err(storage_err)?;
+        Ok(())
+    }
+
+    pub(crate) fn recover_sending_outbox(&self, now: i64) -> Result<u32, TreeError> {
+        let changed = self.connection().execute(
+            "UPDATE tree_outbox SET state='retry', next_retry_at=?1,
+                    last_error_code='CLIENT_RESTART'
+             WHERE state='sending'",
+            params![now],
+        ).map_err(storage_err)?;
+        u32::try_from(changed)
+            .map_err(|_| TreeError::Storage("outbox recovery count overflow".into()))
+    }
+
     pub(crate) fn enqueue_outbox(
         &self,
         local_id: [u8; 16],

@@ -201,11 +201,13 @@ async fn real_clients_chat_through_server_and_removed_device_is_locked_out() {
 
     let bob_msgs = api.fetch(&bob_net, 0).await;
     assert_eq!(bob_msgs.len(), 1);
-    assert_eq!(
-        b.receive(&bob, &unb64(bob_msgs[0]["body"].as_str().unwrap()))
-            .unwrap(),
-        Incoming::RemovedFromGroup
-    );
+    match b
+        .receive(&bob, &unb64(bob_msgs[0]["body"].as_str().unwrap()))
+        .unwrap()
+    {
+        Incoming::RemovedFromGroup => {}
+        other => panic!("expected RemovedFromGroup, got {other:?}"),
+    }
     api.ack(&bob_net, &[bob_msgs[0]["id"].as_str().unwrap()])
         .await;
 

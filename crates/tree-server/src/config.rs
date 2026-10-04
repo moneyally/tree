@@ -39,6 +39,8 @@ pub struct Config {
     pub max_file_bytes: usize,
     /// `FILE_TTL_SECS`: how long uploaded encrypted media is retained.
     pub file_ttl_secs: u64,
+    /// `MAX_MEDIA_CHUNK_BYTES`: maximum plaintext chunk size accepted by the resumable media API.
+    pub max_media_chunk_bytes: usize,
     /// `MAX_RECIPIENTS`: device mailboxes per send or commit (a 1,000-member
     /// group with two devices each has 2,000).
     pub max_recipients: usize,
@@ -81,6 +83,7 @@ impl Default for Config {
             max_message_bytes: 256 * 1024,
             max_file_bytes: 64 * 1024 * 1024,
             file_ttl_secs: 30 * 24 * 3600,
+            max_media_chunk_bytes: 1024 * 1024,
             max_recipients: 2048,
             max_commit_bytes: 4 * 1024 * 1024,
             max_welcome_bytes: 4 * 1024 * 1024,
@@ -163,6 +166,7 @@ impl Config {
             max_key_package_bytes: env_parse("MAX_KEY_PACKAGE_BYTES", d.max_key_package_bytes)?,
             max_message_bytes: env_parse("MAX_MESSAGE_BYTES", d.max_message_bytes)?,
             max_file_bytes: env_parse("MAX_FILE_BYTES", d.max_file_bytes)?,
+            max_media_chunk_bytes: env_parse("MAX_MEDIA_CHUNK_BYTES", d.max_media_chunk_bytes)?,
             file_ttl_secs: env_parse("FILE_TTL_SECS", d.file_ttl_secs)?,
             max_recipients: env_parse("MAX_RECIPIENTS", d.max_recipients)?,
             max_commit_bytes: env_parse("MAX_COMMIT_BYTES", d.max_commit_bytes)?,
@@ -188,6 +192,7 @@ impl Config {
             || self.max_commit_bytes == 0
             || self.max_welcome_bytes == 0
             || self.max_file_bytes == 0
+            || self.max_media_chunk_bytes == 0
             || self.max_key_packages_per_upload == 0
         {
             return Err(ConfigError("limits must be positive".into()));

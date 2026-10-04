@@ -405,15 +405,6 @@ impl Session {
             ViewPolicy::Timed { seconds } => seconds,
             _ => 0,
         };
-        let recipients = self
-            .roster(gid)?
-            .values()
-            .filter(|device| device.as_str() != self.device_id())
-            .cloned()
-            .collect::<Vec<_>>();
-        if recipients.is_empty() {
-            return Err(Error::Usage("group has no other devices".into()));
-        }
         let body = self.with_group(gid, |group| {
             group.send_message_with_id(
                 &self.client,

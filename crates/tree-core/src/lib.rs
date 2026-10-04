@@ -21,6 +21,7 @@ pub mod group;
 mod group_state;
 pub mod identity;
 pub mod media;
+pub mod media_editor;
 pub mod message;
 pub mod message_state;
 pub mod provider;

@@ -134,17 +134,28 @@ impl Client<StoredProvider> {
         let json = serde_json::to_string(&m.reactions).map_err(storage_err)?;
         self.provider.atomically(|| {
             self.conn()
-                .execute("UPDATE tree_messages SET reactions = ?3 WHERE group_id = ?1 AND id = ?2", params![group_id, id, json])
+                .execute(
+                    "UPDATE tree_messages SET reactions = ?3 WHERE group_id = ?1 AND id = ?2",
+                    params![group_id, id, json],
+                )
                 .map(|_| ())
                 .map_err(storage_err)
         })
     }
 
     /// Replaces the kind-specific data (e.g. drops a view-once file reference).
-    pub fn set_message_data(&self, group_id: &[u8], id: &str, data: Option<&[u8]>) -> Result<(), TreeError> {
+    pub fn set_message_data(
+        &self,
+        group_id: &[u8],
+        id: &str,
+        data: Option<&[u8]>,
+    ) -> Result<(), TreeError> {
         self.provider.atomically(|| {
             self.conn()
-                .execute("UPDATE tree_messages SET data = ?3 WHERE group_id = ?1 AND id = ?2", params![group_id, id, data])
+                .execute(
+                    "UPDATE tree_messages SET data = ?3 WHERE group_id = ?1 AND id = ?2",
+                    params![group_id, id, data],
+                )
                 .map(|_| ())
                 .map_err(storage_err)
         })
@@ -152,7 +163,12 @@ impl Client<StoredProvider> {
 
     /// Newest `limit` messages of a group received before `before`
     /// (unix seconds, exclusive), oldest first.
-    pub fn messages(&self, group_id: &[u8], limit: u32, before: Option<i64>) -> Result<Vec<StoredMessage>, TreeError> {
+    pub fn messages(
+        &self,
+        group_id: &[u8],
+        limit: u32,
+        before: Option<i64>,
+    ) -> Result<Vec<StoredMessage>, TreeError> {
         let mut stmt = self
             .conn()
             .prepare(&format!(
@@ -160,7 +176,12 @@ impl Client<StoredProvider> {
                  ORDER BY received_at DESC, seq DESC LIMIT ?3"
             ))
             .map_err(storage_err)?;
-        let rows = stmt.query_map(params![group_id, before.unwrap_or(i64::MAX), limit], from_row).map_err(storage_err)?;
+        let rows = stmt
+            .query_map(
+                params![group_id, before.unwrap_or(i64::MAX), limit],
+                from_row,
+            )
+            .map_err(storage_err)?;
         let mut v = rows.collect::<Result<Vec<_>, _>>().map_err(storage_err)?;
         v.reverse();
         Ok(v)
@@ -168,8 +189,18 @@ impl Client<StoredProvider> {
 
     /// Messages whose text contains `needle` (case-insensitive for ASCII),
     /// newest first, at most `limit`. Search runs on this device only.
-    pub fn search_messages(&self, needle: &str, limit: u32) -> Result<Vec<StoredMessage>, TreeError> {
-        let pattern = format!("%{}%", needle.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
+    pub fn search_messages(
+        &self,
+        needle: &str,
+        limit: u32,
+    ) -> Result<Vec<StoredMessage>, TreeError> {
+        let pattern = format!(
+            "%{}%",
+            needle
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        );
         let mut stmt = self
             .conn()
             .prepare(&format!(
@@ -177,7 +208,9 @@ impl Client<StoredProvider> {
                  ORDER BY received_at DESC, seq DESC LIMIT ?2"
             ))
             .map_err(storage_err)?;
-        let rows = stmt.query_map(params![pattern, limit], from_row).map_err(storage_err)?;
+        let rows = stmt
+            .query_map(params![pattern, limit], from_row)
+            .map_err(storage_err)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(storage_err)
     }
 
@@ -186,7 +219,10 @@ impl Client<StoredProvider> {
     pub fn purge_expired_messages(&self, now: i64) -> Result<usize, TreeError> {
         self.provider.atomically(|| {
             self.conn()
-                .execute("DELETE FROM tree_messages WHERE expires_at IS NOT NULL AND expires_at <= ?1", params![now])
+                .execute(
+                    "DELETE FROM tree_messages WHERE expires_at IS NOT NULL AND expires_at <= ?1",
+                    params![now],
+                )
                 .map_err(storage_err)
         })
     }
@@ -194,7 +230,12 @@ impl Client<StoredProvider> {
     /// Removes the whole history of a group.
     pub fn forget_messages(&self, group_id: &[u8]) -> Result<usize, TreeError> {
         self.provider.atomically(|| {
-            self.conn().execute("DELETE FROM tree_messages WHERE group_id = ?1", params![group_id]).map_err(storage_err)
+            self.conn()
+                .execute(
+                    "DELETE FROM tree_messages WHERE group_id = ?1",
+                    params![group_id],
+                )
+                .map_err(storage_err)
         })
     }
 }

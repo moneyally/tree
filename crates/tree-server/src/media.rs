@@ -1,8 +1,8 @@
 //! Resumable opaque media storage.
 //!
-//! The server never receives a media key and never decrypts a manifest. It
-//! validates only transport-level invariants (sizes, hashes, chunk indexes)
-//! and stores ciphertext until the configured retention deadline.
+//! The server never receives a media key and never decrypts the encrypted
+//! manifest. It validates only transport-level invariants (sizes, hashes,
+//! chunk indexes) and stores ciphertext until the configured retention deadline.
 
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;

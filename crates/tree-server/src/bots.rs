@@ -693,7 +693,7 @@ pub async fn authenticate_token(state: &AppState, headers: &HeaderMap) -> ApiRes
         .strip_prefix("Bot ")
         .ok_or_else(|| ApiError::unauthorized("bot authorization must use Bot scheme"))?;
     let secret = require_bot_secret(state)?;
-    let (bot_id, suffix) = parse_bot_token_parts(token)?;
+    let (bot_id, _suffix) = parse_bot_token_parts(token)?;
     let row = sqlx::query(
         "SELECT b.token_hmac, bi.account_id, bi.gateway_device_id
          FROM bots b JOIN bot_identities bi ON bi.bot_id = b.id

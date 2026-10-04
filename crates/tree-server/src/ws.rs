@@ -48,7 +48,7 @@ async fn serve(state: AppState, device_id: String, mut socket: WebSocket) {
             break;
         }
 
-        match messages::load(&state, &device_id).await {
+        match messages::load(&state, &device_id, None).await {
             Ok(page) => {
                 for message in page.messages {
                     if sent.len() >= MAX_SENT_IDS && !sent.contains(&message.id) {

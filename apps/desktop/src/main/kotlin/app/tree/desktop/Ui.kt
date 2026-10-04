@@ -270,6 +270,15 @@ private fun ChatView(model: AppModel, state: UiState, chat: Chat) {
                     val who = state.names[m.sender]?.ifEmpty { Strings.t("me") } ?: m.sender.take(6)
                     val read = if (m.id in state.readMine) "  ✓ " + Strings.t("read") else ""
                     Text("$who: $body$read", Modifier.weight(1f).padding(4.dp))
+                    // Own messages on their way: a small marker; failed ones offer retry and cancel.
+                    when (m.status) {
+                        "pending" -> Text("… " + Strings.t("pending"), style = MaterialTheme.typography.bodySmall)
+                        "failed" -> {
+                            Text("! " + Strings.t("failed"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                            TextButton(onClick = { scope.launch { model.retrySend(m.id) } }) { Text(Strings.t("retry")) }
+                            TextButton(onClick = { scope.launch { model.cancelSend(m.id) } }) { Text(Strings.t("cancel_send")) }
+                        }
+                    }
                     // In a request, files stay closed until the user accepts (design: requests).
                     if (m.kind == "file" && chat.status == "request") {
                         Text(Strings.t("after_accept"), style = MaterialTheme.typography.bodySmall)

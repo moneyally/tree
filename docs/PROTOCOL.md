@@ -707,6 +707,80 @@ ciphertext; it is useless without the key from the message.
 The group's `chat.media` setting (section 6.11) is enforced by every device:
 when released, sending is refused and received references are dropped.
 
+### 6.13 Outbox: reliable sending
+
+A send that meets a network error must neither be lost nor, when only the
+answer was lost, arrive twice. Every application message except typing and
+presence signals goes through a durable outbox in the device's encrypted
+database (`tree_outbox`, SCHEMA.md 1.2; `crates/tree-core/src/storage/outbox.rs`,
+`crates/tree-client/src/outbox.rs`).
+
+States: `queued -> sending -> sent | retry -> sending ... | failed`.
+
+1. **Enqueue.** One transaction stores the history entry (shown at once,
+   with status pending), the outbox item and, when the message is sealed
+   now, the group's advanced key state. An item has a random 16-byte local
+   id; enqueue is idempotent by it (a second enqueue of the same id changes
+   nothing, also after the item was sent).
+2. **Seal once.** The MLS message is produced exactly once and stored with
+   the item. Every attempt sends exactly these bytes; the device never
+   re-encrypts on retry (that would use new message keys and put a second,
+   different ciphertext of the same message into the group). Normally the
+   item is sealed at enqueue. A chat message is franked first (8.5), which
+   needs the server; if the server cannot be reached for the tag, the
+   encoded payload waits in the outbox and the first attempt that obtains
+   the tag seals it, once. The unsealed payload is erased when sealed.
+3. **Idempotency key.** Fixed when the item is sealed:
+
+   ```text
+   key = SHA-256( lp("tree/outbox/idempotency/v1") || lp(group_id)
+                  || lp(sender member id) || lp(local_id) || lp(sealed message) )
+   lp(x) = uint32 big-endian length of x || x
+   ```
+
+   It binds the group, the sender, the item and its content with length
+   prefixes and a domain label, so two different items (other group, other
+   sender, other local id or other bytes) cannot share a key; the server
+   additionally scopes keys per sending device (8.10). It is an identifier,
+   not a secret. Sent with every attempt.
+4. **Attempt.** The item is stored as `sending` before the request leaves.
+   The answer `200` makes it `sent`: the ciphertext and recipient list are
+   erased, only ids and state stay (for 30 days, then the record goes).
+   A passing error (network, server `5xx`, `408`, `425`, `429`) makes it
+   `retry` with a wait of 5 s after the first counted failure, doubling to at
+   most 1 h; after 8 counted attempts it is `failed`. Any other refusal
+   (`4xx`, for example `SUSPENDED`) makes it `failed` at once.
+5. **Order.** Items of one group go out in the order they were made: an item
+   waiting for its next attempt holds back the later items of its group.
+   Typing and presence signals are not queued and are not sent while
+   messages of the group wait, so they never overtake them.
+6. **User sends.** A new message makes its group's waiting items go now,
+   in order, before it. Such an early attempt does not count against an
+   item's 8 attempts (a user typing while offline does not use them up).
+7. **Crash.** An item found in `sending` when the profile is opened was cut
+   off: it becomes `retry`, due at once, and the interrupted attempt counts.
+   Whether or not the server had received it, the resend carries the same
+   key and bytes, so the server delivers it at most once (8.10).
+8. **Sync** sends every due item after receiving; it reports `Sent` for a
+   message that reached the server and `SendFailed` for an item given up.
+9. **User actions on failed items.** Retry: a fresh budget of attempts and
+   one attempt now. Cancel: the item and its ciphertext are deleted and the
+   message leaves this device's history. A cancelled item may still have
+   reached others if an earlier attempt arrived and only the answer was
+   lost.
+
+An item sealed in epoch `N` and resent after the group moved on is read by
+the others as long as `N` is within the 2 past epochs they keep (6.2, F-002);
+older items fail to decrypt there and are dropped. If the server's record
+had expired and a copy did arrive twice, the second copy is still not shown
+twice: its MLS message key was deleted after the first decryption (6.3), and
+text and file payloads carry a message id the history stores only once.
+
+Commits do not use the outbox: a pending commit is stored with the group
+state and resubmitted with the same bytes (7.1 steps 5 and 7); the server
+answers a retry from the winner hash it stores per epoch (7.4), so commits
+are idempotent without a key.
+
 ---
 
 ## 7. Commit ordering
@@ -900,7 +974,8 @@ a per-address signup rate limit (kept in memory only).
 ### 8.3 Mailbox semantics
 
 - One mailbox per device. `POST /v1/messages` stores the body once and adds
-  one entry per recipient device. The sender is not stored.
+  one entry per recipient device. The sender is not stored with the
+  message; a send with an idempotency key leaves a separate record (8.10).
 - Delivery is at least once, in insertion order per mailbox, until the
   recipient acknowledges. Clients MUST tolerate duplicates (section 6.6).
 - Unacknowledged entries are purged after 30 days. A device that is offline
@@ -1130,6 +1205,44 @@ Verified reports need genuine messages (8.5), so a group of people cannot
 limit an account that sent them nothing. Reading the mailbox is never
 limited. Paid or attested sign-up (design) and the stranger deposit (stage
 3) are not implemented.
+
+### 8.10 Idempotent sends
+
+`POST /v1/messages` accepts an optional `idempotency_key` (base64, 16 to 64
+bytes; the client sends the 32-byte key of 6.13). In the same database
+transaction as the delivery the server keeps the record
+
+```text
+(sending device id, key) -> request hash, delivered count, day
+request hash = SHA-256( lp("tree/send-request/v1") || lp(body)
+                        || uint32 n || lp(r_1) ... lp(r_n) )
+```
+
+with `r_1 ... r_n` the recipient ids sorted and de-duplicated (`lp` as in
+6.13), and applies, before anything is delivered:
+
+1. no record for (device, key): deliver, store the record;
+2. a record with the same request hash: answer `200` with the stored
+   `delivered` count and `"replayed": true`; nothing is delivered or
+   charged again;
+3. a record with another request hash: `409 IDEMPOTENCY_KEY_REUSE`; nothing
+   is delivered.
+
+The lookup and the delivery are one `BEGIN IMMEDIATE` transaction, so
+concurrent copies of one request deliver once. Keys are scoped per sending
+device: the same key bytes from another device are another record.
+Duplicate recipient ids in one request are delivered once (they always were).
+
+Metadata. The record is new metadata: the server keeps, for up to the
+message TTL (30 days), that a device sent a keyed message on a given day,
+with a hash of the request. It does not keep the body, the recipients, the
+message id or the time of day; the replayed answer therefore has empty
+`unknown_devices` / `full_devices` (keeping them would link sender and
+recipients). Once the body is acknowledged and erased, the request hash
+cannot be checked against anything. Records are deleted by the purge task
+after the message TTL, with their device, and beyond `MAX_IDEMPOTENCY_KEYS`
+(default 10,000) per device the oldest are dropped at once, so they cannot
+grow without bound; a client retries within minutes, far inside both.
 
 ---
 
@@ -1494,6 +1607,7 @@ the server cannot learn it from what it sees or stores.
 | Group epoch and message type | **not protected** | cleartext `epoch` and `content_type` (application or commit) | none planned in MLS framing |
 | Message size | **partially protected** | ciphertext padded to multiples of 256 bytes; attachments sized separately (exact ciphertext size, section 6.12) | larger padding buckets (open) |
 | Timing | **not protected** | exact arrival time live; stored rounded to the minute | stage 4-5: cover traffic (optional) |
+| Sending activity per device | **not protected** | idempotency records (8.10): sending device, day, request hash per keyed send, kept up to the message TTL; no recipients, body or time of day | sealed sender (stage 4) removes the device id |
 | IP address | **not protected** from the server or network | live only; not stored (signup limiter keeps it in memory) | stage 4: relayed requests for sensitive endpoints; stage 5: independent proxies |
 | Online status | **not protected** | long-poll and fetch times per device; acknowledgements | partly with relays; push providers learn wake-ups |
 | Contact graph | **not protected** (derivable) | sender device -> recipient devices per request, group ids linking them, key-package claims; the address book is never uploaded | stage 4: sealed sender, anonymous credentials |

@@ -42,6 +42,7 @@ the owner holds).
    same request: same answer; same key, other request: refused). The key
    binds the group, the sender and the content, so two events can never
    share it. Idempotency records expire with the messages.
+   Status: **built** (branch `claude/outbox`; PROTOCOL.md 6.13 and 8.10).
 2. **Chat list basics.** Mute (with duration), archive, pin chats,
    silent send, quiet leave, unread markers, drafts.
 3. **Contacts.** Username links and QR codes (reset gives a new link, the

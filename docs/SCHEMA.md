@@ -55,7 +55,27 @@ CREATE TABLE tree_messages (
     seq         INTEGER NOT NULL DEFAULT 0,  -- arrival order within the same second (v4)
     PRIMARY KEY (group_id, id)
 ) WITHOUT ROWID;
+CREATE TABLE tree_outbox (                     -- messages being sent (v5, PROTOCOL.md 6.13)
+    seq        INTEGER PRIMARY KEY AUTOINCREMENT, -- send order
+    local_id   TEXT NOT NULL UNIQUE,  -- random 16 bytes (hex); enqueue is idempotent by it
+    group_id   BLOB NOT NULL,
+    message_id TEXT,                  -- the tree_messages row it carries (text, file), if any
+    payload    BLOB,                  -- encoded app payload while not sealed yet; NULL once sealed
+    body       BLOB,                  -- the sealed MLS message, made once; NULL once sent
+    recipients TEXT NOT NULL DEFAULT '[]',  -- JSON device ids, fixed when sealed
+    idem_key   BLOB,                  -- 32-byte idempotency key, fixed when sealed
+    state      TEXT NOT NULL CHECK (state IN ('queued', 'sending', 'sent', 'retry', 'failed')),
+    attempts   INTEGER NOT NULL DEFAULT 0,  -- counted failed attempts (8 -> failed)
+    next_at    INTEGER NOT NULL DEFAULT 0,  -- next attempt due (retry); time sent (sent)
+    created_at INTEGER NOT NULL,
+    last_error TEXT                   -- error text of the last attempt, no content
+);
 ```
+
+`tree_outbox`: a `sent` row keeps only ids, key and state (for the
+history's "sent" mark and idempotent enqueue) and is deleted 30 days after
+sending, on the next open. A cancelled `failed` row is deleted with its
+history entry. Version 4 profiles get the table on open.
 
 History is plaintext under the database encryption: forward secrecy does not
 cover it (PROTOCOL.md 6.3 item 6). Deleted and expired rows are overwritten
@@ -203,6 +223,27 @@ CREATE TABLE group_winners (                     -- last 64 accepted commits
 This makes group membership (as device ids) visible in the database; the
 server already sees it through recipient lists (PROTOCOL.md 11). A group's
 rows are deleted by the purge task once none of its devices exists.
+
+### 2.8 Idempotent sends (migration `0011_idempotency.sql`, PROTOCOL.md 8.10)
+
+```sql
+CREATE TABLE idempotency_keys (
+    seq          INTEGER PRIMARY KEY AUTOINCREMENT,      -- age order for the per-device cap
+    device_id    TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,  -- sending device
+    key          BLOB NOT NULL,                          -- 16..64 bytes chosen by the device
+    request_hash BLOB NOT NULL,                          -- SHA-256 over body and sorted recipients
+    delivered    INTEGER NOT NULL,                       -- the first answer's count
+    created_day  INTEGER NOT NULL,                       -- day only
+    UNIQUE (device_id, key)
+);
+CREATE INDEX idempotency_keys_device ON idempotency_keys(device_id, seq);
+CREATE INDEX idempotency_keys_day ON idempotency_keys(created_day);
+```
+
+No recipients, body, message id or time of day. Deleted by the purge task
+once the whole day is older than `MESSAGE_TTL_SECS`, with the device, and
+beyond `MAX_IDEMPOTENCY_KEYS` per device (oldest first). Migration number
+`0010` is left free on purpose.
 
 ### 2.2 Usernames (migration `0003_usernames.sql`)
 

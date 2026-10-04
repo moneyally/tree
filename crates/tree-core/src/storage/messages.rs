@@ -119,6 +119,17 @@ impl Client<StoredProvider> {
         })
     }
 
+    /// Removes one message entirely (a message of this device that was
+    /// never sent and the user cancelled). Returns whether it existed.
+    pub fn remove_message(&self, group_id: &[u8], id: &str) -> Result<bool, TreeError> {
+        self.provider.atomically(|| {
+            self.conn()
+                .execute("DELETE FROM tree_messages WHERE group_id = ?1 AND id = ?2", params![group_id, id])
+                .map(|n| n == 1)
+                .map_err(storage_err)
+        })
+    }
+
     /// Adds or removes one member's reaction.
     pub fn react(&self, group_id: &[u8], id: &str, member: &str, emoji: &str, remove: bool) -> Result<(), TreeError> {
         let Some(mut m) = self.message(group_id, id)? else { return Ok(()) };

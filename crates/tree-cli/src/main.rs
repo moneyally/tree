@@ -39,7 +39,10 @@ commands:
   report <group> <reason> <id>...        report messages of one sender to the operator
   send-file <group> <path>               send an encrypted attachment
   download <file-id> <path>              fetch, check and save a received attachment
-  sync [wait-seconds]                    receive and print
+  sync [wait-seconds]                    receive and print, send what waits in the outbox
+  outbox                                 messages not sent yet (pending or failed)
+  retry <id>                             try a failed message again (local or message id)
+  cancel <id>                            give up a failed message
   remove <group> <member-id>             remove a member (device)
   refresh <group>                        refresh this device's keys
   refresh-all                            refresh keys in every group (suspected compromise)
@@ -344,7 +347,12 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 );
             }
         }
-        ["send", g, text @ ..] => println!("sent message {}", s.send_text(&hex_arg(g)?, &text.join(" ")).map_err(e)?),
+        ["send", g, text @ ..] => {
+            let g = hex_arg(g)?;
+            let id = s.send_text(&g, &text.join(" ")).map_err(e)?;
+            let waiting = s.send_states(&g).map_err(e)?.get(&id).is_some_and(|st| st.is_pending());
+            println!("{} message {id}", if waiting { "queued (the next sync retries)" } else { "sent" });
+        }
         ["send-all", g, text @ ..] => {
             let o = tree_client::TextOptions { all: true, ..Default::default() };
             println!("sent message {}", s.send_text_with(&hex_arg(g)?, &text.join(" "), &o).map_err(e)?)
@@ -400,6 +408,23 @@ fn run(args: Vec<String>) -> Result<(), String> {
             for ev in s.sync(wait).map_err(e)? {
                 print_event(&ev);
             }
+        }
+        ["outbox"] => {
+            for o in s.outbox().map_err(e)? {
+                println!(
+                    "{}  [{}] {} attempts {}{}",
+                    o.local_id,
+                    &hex(&o.group)[..8],
+                    o.state.as_str(),
+                    o.attempts,
+                    o.last_error.map(|r| format!(" ({r})")).unwrap_or_default()
+                );
+            }
+        }
+        ["retry", id] => println!("{}", if s.retry_send(id).map_err(e)? { "sent" } else { "still waiting; sync retries it" }),
+        ["cancel", id] => {
+            s.cancel_send(id).map_err(e)?;
+            println!("cancelled");
         }
         ["remove", g, member] => {
             let id = tree_client::MemberId::from_hex(member).ok_or("member id must be 64 hex digits")?;
@@ -495,5 +520,11 @@ fn print_event(ev: &Event) {
         Event::GroupSafetyNotice { group, adder } => {
             println!("[{}] !! {adder} is not a contact and added you to this group; check who is in it (tree members)", &hex(group)[..8])
         }
+        Event::Sent { group, id } => println!("[{}] sent #{}", &hex(group)[..8], id.as_deref().unwrap_or("-")),
+        Event::SendFailed { group, id, local_id, reason } => println!(
+            "[{}] !! not sent #{} ({reason}): tree retry {local_id} / tree cancel {local_id}",
+            &hex(group)[..8],
+            id.as_deref().unwrap_or("-")
+        ),
     }
 }

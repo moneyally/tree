@@ -43,6 +43,15 @@ class AppModelTest {
 
         alice.syncNow()
         assertTrue(alice.send(g, "안녕 밥"))
+        // Through the outbox: confirmed by the server, nothing left waiting.
+        alice.openChat(g)
+        assertEquals("sent", alice.state.value.messages.last().status)
+        assertTrue(!alice.state.value.sending)
+        // Only failed messages can be retried or cancelled: an error, not a crash.
+        assertTrue(!alice.retrySend(alice.state.value.messages.last().id))
+        assertNotNull(alice.state.value.error)
+        alice.clearMessages()
+        alice.openChat(null)
         bob.syncNow()
         assertEquals(1, bob.state.value.chats.single().unread)
         bob.openChat(g)

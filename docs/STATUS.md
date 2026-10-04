@@ -69,6 +69,7 @@ in section 5.
 | Anonymous credentials for signup | decided otherwise (stage 4) | |
 | One-time key package store | done | |
 | Mailboxes, 30-day purge, delete on acknowledge | done | |
+| Reliable sending: idempotent sends | built (branch `claude/outbox`) | PROTOCOL.md 8.10: optional `idempotency_key` on `POST /v1/messages`, per device, same request answered from the record, other request `409 IDEMPOTENCY_KEY_REUSE`; records expire with the message TTL, capped per device (migration `0011`); commits idempotent by hash |
 | Commit ordering endpoint | done | HANDOFF 3.2; eligibility set, idempotent retry, welcome only with a winning commit |
 | Size limits for large hybrid groups | done | commits / welcomes 4 MiB, 2048 devices (BENCHMARKS.md rec. 6) |
 | Minimal logs (no IP, no sender, day / minute granularity) | done | SERVER_API.md "What the server stores" |
@@ -87,6 +88,7 @@ in section 5.
 | Requirement | Status | Note |
 | --- | --- | --- |
 | Client logic library shared by all apps | done | `crates/tree-client`: server API, sync, two-phase commits, rosters, names, held messages (APP_PROTOCOL.md) |
+| Reliable sending: durable outbox | built (branch `claude/outbox`) | PROTOCOL.md 6.13: `tree_outbox` in the encrypted profile, sealed once, same key on every retry, backoff 5 s to 1 h, failed after 8 attempts, crash recovery, retry / cancel; sync drives it; FFI `outbox`, `retry_send`, `cancel_send`, `Message.status`; desktop and Android show pending / failed with retry and cancel; tests `crates/tree-client/tests/outbox.rs`, `crates/tree-server/tests/idempotency.rs` |
 | Command-line client through the server | done | `crates/tree-cli`, `scripts/cli_demo.sh`; end-to-end test with a real server (HANDOFF 3.3) |
 | UniFFI bindings | done | `crates/tree-ffi` (`TreeSession`); Kotlin bindings run on the JVM against a real server (`scripts/ffi_kotlin_demo.sh`), Python likewise (`scripts/ffi_demo.sh`); Swift generated. Android/iOS library builds need the NDK / Xcode |
 | Android app (Kotlin + Compose Multiplatform) | partial | `apps/android`: the Rust client cross-compiled with the NDK (`scripts/android_lib.sh`, arm64-v8a, x86_64), the desktop app's model and texts shared (`apps/shared`), Compose screens (sign-up, chats, requests, chat with files and report, invite links incl. `tree://join` links, safety numbers, settings, recovery phrase); `FLAG_SECURE` for `chat.screenshot_block` / `user.app_switcher_blur`; profile excluded from backups. `gradle assembleDebug` builds the APK; **not yet run on a device or emulator** (no KVM here). Not yet: push (UnifiedPush distributor), notifications, release signing |

@@ -4,7 +4,7 @@
 //! local profile. It is not part of the network protocol.
 
 use rusqlite::{params, OptionalExtension};
-use crate::{error::TreeError, message::{MessageEvent, MessageId}, storage::StoredProvider};
+use crate::{error::TreeError, message::{MessageEvent, MessageId}};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OutboxState {
@@ -81,7 +81,7 @@ fn parse_id<const N: usize>(bytes: Vec<u8>, what: &str) -> Result<[u8; N], TreeE
     bytes.try_into().map_err(|_| TreeError::Storage(format!("{what} has invalid length")))
 }
 
-impl StoredProvider {
+impl crate::storage::StoredProvider {
     pub(crate) fn store_message_event(
         &self,
         group_id: &[u8],
@@ -222,7 +222,7 @@ impl StoredProvider {
             "INSERT INTO tree_outbox
              (local_id,group_id,message_id,kind,envelope,state,attempts,next_retry_at,created_at,last_error_code,server_id)
              VALUES (?1,?2,?3,?4,?5,'queued',0,?6,?6,NULL,NULL)",
-            params![local_id.as_slice(), group_id, message_id.map(|m| m.as_bytes().as_slice()), kind as i64, envelope, now],
+            params![local_id.as_slice(), group_id, message_id.as_ref().map(|m| m.as_bytes().as_slice()), kind as i64, envelope, now],
         ).map_err(local_err)?;
         Ok(())
     }

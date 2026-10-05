@@ -175,3 +175,15 @@ fun AppModel.describeLog(e: AdminLogItem, names: Map<String, String>): String {
     val target = e.target?.let { names[it]?.ifEmpty { Strings.t("me") } ?: it.take(12) }
     return listOfNotNull(who, Strings.t("log_" + e.action), target, e.detail).joinToString(" ")
 }
+
+/** Makes a member an admin (or takes it back). Admins only. */
+suspend fun AppModel.makeAdmin(group: String, member: String, on: Boolean): Boolean =
+    (call { it.makeAdmin(group, member, on) }?.accepted == true).also { refresh() }
+
+/** Removes a member's device from the group. Admins only. */
+suspend fun AppModel.removeMember(group: String, member: String): Boolean =
+    (call { it.remove(group, listOf(member)) }?.accepted == true).also { refresh() }
+
+/** Stops every invite link this device made for the group. */
+suspend fun AppModel.revokeInviteLinks(group: String): Boolean =
+    (call { it.revokeInviteLinks(group) } != null).also { refresh() }

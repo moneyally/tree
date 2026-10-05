@@ -50,16 +50,16 @@
 | 기능 | 상태 | 메모 |
 |---|---|---|
 | 멤버 초대·초대 링크·이름 바꾸기 | ✅ | |
-| 관리자 지정 | 🔴 | make_admin FFI만 |
-| 내보내기(멤버) | 🔴 | remove FFI, 모델 미연결 |
-| 역할 만들기·주기 | 🟡 | createRole / assignRole |
-| 발언 제한 | 🟡 | restrict |
-| 가입 승인·거절 | 🟡 | approveJoin / declineJoin |
-| 환영 메시지 | 🟡 | setWelcome |
-| 주제(토픽) | 🟡 | createTopic / openTopic / sendInTopic |
-| 관리 기록 | 🟡 | describeLog |
-| 관리자 권한 삭제 | 🟡 | deleteAsModerator |
-| 초대 링크 모두 취소 | 🔴 | revoke_invite_links |
+| 관리자 지정·해제 | ✅ | 멤버 누르기 |
+| 내보내기(멤버) | ✅ | 멤버 누르기 |
+| 역할 만들기·주기·삭제 | ✅ | 관리 → 역할, 멤버 누르기 |
+| 발언 제한 | ✅ | 1시간·하루·1주 |
+| 가입 승인·거절 | ✅ | 방 정보에 요청 카드 |
+| 환영 메시지 | ✅ | |
+| 주제(토픽) | ✅ | 대화방 위 칩, 만들기 |
+| 관리 기록 | ✅ | |
+| 관리자 권한 삭제 | ✅ | 메시지 길게 → 삭제(관리자) |
+| 초대 링크 모두 취소 | ✅ | |
 | 방별 프로필(이 방에서만 다른 이름) | 🟡 | setChatName |
 | 커뮤니티 | 🟡 | createCommunity 등 |
 

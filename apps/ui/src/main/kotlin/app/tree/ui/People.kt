@@ -256,6 +256,7 @@ fun ChatInfoScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state:
     var leaving by remember { mutableStateOf(false) }
     var muting by remember { mutableStateOf(false) }
     var blocking by remember { mutableStateOf<String?>(null) }
+    var memberOpen by remember { mutableStateOf<uniffi.tree_ffi.Member?>(null) }
     Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().verticalScroll(rememberScrollState()).padding(bottom = 30.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             androidx.compose.material3.IconButton(onClick = { nav.pop() }) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, t("뒤로", "Back")) }
@@ -296,9 +297,6 @@ fun ChatInfoScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state:
             SwitchRow(t("화면 캡처 막기", "Block screenshots"), t("이 대화에서 내 화면만", "On my screen, in this chat"), state.screenshotBlocked, Icons.Rounded.Screenshot, TreeColors.TileTeal) { on ->
                 scope.launch { model.setScreenshotBlock(chat.id, on) }
             }
-            if (admin && chat.others > 1) {
-                SettingsRow(t("초대 링크 만들기", "Make invite link"), t("24시간 동안 10명까지", "24 hours, up to 10 people"), Icons.Rounded.Link, TreeColors.TileIndigo, onClick = { scope.launch { link = model.inviteLink(chat.id) } }, trailing = null)
-            }
             SettingsRow(if (chat.pinned) t("목록 위 고정 해제", "Unpin from top") else t("목록 위에 고정", "Pin to top"), null, Icons.Rounded.PushPin, TreeColors.TileAmber, onClick = { scope.launch { model.pin(chat.id, !chat.pinned) } }, trailing = null)
             if (peer != null) {
                 val blocked = contact?.blocked == true
@@ -306,6 +304,7 @@ fun ChatInfoScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state:
                     onClick = { if (blocked) scope.launch { model.unblock(peer) } else blocking = peer }, trailing = null)
             }
         }
+        if (chat.others > 1 && state.groups.admin) JoinRequestsCard(model, state, chat)
         Spacer(Modifier.height(14.dp))
         val tabs = InfoTab.entries.filter { it != InfoTab.MEMBERS || chat.others > 1 || chat.channel }
         Row(
@@ -332,7 +331,7 @@ fun ChatInfoScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state:
                     }
                     state.members.forEachIndexed { i, m ->
                         val name = if (m.id == me) state.name else (m.name ?: m.id.take(6))
-                        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Row(Modifier.fillMaxWidth().clickable(enabled = m.id != me) { memberOpen = m }.padding(horizontal = 16.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
                             Avatar(name, m.account ?: m.id, 46.dp, image = rememberPhoto(platform, "m:" + m.id, media.photos[m.id]?.bytes, 128))
                             Spacer(Modifier.width(14.dp))
                             Column(Modifier.weight(1f)) {
@@ -378,6 +377,7 @@ fun ChatInfoScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state:
                 }
             }
         }
+        if (chat.others > 1 && state.groups.admin) AdminCard(model, nav, state, chat, onLink = { scope.launch { link = model.inviteLink(chat.id) } })
         if (admin && state.chatFeatures.isNotEmpty()) {
             var open by remember { mutableStateOf(false) }
             CardGroup {
@@ -394,6 +394,7 @@ fun ChatInfoScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state:
         }
     }
     if (muting) MuteDialog(model, chat) { muting = false }
+    memberOpen?.let { m -> MemberDialog(model, platform, nav, state, chat, m) { memberOpen = null } }
     blocking?.let { acc ->
         AlertDialog(
             onDismissRequest = { blocking = null },

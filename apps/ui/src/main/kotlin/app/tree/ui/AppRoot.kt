@@ -67,6 +67,7 @@ sealed class Route {
     data object NewGroup : Route()
     data class ChatSearch(val id: String) : Route()
     data class Safety(val chat: String, val account: String) : Route()
+    data class GroupAdmin(val chat: String, val page: String) : Route()
 }
 
 enum class Tab(val ko: String, val en: String, val on: ImageVector, val off: ImageVector) {
@@ -115,7 +116,7 @@ private fun Signed(model: AppModel, platform: TreePlatform, nav: TreeNav, state:
     val top = nav.top
     // The chat screen keeps the model's open chat in step with the stack.
     LaunchedEffect(top) {
-        val want = (top as? Route.Chat)?.id ?: (top as? Route.ChatInfo)?.id ?: (top as? Route.ChatSearch)?.id
+        val want = (top as? Route.Chat)?.id ?: (top as? Route.ChatInfo)?.id ?: (top as? Route.ChatSearch)?.id ?: (top as? Route.GroupAdmin)?.chat
         if (state.open != want) model.openChat(want)
         if (top is Route.Home && nav.tab == Tab.CONTACTS) model.loadContacts()
     }
@@ -142,6 +143,8 @@ private fun Signed(model: AppModel, platform: TreePlatform, nav: TreeNav, state:
         is Route.Scan -> platform.Scanner(top.kind) { nav.pop() }
         is Route.Extra -> platform.Extra(top.key) { nav.pop() }
         is Route.NewGroup -> NewGroupScreen(model, nav, state)
+        is Route.GroupAdmin -> state.chats.firstOrNull { it.id == top.chat }?.let { GroupAdminScreen(model, nav, state, it, top.page) }
+            ?: LaunchedEffect(top) { nav.pop() }
         is Route.Safety -> SafetyScreen(model, platform, nav, state, top.account, state.chats.firstOrNull { it.id == top.chat }?.title ?: "")
         is Route.ChatSearch -> state.chats.firstOrNull { it.id == top.id }?.let { ChatSearchScreen(model, nav, state, it) }
             ?: LaunchedEffect(top) { nav.pop() }

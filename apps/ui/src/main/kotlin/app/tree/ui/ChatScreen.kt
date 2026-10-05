@@ -110,6 +110,8 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.sp
 import app.tree.shared.RichState
 import app.tree.shared.typersIn
+import app.tree.shared.sendInTopic
+import app.tree.shared.deleteAsModerator
 import kotlinx.coroutines.launch
 import uniffi.tree_ffi.Message
 
@@ -124,7 +126,8 @@ fun ChatScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state: UiS
     val me = model.session?.memberId()
     val isNotes = chat.id == state.notes
     val group = chat.others > 1 || chat.channel
-    val msgs = state.messages
+    // A topic shown (chat.topics): only its messages.
+    val msgs = if (state.groups.topic != null) state.groups.topicMessages else state.messages
     val byId = remember(msgs) { msgs.associateBy { it.id } }
     val replies = remember(msgs) { msgs.mapNotNull { it.replyTo }.groupingBy { it }.eachCount() }
     // How many were unread when the chat opened: the "unread" line stays there while it is open.
@@ -205,6 +208,7 @@ fun ChatScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state: UiS
                     },
                 )
             } else ChatTopBar(platform, nav, state, media, chat, isNotes, group, typers)
+            if (group && !isNotes && (state.groups.topics.isNotEmpty() || state.groups.mayCreateTopics)) TopicBar(model, state, chat)
             if (state.rich.pins.isNotEmpty()) PinnedBar(state, listState, msgs)
             if (chat.status == "request") RequestBanner(model, chat)
         }
@@ -481,6 +485,10 @@ private fun MessageBubble(
                     menu = false
                     scope.launch { if (m.status == "failed" || m.status == "pending") model.cancelSend(m.id) else model.deleteForAll(chat.id, m.id) }
                 })
+                if (!mine && !m.deleted && state.groups.mayDelete) DropdownMenuItem({ Text(t("삭제 (관리자)", "Delete (admin)"), color = extra.danger) }, leadingIcon = { Icon(Icons.Rounded.Delete, null, tint = extra.danger) }, onClick = {
+                    menu = false
+                    scope.launch { model.deleteAsModerator(chat.id, m.id) }
+                })
                 if (!mine) DropdownMenuItem({ Text(t("신고", "Report"), color = extra.danger) }, leadingIcon = { Icon(Icons.Rounded.Flag, null, tint = extra.danger) }, onClick = {
                     menu = false
                     scope.launch { if (model.report(chat.id, listOf(m.id), "user report") != null) model.notice(t("신고했어요. 운영팀이 확인해요.", "Reported. The team will review it.")) }
@@ -663,7 +671,8 @@ private fun Composer(model: AppModel, platform: TreePlatform, state: UiState, me
                     val formatted = hasMarkup(v) && state.chatFeatures.none { it.key == "chat.formatting" && !it.applied }
                     val (mentions, all) = if (chat.others > 1) mentionsIn(v, state.names) else emptyList<String>() to false
                     scope.launch {
-                        model.send(chat.id, v, silent = silent, formatted = formatted, mentions = mentions, all = all, replyTo = r?.id)
+                        if (state.groups.topic != null) model.sendInTopic(chat.id, v)
+                        else model.send(chat.id, v, silent = silent, formatted = formatted, mentions = mentions, all = all, replyTo = r?.id)
                         model.typing(chat.id, false)
                         model.saveDraft(chat.id, "")
                     }

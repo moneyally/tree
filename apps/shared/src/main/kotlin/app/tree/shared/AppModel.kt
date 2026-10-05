@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.withLock
@@ -252,13 +253,34 @@ class AppModel(
      * While own messages wait in the outbox it polls briefly and syncs
      * every round, which sends them when they are due.
      */
+    /** True while the receiving loop runs. */
+    val receiving: Boolean get() = loop?.isActive == true
+
+    /** Starts receiving unless it already runs (the signed-in screens call it). */
+    fun ensureSyncLoop() {
+        if (loop?.isActive != true && session != null) startSyncLoop()
+    }
+
     fun startSyncLoop() {
         loop?.cancel()
         loop = scope.launch {
+            var quiet = 0
             while (isActive && session != null) {
-                val outbox = _state.value.sending
-                val pending = call { it.wait(if (outbox) 5u else 25u) } ?: false
-                if (pending || outbox) syncNow() else tick()
+                try {
+                    val outbox = _state.value.sending
+                    // null: the long poll failed (network, server): sync anyway
+                    // after a pause, so one bad poll never stops receiving.
+                    val pending = call { it.wait(if (outbox) 5u else 25u) }
+                    if (pending == null) delay(3_000)
+                    // Every few quiet rounds a full sync too, in case a wake-up was missed.
+                    if (pending != false || outbox || ++quiet >= 4) { quiet = 0; syncNow() } else tick()
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // A bug in handling one event must not end receiving for good.
+                    System.err.println("tree: sync loop: $e")
+                    delay(3_000)
+                }
             }
         }
     }

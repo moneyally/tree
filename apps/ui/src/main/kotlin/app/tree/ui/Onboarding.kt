@@ -174,9 +174,9 @@ private fun CreateAccount(model: AppModel, platform: TreePlatform, onBack: () ->
                 else t("상대에게 보일 이름과, 이 기기를 잠글 문장을 정해 주세요.", "Choose the name others see, and a passphrase that locks this device."),
                 style = MaterialTheme.typography.bodyMedium, color = extra.muted,
             )
-            OutlinedTextField(name, { name = it }, label = { Text(t("이름", "Name")) }, singleLine = true, shape = RoundedCornerShape(16.dp), colors = fieldColors(), modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(name, { name = it }, placeholder = { Text(t("이름", "Name")) }, singleLine = true, shape = RoundedCornerShape(16.dp), colors = fieldColors(), modifier = Modifier.fillMaxWidth())
             OutlinedTextField(
-                pass, { pass = it }, label = { Text(t("기기 잠금 문장", "Device passphrase")) }, singleLine = true,
+                pass, { pass = it }, placeholder = { Text(t("기기 잠금 문장", "Device passphrase")) }, singleLine = true,
                 visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                 shape = RoundedCornerShape(16.dp), colors = fieldColors(), modifier = Modifier.fillMaxWidth(),
             )
@@ -185,7 +185,7 @@ private fun CreateAccount(model: AppModel, platform: TreePlatform, onBack: () ->
                 style = MaterialTheme.typography.bodySmall, color = extra.muted,
             )
             if (advanced) {
-                OutlinedTextField(server, { server = it }, label = { Text(t("서버 주소", "Server address")) }, singleLine = true, shape = RoundedCornerShape(16.dp), colors = fieldColors(), modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(server, { server = it }, placeholder = { Text(t("서버 주소", "Server address")) }, singleLine = true, shape = RoundedCornerShape(16.dp), colors = fieldColors(), modifier = Modifier.fillMaxWidth())
             } else {
                 QuietButton(t("고급: 서버 바꾸기", "Advanced: change server"), { advanced = true }, color = extra.muted)
             }
@@ -230,7 +230,7 @@ private fun Unlock(model: AppModel, platform: TreePlatform) {
         Spacer(Modifier.height(32.dp))
         Column(Modifier.widthIn(max = 420.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             OutlinedTextField(
-                pass, { pass = it }, label = { Text(t("기기 잠금 문장", "Device passphrase")) }, singleLine = true,
+                pass, { pass = it }, placeholder = { Text(t("기기 잠금 문장", "Device passphrase")) }, singleLine = true,
                 visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                 shape = RoundedCornerShape(16.dp), colors = fieldColors(), modifier = Modifier.fillMaxWidth(),
             )

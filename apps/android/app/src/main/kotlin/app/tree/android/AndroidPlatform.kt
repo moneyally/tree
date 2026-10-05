@@ -19,6 +19,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.lifecycleScope
 import app.tree.shared.AppModel
 import app.tree.shared.qr.CodeKind
 import app.tree.ui.AttachKind
@@ -189,5 +190,5 @@ class AndroidPlatform(private val activity: ComponentActivity, private val model
 }
 
 private fun ComponentActivity.lifecycleScopeLaunch(block: suspend kotlinx.coroutines.CoroutineScope.() -> Unit) {
-    androidx.lifecycle.lifecycleScope.launch(block = block)
+    lifecycleScope.launch(block = block)
 }

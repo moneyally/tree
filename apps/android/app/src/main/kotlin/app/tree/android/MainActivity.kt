@@ -9,6 +9,9 @@ import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import app.tree.ui.TreeNav
+import app.tree.ui.TreeUi
 import androidx.lifecycle.lifecycleScope
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -30,8 +33,8 @@ class MainActivity : ComponentActivity() {
         pendingLink = intent?.dataString
         val profile = app.profile
         val platform = AndroidPlatform(this, model, profile)
-        val nav = app.tree.ui.TreeNav()
-        androidx.activity.enableEdgeToEdge(this)
+        val nav = TreeNav()
+        enableEdgeToEdge()
         setContent {
             val state by model.state.collectAsState()
             // Screenshots and the recent-apps preview (APP_PROTOCOL.md 6.3).
@@ -60,7 +63,7 @@ class MainActivity : ComponentActivity() {
                 platform.Launchers()
                 // The system back button walks back through the app's screens.
                 androidx.activity.compose.BackHandler(enabled = nav.canPop) { nav.pop() }
-                app.tree.ui.TreeUi(model, platform, nav)
+                TreeUi(model, platform, nav)
             }
         }
     }

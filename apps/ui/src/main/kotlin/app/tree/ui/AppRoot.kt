@@ -101,6 +101,9 @@ fun TreeUi(model: AppModel, platform: TreePlatform, nav: TreeNav, dark: Boolean?
 
 @Composable
 private fun Signed(model: AppModel, platform: TreePlatform, nav: TreeNav, state: UiState) {
+    // Receiving runs whenever a profile is open. Started here, not by the
+    // sign-in screen: that screen's own coroutines end as it closes.
+    LaunchedEffect(Unit) { model.ensureSyncLoop() }
     // A device link in progress takes the whole screen until it ends.
     state.link?.let { LinkScreen(model, it, newDevice = false); return }
     val top = nav.top

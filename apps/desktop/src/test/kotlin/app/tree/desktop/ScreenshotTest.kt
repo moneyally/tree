@@ -147,6 +147,12 @@ class ScreenshotTest {
         shot("09-profile-dark", alice, pa, TreeNav().apply { tab = Tab.PROFILE }, dark = true)
         shot("10-contacts-dark", alice, pa, TreeNav().apply { tab = Tab.CONTACTS }, dark = true)
         shot("11-privacy-dark", alice, pa, TreeNav().apply { tab = Tab.SETTINGS; push(Route.Settings("privacy")) }, dark = true)
+        alice.gardener.greet()
+        alice.gardener.send("/newbot")
+        alice.gardener.send("hikeweather_bot")
+        shot("21-gardener-dark", alice, pa, TreeNav().apply { push(Route.Gardener) }, dark = true)
+        shot("22-gardener-light", alice, pa, TreeNav().apply { push(Route.Gardener) }, dark = false)
+        shot("23-chats-gardener", alice, pa, TreeNav(), dark = true)
 
         alice.openChat(g)
         shot("12-desktop-light", alice, DesktopPlatform(alice, scope), TreeNav().apply { push(Route.Chat(g)) }, dark = false, phone = false)

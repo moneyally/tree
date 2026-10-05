@@ -53,6 +53,7 @@ import androidx.compose.material.icons.rounded.Screenshot
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.SmartToy
+import androidx.compose.material.icons.rounded.Park
 import androidx.compose.material.icons.rounded.Storage
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.Visibility
@@ -175,7 +176,7 @@ fun SettingsHome(model: AppModel, platform: TreePlatform, nav: TreeNav, state: U
         }
         CardGroup {
             SettingsRow(t("공개 공간", "Public spaces"), t("누구나 보는 채널·그룹", "Channels and groups anyone can read"), Icons.Rounded.Public, TreeColors.TileOrange, onClick = { nav.push(Route.Public) })
-            SettingsRow(t("봇 만들기", "Bots"), t("내 프로그램이 답하는 계정", "Accounts your program answers for"), Icons.Rounded.SmartToy, TreeColors.TileBlue, onClick = { nav.push(Route.Bots) })
+            SettingsRow(t("정원사", "Gardener"), t("봇·스티커 팩 만들기", "Make bots and sticker packs"), Icons.Rounded.Park, TreeColors.TileGreen, onClick = { nav.push(Route.Gardener) })
             SettingsRow(t("고급: 모든 설정", "Advanced: all settings"), t("모든 기능의 적용/해제", "Apply/release every feature"), Icons.Rounded.Tune, TreeColors.TileGrey, onClick = { nav.push(Route.Settings("advanced")) })
         }
         Caption(t("Tree는 대화 내용을 서버에 남기지 않아요. 모든 비공개 대화는 끝단 암호화돼요.", "Tree keeps no chat content on its server. Every private chat is end-to-end encrypted."))

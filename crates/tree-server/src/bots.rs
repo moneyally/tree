@@ -162,6 +162,12 @@ pub fn normalise_username(name: &str) -> Result<String, &'static str> {
     if !n.ends_with("bot") {
         return Err("a bot's username ends with bot");
     }
+    // The apps' own helper (@gardenerbot, run inside the app) and names
+    // that would pass for Tree itself are nobody's to register.
+    let bare = n.replace('_', "");
+    if bare.contains("gardener") || bare.starts_with("tree") || bare.contains("official") {
+        return Err("this bot username is reserved");
+    }
     Ok(n)
 }
 
@@ -901,6 +907,11 @@ mod tests {
         for bad in ["bot", "abot", "weather", "9lifebot", "we-ather_bot", &format!("{}bot", "a".repeat(30))] {
             assert!(normalise_username(bad).is_err(), "{bad}");
         }
+        // The app's own helper and Tree-like names are reserved (no impersonation).
+        for reserved in ["gardenerbot", "Gardener_Bot", "the_gardener_bot", "treebot", "tree_news_bot", "officialbot", "tree_official_bot"] {
+            assert_eq!(normalise_username(reserved), Err("this bot username is reserved"), "{reserved}");
+        }
+        assert!(normalise_username("streetbot").is_ok(), "only names starting with tree");
         assert_eq!(username_hash("alice"), <[u8; 32]>::from(Sha256::digest(b"tree/username/v1alice")));
     }
 

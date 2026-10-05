@@ -243,6 +243,7 @@ private fun FindByName(model: AppModel, nav: TreeNav, onClose: () -> Unit) {
         confirmButton = {
             TextButton(onClick = {
                 scope.launch {
+                    if (name.trim().removePrefix("@").equals(app.tree.shared.Gardener.USERNAME, ignoreCase = true)) { onClose(); nav.push(Route.Gardener); return@launch }
                     val g = model.newChat() ?: return@launch
                     if (model.invite(g, "@" + name.trim().removePrefix("@"))) { onClose(); nav.push(Route.Chat(g)) }
                 }

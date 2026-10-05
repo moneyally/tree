@@ -80,6 +80,7 @@ fun ChatListScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state:
     val scope = rememberCoroutineScope()
     var searching by remember { mutableStateOf(false) }
     var query by remember { mutableStateOf("") }
+    val gardenerLines by model.gardener.lines.collectAsState()
     var fabMenu by remember { mutableStateOf(false) }
     var joinDialog by remember { mutableStateOf(false) }
     var channelDialog by remember { mutableStateOf(false) }
@@ -104,6 +105,7 @@ fun ChatListScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state:
                 FolderChips(model, state)
             }
             if (searching && query.isNotBlank()) {
+                if (gardenerMatches(query)) GardenerRow(model) { nav.push(Route.Gardener) }
                 SearchResults(model, nav, state, search.results)
                 return@Column
             }
@@ -132,6 +134,7 @@ fun ChatListScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state:
                         }
                     }
                 }
+                if (!state.showArchived && gardenerLines.isNotEmpty()) item(key = "gardener") { GardenerRow(model) { nav.push(Route.Gardener) } }
                 items(list, key = { it.id }) { c -> ChatRow(model, platform, nav, state, c) }
                 if (list.isEmpty() && requests.isEmpty()) {
                     item {
@@ -352,4 +355,29 @@ private fun JoinDialog(model: AppModel, onClose: () -> Unit) {
         confirmButton = { TextButton(onClick = { scope.launch { if (model.joinLink(link)) onClose() } }, enabled = link.isNotBlank()) { Text(t("참여", "Join"), fontWeight = FontWeight.SemiBold) } },
         dismissButton = { TextButton(onClick = onClose) { Text(t("취소", "Cancel")) } },
     )
+}
+
+/** Whether a search names the app's own helper. */
+internal fun gardenerMatches(q: String): Boolean {
+    val n = q.trim().removePrefix("@").lowercase()
+    return n.length >= 2 && ("gardenerbot".startsWith(n) || "정원사".startsWith(n) || "gardener".startsWith(n))
+}
+
+/** The helper as a chat-list row: last line and its time. */
+@Composable
+internal fun GardenerRow(model: AppModel, onClick: () -> Unit) {
+    val lines by model.gardener.lines.collectAsState()
+    val last = lines.lastOrNull()
+    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
+        GardenerAvatar(54.dp)
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.weight(1f)) { GardenerName(MaterialTheme.typography.titleSmall) }
+                if (last != null) Text(Format.clock(last.at), style = MaterialTheme.typography.labelSmall, color = extra.muted)
+            }
+            Text(last?.text?.lineSequence()?.firstOrNull() ?: ("@" + app.tree.shared.Gardener.USERNAME + " · " + t("봇", "bot")),
+                color = extra.muted, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+        }
+    }
 }

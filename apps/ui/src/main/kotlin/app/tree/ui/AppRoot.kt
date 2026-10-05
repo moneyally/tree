@@ -70,7 +70,7 @@ sealed class Route {
     data class Comments(val chat: String, val post: String) : Route()
     data object Public : Route()
     data class PublicSpace(val id: String) : Route()
-    data object Bots : Route()
+    data object Gardener : Route()
 }
 
 enum class Tab(val ko: String, val en: String, val on: ImageVector, val off: ImageVector) {
@@ -148,7 +148,7 @@ private fun Signed(model: AppModel, platform: TreePlatform, nav: TreeNav, state:
             ?: LaunchedEffect(top) { nav.pop() }
         is Route.Public -> PublicScreen(model, nav, state)
         is Route.PublicSpace -> PublicSpaceScreen(model, nav, state, top.id)
-        is Route.Bots -> BotsScreen(model, nav, state, platform)
+        is Route.Gardener -> GardenerScreen(model, platform, nav)
         is Route.NewGroup -> NewGroupScreen(model, nav, state)
         is Route.GroupAdmin -> state.chats.firstOrNull { it.id == top.chat }?.let { GroupAdminScreen(model, nav, state, it, top.page) }
             ?: LaunchedEffect(top) { nav.pop() }

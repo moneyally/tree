@@ -253,7 +253,7 @@ fun ChatScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state: UiS
             ) {
                 Composer(model, platform, state, media, chat, replyTo, byId, onEdit = { once ->
                     platform.pickPhotoToEdit { r, n -> editing = Triple(r, n, once) }
-                }) { replyTo = null }
+                }, onGardener = { nav.push(Route.Gardener) }) { replyTo = null }
             }
         }
     }
@@ -635,7 +635,7 @@ private fun StickerImage(model: AppModel, platform: TreePlatform, pack: String, 
 /** The floating composer: emoji and stickers, the field, attach, send. */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun Composer(model: AppModel, platform: TreePlatform, state: UiState, media: RichState, chat: Chat, replyTo: Message?, byId: Map<String, Message>, onEdit: (Boolean) -> Unit, clearReply: () -> Unit) {
+private fun Composer(model: AppModel, platform: TreePlatform, state: UiState, media: RichState, chat: Chat, replyTo: Message?, byId: Map<String, Message>, onEdit: (Boolean) -> Unit, onGardener: () -> Unit, clearReply: () -> Unit) {
     val scope = rememberCoroutineScope()
     var text by remember(chat.id) { mutableStateOf(chat.draft ?: "") }
     var attach by remember { mutableStateOf(false) }
@@ -738,7 +738,7 @@ private fun Composer(model: AppModel, platform: TreePlatform, state: UiState, me
                     }
                 }
             }
-            if (panel) StickerPanel(model, platform, media, chat) { e -> text += e }
+            if (panel) StickerPanel(model, platform, media, chat, onGardener) { e -> text += e }
             scheduling?.let { v -> ScheduleDialog(model, chat, v) { ok -> scheduling = null; if (ok) { text = ""; scope.launch { model.saveDraft(chat.id, "") } } } }
             if (attach) {
                 HorizontalDivider(color = extra.divider)
@@ -750,7 +750,7 @@ private fun Composer(model: AppModel, platform: TreePlatform, state: UiState, me
 
 /** Emoji to type, and the installed sticker packs (a recycling grid: only what is on screen is held). */
 @Composable
-private fun StickerPanel(model: AppModel, platform: TreePlatform, media: RichState, chat: Chat, onEmoji: (String) -> Unit) {
+private fun StickerPanel(model: AppModel, platform: TreePlatform, media: RichState, chat: Chat, onGardener: () -> Unit, onEmoji: (String) -> Unit) {
     val scope = rememberCoroutineScope()
     val packs = media.packs.filter { !it.emojiPack }
     // Tabs: emoji, GIF (when the server relays them), each pack, then managing packs.
@@ -771,7 +771,11 @@ private fun StickerPanel(model: AppModel, platform: TreePlatform, media: RichSta
                 }
             }
             "gif" -> GifTab(model, platform, media, chat)
-            "packs" -> PacksTab(model, packs)
+            "packs" -> Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                GardenerAvatar(56.dp)
+                Text(t("스티커 팩은 정원사에게 만들거나 링크로 추가해요.", "Make sticker packs or add one by link with the Gardener."), color = extra.muted, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                PillButton(t("정원사에게 가기", "Open the Gardener"), onGardener)
+            }
             else -> {
                 val p = packs.firstOrNull { it.id == tab }
                 if (p != null) LazyVerticalGrid(GridCells.Adaptive(84.dp), Modifier.fillMaxSize(), contentPadding = PaddingValues(8.dp)) {
@@ -802,26 +806,6 @@ private fun GifTab(model: AppModel, platform: TreePlatform, media: RichState, ch
                     .clickable { scope.launch { model.rich.sendGif(chat.id, g) } }) {
                     img?.let { Image(it, g.title, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) }
                 }
-            }
-        }
-    }
-}
-
-/** Installed packs (remove) and adding one by its link. */
-@Composable
-private fun PacksTab(model: AppModel, packs: List<uniffi.tree_ffi.Pack>) {
-    val scope = rememberCoroutineScope()
-    var link by remember { mutableStateOf("") }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            androidx.compose.material3.OutlinedTextField(link, { link = it }, placeholder = { Text(t("스티커 팩 링크", "Sticker pack link")) }, singleLine = true, shape = RoundedCornerShape(14.dp), modifier = Modifier.weight(1f))
-            androidx.compose.material3.TextButton(onClick = { scope.launch { if (model.rich.installPack(link)) { link = ""; model.notice(t("팩을 추가했어요", "Pack added")) } } }, enabled = link.isNotBlank()) { Text(t("추가", "Add")) }
-        }
-        packs.forEach { p ->
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text(p.title, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
-                Text(t("${p.items.size}개", "${p.items.size}"), color = extra.muted, style = MaterialTheme.typography.bodySmall)
-                androidx.compose.material3.TextButton(onClick = { scope.launch { model.rich.removePack(p.id) } }) { Text(t("삭제", "Remove"), color = extra.danger) }
             }
         }
     }

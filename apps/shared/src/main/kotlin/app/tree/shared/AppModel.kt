@@ -196,6 +196,9 @@ class AppModel(
     /** App lock (PIN, biometric), search, push wake-ups, notifications (DeviceSafety.kt). */
     val device = DeviceSafety(this)
 
+    /** @gardenerbot, the in-app helper for bots and sticker packs. */
+    val gardener = Gardener(this)
+
     internal fun showError(e: TreeException) = _state.update { it.copy(error = describe(e)) }
 
     internal fun countNotification() = _state.update { it.copy(notified = it.notified + 1) }

@@ -54,21 +54,14 @@ import app.tree.shared.AppModel
 import app.tree.shared.Chat
 import app.tree.shared.UiState
 import app.tree.shared.commentOn
-import app.tree.shared.createBot
 import app.tree.shared.createPublic
-import app.tree.shared.deleteBot
-import app.tree.shared.dismissToken
 import app.tree.shared.joinPublic
 import app.tree.shared.leavePublic
-import app.tree.shared.loadBots
 import app.tree.shared.loadPublic
 import app.tree.shared.openPublic
 import app.tree.shared.postPublic
 import app.tree.shared.pressButton
-import app.tree.shared.revokeBotToken
-import app.tree.shared.rotateBotToken
 import app.tree.shared.searchPublic
-import app.tree.shared.setBotProfile
 import kotlinx.coroutines.launch
 import uniffi.tree_ffi.Message
 import uniffi.tree_ffi.PublicPostInfo
@@ -290,79 +283,5 @@ private fun PostCard(p: PublicPostInfo, s: PublicSpaceInfo?) {
             Text(Format.stamp(p.createdAt) + if (p.edited) t(" · 수정됨", " · edited") else "", color = extra.muted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
             if (p.comments > 0u) Text(t("댓글 ${p.comments}", "${p.comments} comments"), color = extra.muted, style = MaterialTheme.typography.bodySmall)
         }
-    }
-}
-
-// --- bots ------------------------------------------------------------------
-
-/** The bot factory: this account's bots, their token, profile; making a new one. */
-@Composable
-fun BotsScreen(model: AppModel, nav: TreeNav, state: UiState, platform: TreePlatform) {
-    val scope = rememberCoroutineScope()
-    var creating by remember { mutableStateOf(false) }
-    var editing by remember { mutableStateOf<uniffi.tree_ffi.MyBot?>(null) }
-    LaunchedEffect(Unit) { model.loadBots() }
-    Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
-        BackHeader(t("봇 만들기", "Bots"), { nav.pop() }) {
-            IconButton(onClick = { creating = true }) { Icon(Icons.Rounded.Add, t("새 봇", "New bot")) }
-        }
-        LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(bottom = 24.dp)) {
-            if (state.bots.mine.isEmpty()) item { EmptyState(Icons.Rounded.SmartToy, t("만든 봇이 없어요", "No bots yet"), t("봇은 내 서버 프로그램이 대신 답하는 계정이에요.", "A bot is an account your own program answers for.")) }
-            else item {
-                CardGroup {
-                    state.bots.mine.forEach { b ->
-                        SettingsRow("@" + b.bot.username,
-                            (if (b.tokenActive) t("토큰 켜짐", "Token on") else t("토큰 꺼짐", "Token off")) + " · " + t("연결 ${b.gatewayDevices}", "${b.gatewayDevices} gateways") + if (b.reportsOpen > 0u) t(" · 신고 ${b.reportsOpen}", " · ${b.reportsOpen} reports") else "",
-                            Icons.Rounded.SmartToy, TreeColors.TileBlue, onClick = { editing = b })
-                    }
-                }
-            }
-            item { Caption(t("봇을 운영하는 사람은 봇이 받은 메시지를 읽을 수 있어요. 그룹에서는 기본적으로 봇을 부른 메시지만 받아요.", "Whoever runs a bot reads what it is sent. In groups it gets only messages addressed to it by default.")) }
-        }
-    }
-    if (creating) {
-        var name by remember { mutableStateOf("") }
-        AlertDialog(
-            onDismissRequest = { creating = false },
-            title = { Text(t("새 봇", "New bot")) },
-            text = { OutlinedTextField(name, { name = it.take(32) }, placeholder = { Text(t("아이디 (bot으로 끝나야 해요)", "Username (ends in bot)")) }, singleLine = true, shape = RoundedCornerShape(14.dp)) },
-            confirmButton = { TextButton(onClick = { creating = false; scope.launch { model.createBot(name) } }, enabled = name.isNotBlank()) { Text(t("만들기", "Create"), fontWeight = FontWeight.SemiBold) } },
-            dismissButton = { TextButton(onClick = { creating = false }) { Text(t("취소", "Cancel")) } },
-        )
-    }
-    state.bots.token?.let { (account, token) ->
-        AlertDialog(
-            onDismissRequest = {},
-            title = { Text(t("봇 토큰", "Bot token")) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text(t("지금 한 번만 보여요. 봇 게이트웨이에만 넣고 누구에게도 주지 마세요.", "Shown only now. Put it into your bot gateway only; never give it to anyone."), color = extra.warning)
-                    Text(token, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall, modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(extra.card).padding(10.dp))
-                }
-            },
-            confirmButton = { TextButton(onClick = { platform.copy(token); model.dismissToken() }) { Text(t("복사하고 닫기", "Copy and close"), fontWeight = FontWeight.SemiBold) } },
-            dismissButton = { TextButton(onClick = { model.dismissToken() }) { Text(t("닫기", "Close")) } },
-        )
-    }
-    editing?.let { b ->
-        var about by remember(b) { mutableStateOf(b.bot.description) }
-        var commands by remember(b) { mutableStateOf(b.bot.commands.joinToString("\n") { "/${it.command} ${it.description}" }) }
-        AlertDialog(
-            onDismissRequest = { editing = null },
-            title = { Text("@" + b.bot.username) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(about, { about = it }, placeholder = { Text(t("소개", "About")) }, shape = RoundedCornerShape(14.dp))
-                    OutlinedTextField(commands, { commands = it }, placeholder = { Text("/start 시작하기") }, shape = RoundedCornerShape(14.dp), minLines = 3)
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        TextButton(onClick = { editing = null; scope.launch { model.rotateBotToken(b.bot.account) } }) { Icon(Icons.Rounded.Key, null); Spacer(Modifier.width(4.dp)); Text(t("새 토큰", "New token")) }
-                        if (b.tokenActive) TextButton(onClick = { editing = null; scope.launch { model.revokeBotToken(b.bot.account) } }) { Text(t("토큰 끄기", "Revoke"), color = extra.danger) }
-                    }
-                    TextButton(onClick = { editing = null; scope.launch { model.deleteBot(b.bot.account) } }) { Text(t("봇 삭제", "Delete bot"), color = extra.danger) }
-                }
-            },
-            confirmButton = { TextButton(onClick = { editing = null; scope.launch { model.setBotProfile(b.bot.account, about, commands) } }) { Text(t("저장", "Save"), fontWeight = FontWeight.SemiBold) } },
-            dismissButton = { TextButton(onClick = { editing = null }) { Text(t("닫기", "Close")) } },
-        )
     }
 }

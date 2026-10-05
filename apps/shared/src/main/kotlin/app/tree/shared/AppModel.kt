@@ -293,6 +293,8 @@ class AppModel(
         loop?.cancel()
         loop = scope.launch {
             var quiet = 0
+            // What arrived while the app was closed shows at once, not after the first long poll.
+            try { syncNow() } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { System.err.println("tree: first sync: $e") }
             while (isActive && session != null) {
                 try {
                     val outbox = _state.value.sending

@@ -34,6 +34,30 @@ class SyncLoopTest {
         m.stop()
     }
 
+    /** Opening a profile shows what waited at once: the loop starts with a sync, not a 25 s long poll. */
+    @Test
+    fun loopStartsWithASync() = runBlocking {
+        val dir = Files.createTempDirectory("tree-loop3").toString()
+        val alice = AppModel(this, Dispatchers.IO)
+        val bob = AppModel(this, Dispatchers.IO)
+        alice.createAccount("$dir/a.db", "pw", "A", url, 8u)
+        bob.createAccount("$dir/b.db", "pw", "B", url, 8u)
+        val g = alice.newChat()!!
+        alice.invite(g, bob.state.value.account)
+        alice.stop()
+        // Bob's invitation and message wait on the server; Alice's list does not know them yet.
+        bob.syncNow(); bob.accept(g); bob.send(g, "waiting")
+        val fresh = AppModel(this, Dispatchers.IO)
+        kotlin.test.assertTrue(fresh.openProfile("$dir/a.db", "pw"))
+        fresh.startSyncLoop()
+        val got = withTimeoutOrNull(8_000) {
+            while (fresh.state.value.chats.firstOrNull { it.id == g }?.last?.text != "waiting") delay(100)
+            true
+        }
+        assertNotNull(got, "shown within seconds, not after a long poll")
+        fresh.stop(); bob.stop()
+    }
+
     @Test
     fun loopReceives() = runBlocking {
         val dir = Files.createTempDirectory("tree-loop").toString()

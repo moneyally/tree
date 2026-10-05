@@ -7,6 +7,9 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Biometric app unlock (user.app_lock = bio). -->
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+    <!-- Scanning QR codes (device linking, adding friends); asked at runtime. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
     <!-- Finding push distributor apps (open distributor protocol). -->
     <queries>
         <intent>

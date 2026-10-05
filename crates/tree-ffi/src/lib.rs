@@ -1109,6 +1109,11 @@ impl TreeSession {
         Ok(self.s().note_to_self()?.map(hex::encode))
     }
 
+    /// The notes chat if it exists (not created here), or none.
+    pub fn notes_chat(&self) -> R<Option<String>> {
+        Ok(self.s().notes_chat()?.map(hex::encode))
+    }
+
     /// None while `user.stranger_labels` is released (show no labels).
     pub fn stranger_labels(&self, account: String) -> R<Option<Labels>> {
         let l = self.s().stranger_labels(&account)?;

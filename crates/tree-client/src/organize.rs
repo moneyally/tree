@@ -287,6 +287,15 @@ impl Session {
         Ok(Some(g))
     }
 
+    /// The notes chat if it exists, without creating it (apps list it on
+    /// its own row, not among the chats). `None` while hidden.
+    pub fn notes_chat(&self) -> Result<Option<Vec<u8>>, Error> {
+        if !self.is_applied("user.note_to_self")? {
+            return Ok(None);
+        }
+        Ok(self.client.app_data(K_NOTE)?)
+    }
+
     // --- stranger labels ---
 
     /// Labels for a person (by account) as the user knows them; `None`

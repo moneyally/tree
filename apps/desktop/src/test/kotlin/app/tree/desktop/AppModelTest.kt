@@ -1,6 +1,9 @@
 package app.tree.desktop
 
 import app.tree.shared.*
+import app.tree.shared.qr.CodeKind
+import app.tree.shared.qr.QrCode
+import app.tree.shared.qr.QrMatrix
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
@@ -8,12 +11,21 @@ import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeout
 import kotlin.test.assertTrue
 
 /** The screens' model against a real server (scripts/desktop_test.sh). */
 class AppModelTest {
     private val url = System.getenv("TREE_URL")!!
     private val dir = Files.createTempDirectory("tree-desktop").toString()
+
+    /** What a camera would read from the QR code on the screen. */
+    private fun scan(m: QrMatrix?): String {
+        val q = assertNotNull(m, "a QR code is shown")
+        return assertNotNull(QrCode.decode(QrCode.luminance(q, 4), q.size * 4, q.size * 4))
+    }
 
     @Test
     fun stringsExistInBothLanguages() {
@@ -44,7 +56,20 @@ class AppModelTest {
         assertTrue(alice.setFeature("user.username_link", true))
         val link = assertNotNull(alice.state.value.usernameLink)
         assertTrue(link.startsWith("tree://u/"))
-        assertEquals(alice.state.value.account, bob.addByLink(link))
+        // bob scans her QR code: the code is the link text exactly.
+        val scanned = scan(alice.state.value.usernameQr)
+        assertEquals(link, scanned)
+        // On the device-link scanner a friend code does nothing; anything
+        // that is not a Tree code is never acted on.
+        assertEquals(ScanOutcome.WRONG_KIND, bob.useScanned(scanned, CodeKind.DEVICE_LINK))
+        assertEquals(ScanOutcome.NOT_TREE, bob.useScanned("https://example.com/", CodeKind.USERNAME))
+        assertEquals(ScanOutcome.ACCEPTED, bob.useScanned(scanned, CodeKind.USERNAME))
+        assertEquals(Strings.t("qr_friend_added"), bob.state.value.notice)
+        bob.clearMessages()
+        // A reset link has a new QR code.
+        assertNotNull(alice.resetUsernameLink())
+        assertTrue(alice.state.value.usernameLink != link)
+        assertEquals(alice.state.value.usernameLink, scan(alice.state.value.usernameQr))
         val g1 = assertNotNull(alice.newChat())
         val g2 = assertNotNull(alice.newChat())
         val g3 = assertNotNull(alice.newChat())
@@ -144,14 +169,26 @@ class AppModelTest {
         val g = assertNotNull(phone.newChat())
         val desk = AppModel(this, Dispatchers.IO)
         val text = assertNotNull(desk.startLinkNewDevice("$dir/desk.db", "desk pass", "carol", url))
-        assertEquals("waiting", phone.scanLink(text))
+        // The new device shows its link as a QR code; the phone's camera reads the same text.
+        assertEquals(text, scan(desk.state.value.link?.qr))
+        assertEquals(ScanOutcome.NOT_TREE, phone.useScanned("https://example.com/$text", CodeKind.DEVICE_LINK))
+        assertEquals(ScanOutcome.WRONG_KIND, phone.useScanned(text, CodeKind.USERNAME))
+        assertNull(phone.state.value.link, "nothing started")
+        // The phone scans it (its watcher polls in the background, as on screen).
+        assertEquals(ScanOutcome.ACCEPTED, phone.useScanned(scan(desk.state.value.link?.qr), CodeKind.DEVICE_LINK))
+        assertNull(phone.state.value.link?.qr, "the existing device shows no QR code")
         assertEquals("code", desk.pollNewDevice())
-        assertEquals("code", phone.linkStatus())
+        assertEquals(text, scan(desk.state.value.link?.qr), "the QR code stays the same while the code is shown")
+        withTimeout(20_000) { while (phone.state.value.link?.state != "code") delay(100) }
         val code = assertNotNull(desk.state.value.link?.code)
         assertEquals(code, phone.state.value.link?.code, "the same digits on both screens")
+        assertTrue(Regex("[0-9]{3} [0-9]{3}").matches(code))
         assertEquals("confirmed", desk.confirmNewDevice(true))
         assertEquals("linked", phone.confirmLink(true))
         assertEquals("linked", desk.pollNewDevice())
+        // The watcher stops by itself and reports nothing wrong.
+        delay(1500)
+        assertNull(phone.state.value.error)
         assertTrue(desk.state.value.signedIn)
         assertEquals(phone.state.value.account, desk.state.value.account)
         desk.syncNow()
@@ -207,6 +244,11 @@ class AppModelTest {
         // Notes and folders.
         val notes = assertNotNull(bob.openNotes())
         assertEquals(notes, bob.openNotes(), "one notes chat")
+        // The notes chat has its own row: never listed among the chats, and
+        // titled as notes (not by its id), also after a fresh refresh.
+        bob.refresh()
+        assertTrue(bob.visibleChats(bob.state.value).none { it.id == notes }, "notes not listed twice")
+        assertEquals(Strings.t("notes"), bob.state.value.chats.first { it.id == notes }.title)
         bob.openChat(g)
         assertTrue(bob.createFolder("가족"))
         assertTrue(bob.fileChat("가족", g))

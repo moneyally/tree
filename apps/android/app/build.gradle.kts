@@ -53,4 +53,12 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.10.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("net.java.dev.jna:jna:5.17.0@aar")
+    // QR codes: made and read with ZXing core (shared code); the camera
+    // preview and frames come from CameraX. No on-device ML service.
+    implementation("com.google.zxing:core:3.5.4")
+    implementation("androidx.camera:camera-core:1.4.2")
+    implementation("androidx.camera:camera-camera2:1.4.2")
+    implementation("androidx.camera:camera-lifecycle:1.4.2")
+    implementation("androidx.camera:camera-view:1.4.2")
+    testImplementation("junit:junit:4.13.2")
 }

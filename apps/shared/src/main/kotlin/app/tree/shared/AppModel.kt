@@ -11,6 +11,11 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.withLock
+import app.tree.shared.qr.CodeKind
+import app.tree.shared.qr.QrCode
+import app.tree.shared.qr.QrMatrix
+import app.tree.shared.qr.TreeCodes
 import uniffi.tree_ffi.Attachment
 import uniffi.tree_ffi.Feature
 import uniffi.tree_ffi.LinkState
@@ -51,15 +56,19 @@ data class Chat(
 
 /**
  * A device link in progress on this device. On the new device `text` is
- * what it shows (QR code content); on both, `code` is what the person
- * compares before confirming.
+ * what it shows and `qr` its QR code (the same text, exactly); on both,
+ * `code` is what the person compares before confirming.
  */
 data class LinkUi(
     val text: String? = null,
     val state: String = "waiting",
     val code: String? = null,
     val reason: String? = null,
+    val qr: QrMatrix? = null,
 )
+
+/** What became of a scanned or pasted code ([AppModel.useScanned]). */
+enum class ScanOutcome { ACCEPTED, NOT_TREE, WRONG_KIND, FAILED }
 
 data class UiState(
     val signedIn: Boolean = false,
@@ -99,6 +108,8 @@ data class UiState(
     val notified: Int = 0,
     /** This account's username link (user.username_link), also shown as a QR code. */
     val usernameLink: String? = null,
+    /** The QR code of [usernameLink] (the link text, exactly). */
+    val usernameQr: QrMatrix? = null,
     /** A device link in progress (either side), and this account's devices. */
     val link: LinkUi? = null,
     val devices: List<String> = emptyList(),
@@ -350,6 +361,7 @@ class AppModel(
     }
 
     suspend fun refresh() {
+        val notesId = call { it.notesChat() }
         val chats = call { s ->
             // In list order: pinned first, then by last activity.
             s.chatList().map { c ->
@@ -367,7 +379,7 @@ class AppModel(
                     )
                 } ?: emptyList()
                 Chat(
-                    g, info.name ?: names.joinToString(", ").ifEmpty { g.take(8) }, info.status, info.requestFrom,
+                    g, if (g == notesId) Strings.t("notes") else info.name ?: names.joinToString(", ").ifEmpty { g.take(8) }, info.status, info.requestFrom,
                     c.unread.toInt(), c.pinned, c.archived, c.muted, c.mutedUntil, c.markedUnread, c.draft, labels, info.channel,
                 )
             }
@@ -394,6 +406,7 @@ class AppModel(
                 chats = chats.map { c -> if (c.id == open) c.copy(unread = 0, markedUnread = false) else c },
                 messages = messages, names = names, members = members, chatFeatures = chatFeatures,
                 screenshotBlocked = blocked, folders = folders, readMine = readMine, sending = sending,
+                notes = notesId ?: it.notes,
             )
         }
         loadRich()
@@ -425,7 +438,8 @@ class AppModel(
      * [UiState.showArchived].
      */
     fun visibleChats(s: UiState): List<Chat> {
-        val list = s.chats.filter { it.archived == s.showArchived }
+        // The notes chat has its own row above the list.
+        val list = s.chats.filter { it.archived == s.showArchived && it.id != s.notes }
         val f = s.folder ?: return list
         val ids = s.folders.firstOrNull { it.name == f }?.chats?.toSet() ?: return list
         return list.filter { it.id in ids }
@@ -462,7 +476,7 @@ class AppModel(
 
     suspend fun loadUsernameLink() {
         val l = call { it.usernameLink() }
-        _state.update { it.copy(usernameLink = l) }
+        _state.update { it.copy(usernameLink = l, usernameQr = l?.let(QrCode::encode)) }
     }
 
     /** A new username link; the old one stops working. */
@@ -476,6 +490,29 @@ class AppModel(
      */
     suspend fun addByLink(link: String): String? =
         call { it.addContactByLink(link.trim()) }?.also { account -> call { it.confirmContact(account) } }
+
+    /**
+     * A code the camera read or the person pasted, on a screen that expects
+     * [want] (a device link or a username link). Only Tree's two link
+     * kinds are acted on; anything else is never opened (NOT_TREE), and a
+     * Tree code of the other kind is refused (WRONG_KIND) so that scanning
+     * on the wrong screen does nothing unexpected. A device link starts the
+     * link (the code appears on both devices; nothing links before both are
+     * confirmed); a username link adds the person.
+     */
+    suspend fun useScanned(raw: String, want: CodeKind): ScanOutcome {
+        val code = TreeCodes.parse(raw)
+        return when {
+            code.kind == CodeKind.NOT_TREE -> ScanOutcome.NOT_TREE
+            code.kind != want -> ScanOutcome.WRONG_KIND
+            code.kind == CodeKind.DEVICE_LINK ->
+                if (scanLink(code.text) != null) ScanOutcome.ACCEPTED.also { watchLink() } else ScanOutcome.FAILED
+            else -> if (addByLink(code.text) != null) {
+                _state.update { it.copy(notice = Strings.t("qr_friend_added")) }
+                ScanOutcome.ACCEPTED
+            } else ScanOutcome.FAILED
+        }
+    }
 
     suspend fun typing(group: String, on: Boolean) {
         call { it.setTyping(group, on) }
@@ -603,7 +640,11 @@ class AppModel(
     private var newDevice: TreeLink? = null
 
     private fun show(l: LinkState, text: String? = _state.value.link?.text) =
-        _state.update { it.copy(link = LinkUi(text, l.state, l.code, l.reason)) }
+        _state.update {
+            val old = it.link
+            val qr = if (text == null) null else if (old?.text == text && old.qr != null) old.qr else QrCode.encode(text)
+            it.copy(link = LinkUi(text, l.state, l.code, l.reason, qr))
+        }
 
     private suspend fun <T> linkCall(block: () -> T): T? = try {
         withContext(io) { block() }
@@ -618,7 +659,7 @@ class AppModel(
         newDevice = l
         profilePath = path
         val text = linkCall { l.link() } ?: return null
-        _state.update { it.copy(link = LinkUi(text)) }
+        _state.update { it.copy(link = LinkUi(text, qr = QrCode.encode(text))) }
         return text
     }
 
@@ -648,28 +689,47 @@ class AppModel(
     }
 
     /** Existing device: answers a new device's link (scanned or pasted). */
-    suspend fun scanLink(text: String): String? = call { it.scanLink(text.trim()) }?.also { show(it, null) }?.state
+    suspend fun scanLink(text: String): String? =
+        linkLock.withLock { call { it.scanLink(text.trim()) }?.also { show(it, null) }?.state }
+
+    /**
+     * Existing device: each link call and the screen state it leads to
+     * happen together, so a background poll never sees the link gone
+     * (ended by the person's own answer) before the screen says so.
+     */
+    private val linkLock = kotlinx.coroutines.sync.Mutex()
 
     /** Existing device: checks for progress (the code appears, then "linked"). */
-    suspend fun linkStatus(): String? {
-        val st = call { it.linkStatus() } ?: return null
+    suspend fun linkStatus(): String? = linkLock.withLock {
+        val s = session ?: return@withLock null
+        val st = try {
+            withContext(io) { s.linkStatus() }
+        } catch (e: TreeException) {
+            // The person's own answer already ended the link (a poll that
+            // waited behind it finds no link open): nothing went wrong.
+            _state.value.link?.state?.takeIf { it in ENDED }?.let { return@withLock it }
+            _state.update { it.copy(error = describe(e)) }
+            return@withLock null
+        }
         show(st, null)
         if (st.state == "linked") loadDevices()
-        return st.state
+        st.state
     }
 
     /** Existing device: the person compared the codes. */
-    suspend fun confirmLink(matches: Boolean): String? {
-        val st = call { it.confirmLink(matches) } ?: return null
+    suspend fun confirmLink(matches: Boolean): String? = linkLock.withLock {
+        val st = call { it.confirmLink(matches) } ?: return@withLock null
         show(st, null)
         if (st.state == "linked") loadDevices()
-        return st.state
+        st.state
     }
 
     /** Polls whichever side is linking until it is linked or cancelled. */
     fun watchLink(onLinked: () -> Unit = {}) {
-        scope.launch {
+        linkWatch?.cancel()
+        linkWatch = scope.launch {
             while (isActive) {
+                if (newDevice == null && _state.value.link?.state in ENDED) break
                 val st = if (newDevice != null) pollNewDevice() else if (session != null) linkStatus() else null
                 if (st == "linked") onLinked()
                 if (st == null || st == "linked" || st == "cancelled") break
@@ -678,7 +738,17 @@ class AppModel(
         }
     }
 
-    fun closeLink() = _state.update { it.copy(link = null) }
+    private var linkWatch: Job? = null
+
+    /**
+     * Hides the link and stops watching it. Nothing is confirmed by this: a
+     * link nobody confirmed links nothing and expires on the server.
+     */
+    fun closeLink() {
+        linkWatch?.cancel()
+        linkWatch = null
+        _state.update { it.copy(link = null) }
+    }
 
     suspend fun loadDevices() {
         val d = call { it.devices() } ?: return
@@ -691,6 +761,15 @@ class AppModel(
     fun clearMessages() = _state.update { it.copy(error = null, notice = null) }
 
     companion object {
+        private val ENDED = setOf("linked", "cancelled")
+
+        /** The line a scanning screen shows for [o] (null: nothing to say). */
+        fun scanMessage(o: ScanOutcome, want: CodeKind): String? = when (o) {
+            ScanOutcome.NOT_TREE -> Strings.t("qr_not_tree")
+            ScanOutcome.WRONG_KIND -> Strings.t(if (want == CodeKind.DEVICE_LINK) "qr_wrong_device" else "qr_wrong_friend")
+            else -> null
+        }
+
         /** A file without details. */
         fun plainFile() = MediaOptions(viewOnce = false, voice = false, width = null, height = null, durationMs = null, thumbnail = null)
 

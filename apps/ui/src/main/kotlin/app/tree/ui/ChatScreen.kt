@@ -85,10 +85,12 @@ import app.tree.shared.pinChoices
 import app.tree.shared.pinMessage
 import app.tree.shared.unpinMessage
 import app.tree.shared.vote
+import app.tree.shared.closePoll
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.automirrored.rounded.Reply
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.EmojiEmotions
@@ -211,6 +213,7 @@ fun ChatScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state: UiS
             } else ChatTopBar(platform, nav, state, media, chat, isNotes, group, typers)
             if (group && !isNotes && (state.groups.topics.isNotEmpty() || state.groups.mayCreateTopics)) TopicBar(model, state, chat)
             if (state.rich.pins.isNotEmpty()) PinnedBar(state, listState, msgs)
+            LiveShareBar(model, platform, media, chat)
             if (chat.status == "request") RequestBanner(model, chat)
         }
 
@@ -729,31 +732,75 @@ private fun Composer(model: AppModel, platform: TreePlatform, state: UiState, me
 private fun StickerPanel(model: AppModel, platform: TreePlatform, media: RichState, chat: Chat, onEmoji: (String) -> Unit) {
     val scope = rememberCoroutineScope()
     val packs = media.packs.filter { !it.emojiPack }
-    var tab by remember { mutableStateOf(0) }
-    Column(Modifier.fillMaxWidth().height(290.dp)) {
+    // Tabs: emoji, GIF (when the server relays them), each pack, then managing packs.
+    val gif = media.relays.gif
+    var tab by remember { mutableStateOf("emoji") }
+    Column(Modifier.fillMaxWidth().height(300.dp)) {
         HorizontalDivider(color = extra.divider)
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            PanelTab(t("이모지", "Emoji"), tab == 0) { tab = 0 }
-            packs.forEachIndexed { i, p -> PanelTab(p.title, tab == i + 1) { tab = i + 1 } }
+            PanelTab(t("이모지", "Emoji"), tab == "emoji") { tab = "emoji" }
+            if (gif) PanelTab("GIF", tab == "gif") { tab = "gif" }
+            packs.forEach { p -> PanelTab(p.title, tab == p.id) { tab = p.id } }
+            PanelTab("+", tab == "packs") { tab = "packs" }
         }
-        if (tab == 0) {
-            LazyVerticalGrid(GridCells.Adaptive(48.dp), Modifier.fillMaxSize(), contentPadding = PaddingValues(8.dp)) {
+        when (tab) {
+            "emoji" -> LazyVerticalGrid(GridCells.Adaptive(48.dp), Modifier.fillMaxSize(), contentPadding = PaddingValues(8.dp)) {
                 items(QUICK_EMOJI.size) { i ->
                     Box(Modifier.size(48.dp).clip(CircleShape).clickable { onEmoji(QUICK_EMOJI[i]) }, contentAlignment = Alignment.Center) { Text(QUICK_EMOJI[i], fontSize = 26.sp) }
                 }
             }
-        } else {
-            val p = packs.getOrNull(tab - 1)
-            if (p == null) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text(t("스티커 팩이 없어요", "No sticker packs"), color = extra.muted) }
-            } else {
-                LazyVerticalGrid(GridCells.Adaptive(84.dp), Modifier.fillMaxSize(), contentPadding = PaddingValues(8.dp)) {
+            "gif" -> GifTab(model, platform, media, chat)
+            "packs" -> PacksTab(model, packs)
+            else -> {
+                val p = packs.firstOrNull { it.id == tab }
+                if (p != null) LazyVerticalGrid(GridCells.Adaptive(84.dp), Modifier.fillMaxSize(), contentPadding = PaddingValues(8.dp)) {
                     items(p.items.size, key = { "${p.id}:$it" }) { i ->
                         Box(Modifier.padding(4.dp).clip(RoundedCornerShape(14.dp)).clickable { scope.launch { model.rich.sendSticker(chat.id, p.id, i) } }.padding(4.dp)) {
                             StickerImage(model, platform, p.id, i, p.items[i].emoji, 72.dp)
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+/** GIF search through the server's relay; the pick is fetched by this device and sent encrypted. */
+@Composable
+private fun GifTab(model: AppModel, platform: TreePlatform, media: RichState, chat: Chat) {
+    val scope = rememberCoroutineScope()
+    var q by remember { mutableStateOf("") }
+    LaunchedEffect(q) { kotlinx.coroutines.delay(350); model.rich.searchGifs(q.ifBlank { "hello" }) }
+    Column {
+        SearchField(q, { q = it }, t("GIF 검색", "Search GIFs"))
+        LazyVerticalGrid(GridCells.Adaptive(110.dp), Modifier.fillMaxSize(), contentPadding = PaddingValues(8.dp)) {
+            items(media.gifs.size, key = { media.gifs[it].media }) { i ->
+                val g = media.gifs[i]
+                val img by rememberImage(platform, "gif:" + (g.preview ?: g.media), 240) { model.rich.gifPreview(g) }
+                Box(Modifier.padding(3.dp).height(90.dp).fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(extra.divider)
+                    .clickable { scope.launch { model.rich.sendGif(chat.id, g) } }) {
+                    img?.let { Image(it, g.title, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) }
+                }
+            }
+        }
+    }
+}
+
+/** Installed packs (remove) and adding one by its link. */
+@Composable
+private fun PacksTab(model: AppModel, packs: List<uniffi.tree_ffi.Pack>) {
+    val scope = rememberCoroutineScope()
+    var link by remember { mutableStateOf("") }
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            androidx.compose.material3.OutlinedTextField(link, { link = it }, placeholder = { Text(t("스티커 팩 링크", "Sticker pack link")) }, singleLine = true, shape = RoundedCornerShape(14.dp), modifier = Modifier.weight(1f))
+            androidx.compose.material3.TextButton(onClick = { scope.launch { if (model.rich.installPack(link)) { link = ""; model.notice(t("팩을 추가했어요", "Pack added")) } } }, enabled = link.isNotBlank()) { Text(t("추가", "Add")) }
+        }
+        packs.forEach { p ->
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(p.title, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+                Text(t("${p.items.size}개", "${p.items.size}"), color = extra.muted, style = MaterialTheme.typography.bodySmall)
+                androidx.compose.material3.TextButton(onClick = { scope.launch { model.rich.removePack(p.id) } }) { Text(t("삭제", "Remove"), color = extra.danger) }
             }
         }
     }
@@ -868,6 +915,11 @@ private fun PollContent(model: AppModel, group: String, p: uniffi.tree_ffi.PollI
                     Box(Modifier.fillMaxWidth(n.toFloat() / total).height(6.dp).clip(RoundedCornerShape(3.dp)).background(if (chosen) MaterialTheme.colorScheme.primary else textColor.copy(alpha = 0.45f)))
                 }
             }
+        }
+        // The one who asked can close it for everyone.
+        if (!p.closed && p.creator == model.session?.memberId()) {
+            Text(t("투표 마감", "Close poll"), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge,
+                modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable { scope.launch { model.closePoll(group, p.id) } }.padding(vertical = 4.dp))
         }
     }
 }

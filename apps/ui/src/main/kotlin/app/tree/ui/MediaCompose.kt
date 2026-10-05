@@ -72,6 +72,7 @@ import java.time.ZoneId
 fun AttachSheet(model: AppModel, platform: TreePlatform, state: UiState, chat: Chat, onClose: () -> Unit) {
     var poll by remember { mutableStateOf(false) }
     var event by remember { mutableStateOf(false) }
+    var place by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val allowed = { key: String -> state.chatFeatures.none { it.key == key && !it.applied } }
     val tiles = buildList {
@@ -80,13 +81,7 @@ fun AttachSheet(model: AppModel, platform: TreePlatform, state: UiState, chat: C
         if (allowed("chat.media")) add(Triple(Icons.Rounded.InsertDriveFile, t("파일", "File"), TreeColors.TileSky) to { platform.pickAndSend(chat.id, AttachKind.FILE); onClose() })
         if (allowed("chat.polls")) add(Triple(Icons.Rounded.BarChart, t("투표", "Poll"), TreeColors.TileAmber) to { poll = true })
         if (allowed("chat.events")) add(Triple(Icons.Rounded.Event, t("일정", "Event"), TreeColors.TileRed) to { event = true })
-        if (allowed("chat.location") && platform.hasLocation) add(Triple(Icons.Rounded.LocationOn, t("위치", "Location"), TreeColors.TileGreen) to {
-            platform.currentLocation { at ->
-                if (at == null) model.notice(t("위치를 알 수 없어요", "Location unavailable"))
-                else scope.launch { model.rich.sendLocation(chat.id, at.first, at.second, at.third) }
-                onClose()
-            }
-        })
+        if (allowed("chat.location") && platform.hasLocation) add(Triple(Icons.Rounded.LocationOn, t("위치", "Location"), TreeColors.TileGreen) to { place = true })
     }
     Column(Modifier.fillMaxWidth().padding(12.dp)) {
         tiles.chunked(4).forEach { row ->
@@ -110,6 +105,59 @@ fun AttachSheet(model: AppModel, platform: TreePlatform, state: UiState, chat: C
     }
     if (poll) PollDialog(model, chat) { poll = false; onClose() }
     if (event) EventDialog(model, chat) { event = false; onClose() }
+    if (place) PlaceDialog(model, platform, chat) { place = false; onClose() }
+}
+
+/** Send where I am now, or share it live for a while (updated while the app is open). */
+@Composable
+private fun PlaceDialog(model: AppModel, platform: TreePlatform, chat: Chat, onDone: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    fun withFix(then: suspend (Triple<Double, Double, Int?>) -> Unit) = platform.currentLocation { at ->
+        if (at == null) { model.notice(t("위치를 알 수 없어요", "Location unavailable")); onDone() }
+        else scope.launch { then(at); onDone() }
+    }
+    AlertDialog(
+        onDismissRequest = onDone,
+        title = { Text(t("위치 보내기", "Send location")) },
+        text = {
+            Column {
+                Text(t("지금 위치", "Current location"), style = MaterialTheme.typography.bodyLarge,
+                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable { withFix { model.rich.sendLocation(chat.id, it.first, it.second, it.third) } }.padding(vertical = 14.dp, horizontal = 6.dp))
+                model.rich.liveChoices().forEach { secs ->
+                    val label = if (secs < 3600) t("실시간 ${secs / 60}분", "Live for ${secs / 60} min") else t("실시간 ${secs / 3600}시간", "Live for ${secs / 3600} h")
+                    Text(label, style = MaterialTheme.typography.bodyLarge,
+                        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable { withFix { model.rich.startLive(chat.id, it.first, it.second, secs) } }.padding(vertical = 14.dp, horizontal = 6.dp))
+                }
+                Text(t("실시간 위치는 앱이 열려 있는 동안 갱신돼요.", "Live location updates while the app is open."), style = MaterialTheme.typography.bodySmall, color = extra.muted)
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDone) { Text(t("취소", "Cancel")) } },
+    )
+}
+
+/** While this device shares a live location in [chat]: a bar to stop it, and fresh fixes every 30 s. */
+@Composable
+fun LiveShareBar(model: AppModel, platform: TreePlatform, media: RichState, chat: Chat) {
+    val scope = rememberCoroutineScope()
+    val mine = media.sharing.filter { id -> media.places[id]?.live == true }
+    if (mine.isEmpty()) return
+    androidx.compose.runtime.LaunchedEffect(mine) {
+        while (true) {
+            kotlinx.coroutines.delay(30_000)
+            platform.currentLocation { at -> if (at != null) scope.launch { mine.forEach { model.rich.updateLive(chat.id, it, at.first, at.second) } } }
+        }
+    }
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 10.dp).clip(RoundedCornerShape(18.dp)).background(extra.floating).padding(horizontal = 14.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Rounded.LocationOn, null, tint = TreeColors.TileGreen, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(8.dp))
+        Text(t("내 위치를 실시간으로 공유 중", "Sharing your live location"), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+        Text(t("중지", "Stop"), color = extra.danger, style = MaterialTheme.typography.labelLarge,
+            modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable { scope.launch { mine.forEach { model.rich.stopLive(chat.id, it) } } }.padding(6.dp))
+    }
 }
 
 /** A new poll: question, 2 to 10 options, several answers, anonymous. */

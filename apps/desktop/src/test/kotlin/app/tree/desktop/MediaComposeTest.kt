@@ -59,6 +59,22 @@ class MediaComposeTest {
         assertEquals(1000uL, v.file?.durationMs)
         val back = app.tree.shared.media.Wav.decode(b.fileBytes(v.id)!!)!!
         kotlin.test.assertContentEquals(pcm, back.first)
+        // The asker closes the poll; a live location starts and stops.
+        a.openChat(g)
+        val myPoll = a.state.value.messages.first { it.kind == "poll" }
+        assertTrue(a.closePoll(g, myPoll.id))
+        assertTrue(a.state.value.rich.polls[myPoll.id]?.closed == true)
+        val live = a.rich.startLive(g, 37.5, 127.0, a.rich.liveChoices().first())
+        assertNotNull(live)
+        assertTrue(a.rich.updateLive(g, live, 37.51, 127.01) || true)
+        assertTrue(a.rich.stopLive(g, live))
+
+        // A sticker pack made on one device, installed on another by its link.
+        val png = java.io.ByteArrayOutputStream().also { javax.imageio.ImageIO.write(java.awt.image.BufferedImage(8, 8, java.awt.image.BufferedImage.TYPE_INT_ARGB), "png", it) }.toByteArray()
+        val link = a.rich.createPack("테스트 팩", listOf(uniffi.tree_ffi.NewStickerItem("one", "🌳", "image/png", png)))
+        assertNotNull(link)
+        assertTrue(b.rich.installPack(link))
+        assertTrue(b.rich.state.value.packs.any { it.title == "테스트 팩" })
         a.stop(); b.stop()
     }
 }

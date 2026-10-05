@@ -124,6 +124,9 @@ pub struct MessageMeta {
     pub silent: bool,
     /// For a `left` / `removed` line: the member's name when it went.
     pub name: Option<String>,
+    /// The text uses Tree markup (APP_PROTOCOL.md 1.1); only stored when
+    /// `chat.formatting` allowed it on arrival.
+    pub formatted: bool,
 }
 
 /// Reads [`MessageMeta`] from a stored message.
@@ -132,7 +135,7 @@ pub fn message_meta(m: &StoredMessage) -> MessageMeta {
         return MessageMeta::default();
     }
     let v: serde_json::Value = m.data.as_deref().and_then(|d| serde_json::from_slice(d).ok()).unwrap_or_default();
-    MessageMeta { silent: v["silent"] == true, name: v["name"].as_str().map(str::to_string) }
+    MessageMeta { silent: v["silent"] == true, name: v["name"].as_str().map(str::to_string), formatted: v["fmt"] == true }
 }
 
 #[derive(Default, Serialize, Deserialize)]

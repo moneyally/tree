@@ -92,7 +92,7 @@ class ScreenshotTest {
         bob.send(g, "저는 9시 전엔 힘들어요")
         carol.syncNow()
         carol.send(g, "🔥🔥")
-        carol.send(g, "저도 갈게요. 김밥 싸 갈게요")
+        carol.send(g, "저도 갈게요. **김밥** 싸 갈게요 @정원 _참치로요_", formatted = true)
         alice.syncNow()
         alice.openChat(g)
         val first = alice.state.value.messages.first { it.text?.startsWith("이번 주") == true }

@@ -102,6 +102,9 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.material.icons.automirrored.rounded.Forward
+import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.sp
@@ -127,6 +130,8 @@ fun ChatScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state: UiS
     // How many were unread when the chat opened: the "unread" line stays there while it is open.
     val unreadAtOpen = remember(chat.id) { chat.unread }
     var replyTo by remember(chat.id) { mutableStateOf<Message?>(null) }
+    var selected by remember(chat.id) { mutableStateOf(setOf<String>()) }
+    var forwarding by remember(chat.id) { mutableStateOf<List<String>?>(null) }
     var headerPx by remember { mutableStateOf(0) }
     var footerPx by remember { mutableStateOf(0) }
     val listState = rememberLazyListState()
@@ -137,6 +142,12 @@ fun ChatScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state: UiS
     LaunchedEffect(msgs.lastOrNull()?.id) {
         val last = msgs.lastOrNull() ?: return@LaunchedEffect
         if (listState.firstVisibleItemIndex <= 2 || last.sender == me) listState.animateScrollToItem(0)
+    }
+    // Back from search: show the message picked there.
+    LaunchedEffect(nav.focusMessage, msgs.size) {
+        val id = nav.focusMessage ?: return@LaunchedEffect
+        val idx = msgs.asReversed().indexOfFirst { it.id == id }
+        if (idx >= 0) { listState.animateScrollToItem(idx); nav.focusMessage = null }
     }
     Box(Modifier.fillMaxSize().treeWallpaper(extra.chatBackground, extra.wallpaperInk)) {
         LazyColumn(
@@ -162,6 +173,9 @@ fun ChatScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state: UiS
                         model, platform, state, media, chat, m, byId, replies[m.id] ?: 0,
                         mine = m.sender == me, group = group && !isNotes, firstOfRun = firstOfRun, lastOfRun = lastOfRun,
                         onReply = { replyTo = m },
+                        selecting = selected.isNotEmpty(), isSelected = m.id in selected,
+                        onSelect = { selected = if (m.id in selected) selected - m.id else selected + m.id },
+                        onForward = { forwarding = listOf(m.id) },
                     )
                 }
             }
@@ -174,7 +188,23 @@ fun ChatScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state: UiS
                 .onSizeChanged { headerPx = it.height }.padding(top = 6.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            ChatTopBar(platform, nav, state, media, chat, isNotes, group, typers)
+            if (selected.isNotEmpty()) {
+                val picked = msgs.filter { it.id in selected }
+                SelectionBar(
+                    selected.size,
+                    canCopy = state.rich.forwardingAllowed && picked.all { it.kind == "text" && !it.deleted },
+                    canForward = state.rich.forwardingAllowed && picked.none { it.deleted },
+                    canDelete = picked.all { it.sender == me && !it.deleted },
+                    onClose = { selected = emptySet() },
+                    onCopy = { platform.copy(picked.joinToString("\n") { it.text ?: "" }); model.notice(t("복사했어요", "Copied")); selected = emptySet() },
+                    onForward = { forwarding = picked.map { it.id } },
+                    onDelete = {
+                        val ids = picked.map { it.id }
+                        selected = emptySet()
+                        scope.launch { ids.forEach { model.deleteForAll(chat.id, it) } }
+                    },
+                )
+            } else ChatTopBar(platform, nav, state, media, chat, isNotes, group, typers)
             if (state.rich.pins.isNotEmpty()) PinnedBar(state, listState, msgs)
             if (chat.status == "request") RequestBanner(model, chat)
         }
@@ -207,6 +237,7 @@ fun ChatScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state: UiS
             }
         }
     }
+    forwarding?.let { ids -> ForwardDialog(model, platform, state, chat.id, ids) { forwarding = null; selected = emptySet() } }
 }
 
 private fun isSystem(m: Message) = m.kind == "left" || m.kind == "removed" || m.kind == "welcome"
@@ -359,9 +390,11 @@ private fun MessageBubble(
     model: AppModel, platform: TreePlatform, state: UiState, media: RichState, chat: Chat, m: Message,
     byId: Map<String, Message>, replyCount: Int,
     mine: Boolean, group: Boolean, firstOfRun: Boolean, lastOfRun: Boolean, onReply: () -> Unit,
+    selecting: Boolean = false, isSelected: Boolean = false, onSelect: () -> Unit = {}, onForward: () -> Unit = {},
 ) {
     val scope = rememberCoroutineScope()
     var menu by remember { mutableStateOf(false) }
+    var revealed by remember(m.id) { mutableStateOf(false) }
     var editing by remember { mutableStateOf(false) }
     val sticker = if (m.kind == "sticker" && !m.deleted) media.stickers[m.id] else null
     val bare = sticker != null || (m.kind == "text" && !m.deleted && m.replyTo == null && bigEmoji(m.text))
@@ -372,7 +405,10 @@ private fun MessageBubble(
     val member = state.members.firstOrNull { it.id == m.sender }
     val senderName = state.names[m.sender] ?: member?.name ?: m.sender.take(6)
     Row(
-        Modifier.fillMaxWidth().padding(top = if (firstOfRun) 6.dp else 2.dp),
+        Modifier.fillMaxWidth()
+            .background(if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f) else Color.Transparent)
+            .let { if (selecting) it.clickable(onClick = onSelect) else it }
+            .padding(top = if (firstOfRun) 6.dp else 2.dp),
         horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start,
         verticalAlignment = Alignment.Bottom,
     ) {
@@ -382,7 +418,8 @@ private fun MessageBubble(
             Spacer(Modifier.width(2.dp))
         }
         Box {
-            val click = Modifier.combinedClickable(onClick = {}, onDoubleClick = onReply, onLongClick = { menu = true })
+            val click = if (selecting) Modifier.clickable(onClick = onSelect)
+                else Modifier.combinedClickable(onClick = { revealed = true }, onDoubleClick = onReply, onLongClick = { menu = true })
             if (bare) {
                 Column(click.padding(4.dp), horizontalAlignment = if (mine) Alignment.End else Alignment.Start) {
                     if (group && !mine && firstOfRun) Text(senderName, color = nameColor(m.sender), style = MaterialTheme.typography.labelLarge)
@@ -409,10 +446,17 @@ private fun MessageBubble(
                     m.sharedBy?.let { Text(t("$it 님이 공유", "Shared by $it"), style = MaterialTheme.typography.labelMedium, color = extra.bubbleMeta) }
                     m.replyTo?.let { id -> ReplyQuote(byId[id], state, mine) }
                     when {
-                        m.deleted -> TextWithMeta(t("삭제된 메시지입니다", "This message was deleted"), extra.bubbleMeta, m, mine, state, replyCount)
+                        m.deleted -> TextWithMeta(AnnotatedString(t("삭제된 메시지입니다", "This message was deleted")), extra.bubbleMeta, m, mine, state, replyCount)
                         m.kind == "file" -> { FileContent(model, platform, state, m, textColor); MetaRow(m, mine, state, replyCount, Modifier.align(Alignment.End)) }
                         m.kind == "poll" -> { state.rich.polls[m.id]?.let { PollContent(model, chat.id, it, textColor) } ?: Text(Format.preview(m), color = textColor); MetaRow(m, mine, state, replyCount, Modifier.align(Alignment.End)) }
-                        else -> TextWithMeta(m.text ?: Format.preview(m), textColor, m, mine, state, replyCount)
+                        else -> {
+                            val formatted = m.formatted && state.chatFeatures.none { it.key == "chat.formatting" && !it.applied }
+                            val ink = TextInk(
+                                mention = if (mine) textColor else MaterialTheme.colorScheme.primary,
+                                code = textColor.copy(alpha = 0.10f), spoiler = textColor.copy(alpha = 0.55f), quote = MaterialTheme.colorScheme.primary,
+                            )
+                            TextWithMeta(remember(m.text, formatted, revealed, ink) { messageText(m.text ?: Format.preview(m), formatted, ink, revealed) }, textColor, m, mine, state, replyCount)
+                        }
                     }
                 }
             }
@@ -424,6 +468,8 @@ private fun MessageBubble(
                 }
                 HorizontalDivider()
                 if (!m.deleted && chat.status != "request") DropdownMenuItem({ Text(t("답장", "Reply")) }, leadingIcon = { Icon(Icons.AutoMirrored.Rounded.Reply, null) }, onClick = { menu = false; onReply() })
+                if (!m.deleted && state.rich.forwardingAllowed) DropdownMenuItem({ Text(t("전달", "Forward")) }, leadingIcon = { Icon(Icons.AutoMirrored.Rounded.Forward, null) }, onClick = { menu = false; onForward() })
+                DropdownMenuItem({ Text(t("선택", "Select")) }, leadingIcon = { Icon(Icons.Rounded.CheckCircle, null) }, onClick = { menu = false; onSelect() })
                 if (m.kind == "text" && state.rich.forwardingAllowed) DropdownMenuItem({ Text(t("복사", "Copy")) }, leadingIcon = { Icon(Icons.Rounded.ContentCopy, null) }, onClick = { menu = false; platform.copy(m.text ?: ""); model.notice(t("복사했어요", "Copied")) })
                 if (state.rich.mayPin) DropdownMenuItem({ Text(if (state.rich.pins.any { it.messageId == m.id }) t("고정 해제", "Unpin") else t("고정", "Pin")) }, leadingIcon = { Icon(Icons.Rounded.PushPin, null) }, onClick = {
                     menu = false
@@ -494,7 +540,7 @@ private fun ReplyQuote(original: Message?, state: UiState, mine: Boolean) {
  * lines and drops below only when the line is full.
  */
 @Composable
-private fun TextWithMeta(text: String, color: Color, m: Message, mine: Boolean, state: UiState, replyCount: Int) {
+private fun TextWithMeta(text: AnnotatedString, color: Color, m: Message, mine: Boolean, state: UiState, replyCount: Int) {
     val reserve = metaText(m, replyCount) + if (mine) "    " else ""
     Box {
         Text(
@@ -553,6 +599,7 @@ private fun StickerImage(model: AppModel, platform: TreePlatform, pack: String, 
 }
 
 /** The floating composer: emoji and stickers, the field, attach, send. */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun Composer(model: AppModel, platform: TreePlatform, state: UiState, media: RichState, chat: Chat, replyTo: Message?, byId: Map<String, Message>, clearReply: () -> Unit) {
     val scope = rememberCoroutineScope()
@@ -577,6 +624,9 @@ private fun Composer(model: AppModel, platform: TreePlatform, state: UiState, me
                     }
                     IconButton(onClick = clearReply) { Icon(Icons.Rounded.Close, t("답장 취소", "Cancel reply"), tint = extra.muted) }
                 }
+            }
+            if (chat.others > 1) mentionQuery(text)?.let { q ->
+                MentionBar(state, q) { name -> text = text.substring(0, text.lastIndexOf('@')) + "@" + name + " " }
             }
             Row(Modifier.fillMaxWidth().padding(4.dp), verticalAlignment = Alignment.Bottom) {
                 IconButton(onClick = { panel = !panel }) {
@@ -603,22 +653,33 @@ private fun Composer(model: AppModel, platform: TreePlatform, state: UiState, me
                     }
                 }
                 val canSend = text.isNotBlank()
-                Box(
-                    Modifier.padding(start = 2.dp, end = 2.dp, bottom = 2.dp).size(46.dp).clip(CircleShape)
-                        .background(if (canSend) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
-                        .clickable(enabled = canSend) {
-                            val v = text.trim()
-                            val r = replyTo
-                            text = ""
-                            clearReply()
-                            scope.launch {
-                                if (r != null) model.reply(chat.id, v, r.id) else model.send(chat.id, v)
-                                model.typing(chat.id, false)
-                                model.saveDraft(chat.id, "")
-                            }
-                        },
-                    contentAlignment = Alignment.Center,
-                ) { Icon(Icons.AutoMirrored.Rounded.Send, t("보내기", "Send"), tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(21.dp)) }
+                var sendMenu by remember { mutableStateOf(false) }
+                fun send(silent: Boolean) {
+                    val v = text.trim()
+                    val r = replyTo
+                    text = ""
+                    clearReply()
+                    // Markup only where the chat allows it; mentions by the names shown here.
+                    val formatted = hasMarkup(v) && state.chatFeatures.none { it.key == "chat.formatting" && !it.applied }
+                    val (mentions, all) = if (chat.others > 1) mentionsIn(v, state.names) else emptyList<String>() to false
+                    scope.launch {
+                        model.send(chat.id, v, silent = silent, formatted = formatted, mentions = mentions, all = all, replyTo = r?.id)
+                        model.typing(chat.id, false)
+                        model.saveDraft(chat.id, "")
+                    }
+                }
+                Box {
+                    Box(
+                        Modifier.padding(start = 2.dp, end = 2.dp, bottom = 2.dp).size(46.dp).clip(CircleShape)
+                            .background(if (canSend) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
+                            .combinedClickable(enabled = canSend, onClick = { send(false) }, onLongClick = { sendMenu = true }),
+                        contentAlignment = Alignment.Center,
+                    ) { Icon(Icons.AutoMirrored.Rounded.Send, t("보내기", "Send"), tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(21.dp)) }
+                    // Hold the button: send without a sound on the others' phones.
+                    DropdownMenu(sendMenu, { sendMenu = false }) {
+                        DropdownMenuItem({ Text(t("조용히 보내기", "Send without sound")) }, leadingIcon = { Icon(Icons.Rounded.NotificationsOff, null) }, onClick = { sendMenu = false; send(true) })
+                    }
+                }
             }
             if (panel) StickerPanel(model, platform, media, chat) { e -> text += e }
         }

@@ -102,6 +102,22 @@ fn silent_send() {
     assert!(!message_meta(bob.history(&g, 10).unwrap().iter().find(|m| m.id == id2).unwrap()).silent);
 }
 
+/// Markup: the flag is kept on both sides, so apps can draw bold, italic...
+/// in the history too, not only when the message arrives.
+#[test]
+fn formatted_flag_is_kept() {
+    let env = Env::new("fmt");
+    let (mut alice, mut bob, g) = pair(&env);
+    let fmt = TextOptions { formatted: true, ..Default::default() };
+    let id = alice.send_text_with(&g, "**bold**", &fmt).unwrap();
+    let plain = alice.send_text(&g, "**not markup**").unwrap();
+    bob.sync(0).unwrap();
+    let h = bob.history(&g, 10).unwrap();
+    assert!(message_meta(h.iter().find(|m| m.id == id).unwrap()).formatted);
+    assert!(!message_meta(h.iter().find(|m| m.id == plain).unwrap()).formatted);
+    assert!(message_meta(alice.history(&g, 10).unwrap().iter().find(|m| m.id == id).unwrap()).formatted, "and the sender");
+}
+
 /// Archive: out of the main list; a new message brings an unmuted chat
 /// back (`user.unarchive_on_message`), a muted one stays archived, a silent
 /// message does not bring it back. Released: archived chats stay archived.

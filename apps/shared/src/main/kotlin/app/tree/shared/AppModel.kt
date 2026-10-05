@@ -666,17 +666,21 @@ class AppModel(
 
     suspend fun invite(group: String, who: String): Boolean = (call { it.invite(group, who.trim()) }?.accepted == true).also { refresh() }
 
-    /** `silent`: the others' apps do not notify for this message. */
-    suspend fun send(group: String, text: String, silent: Boolean = false): Boolean {
+    /**
+     * Sends a text. `silent`: the others' apps do not notify. `formatted`:
+     * Tree markup (**bold** ...). `mentions`: member ids named with @;
+     * `all`: @all. `replyTo`: the message it answers.
+     */
+    suspend fun send(
+        group: String, text: String, silent: Boolean = false, formatted: Boolean = false,
+        mentions: List<String> = emptyList(), all: Boolean = false, replyTo: String? = null,
+    ): Boolean {
         if (text.isBlank()) return false
-        return (call { it.sendTextWith(group, text, false, emptyList(), false, null, silent) } != null).also { refresh() }
+        return (call { it.sendMessage(group, text, formatted, mentions, all, silent, replyTo) } != null).also { refresh() }
     }
 
     /** A text answering message [replyTo] (quoted above it). */
-    suspend fun reply(group: String, text: String, replyTo: String): Boolean {
-        if (text.isBlank()) return false
-        return (call { it.sendReply(group, text, replyTo) } != null).also { refresh() }
-    }
+    suspend fun reply(group: String, text: String, replyTo: String): Boolean = send(group, text, replyTo = replyTo)
 
     /** A failed message (status "failed"): try again now. True if it went out. */
     /** Names a group (admins). */

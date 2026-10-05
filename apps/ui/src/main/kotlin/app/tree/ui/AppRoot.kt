@@ -65,6 +65,7 @@ sealed class Route {
     data class Scan(val kind: CodeKind) : Route()
     data class Extra(val key: String) : Route()
     data object NewGroup : Route()
+    data class ChatSearch(val id: String) : Route()
 }
 
 enum class Tab(val ko: String, val en: String, val on: ImageVector, val off: ImageVector) {
@@ -78,6 +79,8 @@ enum class Tab(val ko: String, val en: String, val on: ImageVector, val off: Ima
 class TreeNav {
     val stack = mutableStateListOf<Route>(Route.Home)
     var tab by mutableStateOf(Tab.CHATS)
+    /** A message to scroll to when its chat shows next (from search). */
+    var focusMessage by mutableStateOf<String?>(null)
     val top: Route get() = stack.last()
     val canPop: Boolean get() = stack.size > 1
     fun push(r: Route) { stack.add(r) }
@@ -111,7 +114,7 @@ private fun Signed(model: AppModel, platform: TreePlatform, nav: TreeNav, state:
     val top = nav.top
     // The chat screen keeps the model's open chat in step with the stack.
     LaunchedEffect(top) {
-        val want = (top as? Route.Chat)?.id ?: (top as? Route.ChatInfo)?.id
+        val want = (top as? Route.Chat)?.id ?: (top as? Route.ChatInfo)?.id ?: (top as? Route.ChatSearch)?.id
         if (state.open != want) model.openChat(want)
         if (top is Route.Home && nav.tab == Tab.CONTACTS) model.loadContacts()
     }
@@ -138,6 +141,8 @@ private fun Signed(model: AppModel, platform: TreePlatform, nav: TreeNav, state:
         is Route.Scan -> platform.Scanner(top.kind) { nav.pop() }
         is Route.Extra -> platform.Extra(top.key) { nav.pop() }
         is Route.NewGroup -> NewGroupScreen(model, nav, state)
+        is Route.ChatSearch -> state.chats.firstOrNull { it.id == top.id }?.let { ChatSearchScreen(model, nav, state, it) }
+            ?: LaunchedEffect(top) { nav.pop() }
     }
 }
 

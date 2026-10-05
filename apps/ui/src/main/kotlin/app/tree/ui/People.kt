@@ -31,6 +31,7 @@ import androidx.compose.material.icons.rounded.ChatBubble
 import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Notifications
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.AlternateEmail
 import androidx.compose.material.icons.rounded.Archive
 import androidx.compose.material.icons.rounded.Block
@@ -240,6 +241,7 @@ fun ChatInfoScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state:
     val media by model.rich.state.collectAsState()
     var tab by remember(chat.id) { mutableStateOf(if (chat.others > 1 || chat.channel) InfoTab.MEMBERS else InfoTab.MEDIA) }
     var leaving by remember { mutableStateOf(false) }
+    var muting by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().verticalScroll(rememberScrollState()).padding(bottom = 30.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             androidx.compose.material3.IconButton(onClick = { nav.pop() }) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, t("뒤로", "Back")) }
@@ -261,7 +263,10 @@ fun ChatInfoScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state:
         Spacer(Modifier.height(20.dp))
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             InfoAction(Icons.Rounded.ChatBubble, t("메시지", "Message"), Modifier.weight(1f)) { nav.pop() }
-            InfoAction(if (chat.muted) Icons.Rounded.Notifications else Icons.Rounded.NotificationsOff, if (chat.muted) t("알림 켜기", "Unmute") else t("알림 끄기", "Mute"), Modifier.weight(1f)) { scope.launch { if (chat.muted) model.unmute(chat.id) else model.mute(chat.id, null) } }
+            InfoAction(if (chat.muted) Icons.Rounded.Notifications else Icons.Rounded.NotificationsOff, if (chat.muted) t("알림 켜기", "Unmute") else t("알림 끄기", "Mute"), Modifier.weight(1f)) {
+                if (chat.muted) scope.launch { model.unmute(chat.id) } else muting = true
+            }
+            InfoAction(Icons.Rounded.Search, t("검색", "Search"), Modifier.weight(1f)) { nav.pop(); nav.push(Route.ChatSearch(chat.id)) }
             InfoAction(Icons.AutoMirrored.Rounded.Logout, t("나가기", "Leave"), Modifier.weight(1f)) { leaving = true }
         }
         CardGroup {
@@ -359,6 +364,7 @@ fun ChatInfoScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state:
             }
         }
     }
+    if (muting) MuteDialog(model, chat) { muting = false }
     if (leaving) {
         AlertDialog(
             onDismissRequest = { leaving = false },

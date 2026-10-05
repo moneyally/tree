@@ -441,6 +441,8 @@ pub struct Message {
     pub reply_to: Option<String>,
     /// A bot's inline buttons (rows); empty otherwise.
     pub buttons: Vec<Vec<BotButton>>,
+    /// The text uses Tree markup (bold, italic, ...; APP_PROTOCOL.md 1.1).
+    pub formatted: bool,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -464,6 +466,7 @@ impl From<tree_client::StoredMessage> for Message {
             shared_by_account: None,
             forwarded: tree_client::forward::is_forwarded(&m),
             silent: meta.silent,
+            formatted: meta.formatted,
             who: meta.name,
             file,
             group: hex::encode(&m.group_id),
@@ -963,9 +966,28 @@ impl TreeSession {
         Ok(self.s().send_text(&unhex(&group, "group")?, &text)?)
     }
 
-    /// A text that answers message `reply_to` of the same chat (shown quoted above it).
-    pub fn send_reply(&self, group: String, text: String, reply_to: String) -> R<String> {
-        let o = TextOptions { reply_to: Some(reply_to), ..Default::default() };
+    /// A text with what the composer chose: Tree markup, mentions (member
+    /// ids) or @all, a silent send, and the message it answers (`reply_to`,
+    /// shown quoted above it).
+    #[allow(clippy::too_many_arguments)]
+    pub fn send_message(
+        &self,
+        group: String,
+        text: String,
+        formatted: bool,
+        mentions: Vec<String>,
+        all: bool,
+        silent: bool,
+        reply_to: Option<String>,
+    ) -> R<String> {
+        let o = TextOptions {
+            formatted,
+            mentions: mentions.iter().map(|m| member(m)).collect::<R<_>>()?,
+            all,
+            silent,
+            reply_to,
+            ..Default::default()
+        };
         Ok(self.s().send_text_with(&unhex(&group, "group")?, &text, &o)?)
     }
 

@@ -204,6 +204,8 @@ private fun RequestsBanner(count: Int, onOpen: () -> Unit) {
 private fun ChatRow(model: AppModel, platform: TreePlatform, nav: TreeNav, state: UiState, c: Chat) {
     val scope = rememberCoroutineScope()
     var menu by remember { mutableStateOf(false) }
+    var muting by remember { mutableStateOf(false) }
+    if (muting) MuteDialog(model, c) { muting = false }
     val me = model.session?.memberId()
     val last = c.last
     val isNotes = c.id == state.notes
@@ -275,7 +277,7 @@ private fun ChatRow(model: AppModel, platform: TreePlatform, nav: TreeNav, state
             DropdownMenuItem({ Text(if (c.pinned) t("고정 해제", "Unpin") else t("위에 고정", "Pin to top")) }, leadingIcon = { Icon(Icons.Rounded.PushPin, null) }, onClick = { menu = false; scope.launch { model.pin(c.id, !c.pinned) } })
             DropdownMenuItem({ Text(if (c.muted) t("알림 켜기", "Unmute") else t("알림 끄기", "Mute")) }, leadingIcon = { Icon(Icons.Rounded.NotificationsOff, null) }, onClick = {
                 menu = false
-                scope.launch { if (c.muted) model.unmute(c.id) else model.mute(c.id, null) }
+                if (c.muted) scope.launch { model.unmute(c.id) } else muting = true
             })
             DropdownMenuItem({ Text(if (c.archived) t("보관 해제", "Unarchive") else t("보관", "Archive")) }, leadingIcon = { Icon(Icons.Rounded.Archive, null) }, onClick = { menu = false; scope.launch { model.archive(c.id, !c.archived) } })
             DropdownMenuItem({ Text(if (c.unread > 0 || c.markedUnread) t("읽음으로 표시", "Mark as read") else t("안 읽음으로 표시", "Mark as unread")) }, leadingIcon = { Icon(Icons.AutoMirrored.Rounded.Note, null) }, onClick = {

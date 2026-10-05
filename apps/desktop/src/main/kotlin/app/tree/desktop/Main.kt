@@ -28,6 +28,8 @@ fun main() = application {
         // App lock: five minutes without focus close the profile.
         val focused = LocalWindowInfo.current.isWindowFocused
         LaunchedEffect(focused) {
+            model.foreground = focused
+            if (focused) model.announceSeen()
             if (!focused) {
                 delay(5 * 60 * 1000L)
                 model.lockIfEnabled()

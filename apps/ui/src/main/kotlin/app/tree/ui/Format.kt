@@ -17,6 +17,36 @@ object Format {
         return "$ampm $h12:${t.minute.toString().padStart(2, '0')}"
     }
 
+    /** Within this many seconds of their last "seen" someone counts as online. */
+    const val ONLINE_S = 200L
+
+    fun online(seen: app.tree.shared.Seen?, now: Long = System.currentTimeMillis() / 1000): Boolean =
+        seen?.exact == true && seen.at != null && now - seen.at < ONLINE_S
+
+    /**
+     * "온라인", "3분 전 접속", "2시간 전 접속", "어제 오후 3:10 접속", a date;
+     * vague when only their last message is known ("최근에 접속함").
+     */
+    fun seenLabel(seen: app.tree.shared.Seen?, now: Long = System.currentTimeMillis() / 1000): String {
+        val at = seen?.at ?: return t("오래 전에 접속함", "Last seen a long time ago")
+        val ago = (now - at).coerceAtLeast(0)
+        if (!seen.exact) return when {
+            ago < 3 * 86400 -> t("최근에 접속함", "Last seen recently")
+            ago < 7 * 86400 -> t("이번 주에 접속함", "Last seen this week")
+            ago < 30 * 86400 -> t("이번 달에 접속함", "Last seen this month")
+            else -> t("오래 전에 접속함", "Last seen a long time ago")
+        }
+        val d = Instant.ofEpochSecond(at).atZone(zone).toLocalDate()
+        val today = Instant.ofEpochSecond(now).atZone(zone).toLocalDate()
+        return when {
+            ago < ONLINE_S -> t("온라인", "online")
+            ago < 3600 -> t("${ago / 60}분 전 접속", "last seen ${ago / 60} min ago")
+            d == today -> t("${ago / 3600}시간 전 접속", "last seen ${ago / 3600} h ago")
+            d == today.minusDays(1) -> t("어제 ${clock(at)} 접속", "last seen yesterday at ${clock(at)}")
+            else -> t("${listTime(at, now)} 접속", "last seen ${listTime(at, now)}")
+        }
+    }
+
     /** For the chat list: today's time, 어제, a weekday this week, or a date. */
     fun listTime(seconds: Long, now: Long = System.currentTimeMillis() / 1000): String {
         if (seconds <= 0) return ""

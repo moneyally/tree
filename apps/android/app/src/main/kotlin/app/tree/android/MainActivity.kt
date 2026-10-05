@@ -98,7 +98,8 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         inBackground = false
         applyWindow(model.state.value)
-        lifecycleScope.launch { model.setNetwork(networkKind()) }
+        model.foreground = true
+        lifecycleScope.launch { model.setNetwork(networkKind()); model.announceSeen() }
     }
 
     // Older Android takes the recent-apps snapshot when the app leaves the
@@ -112,6 +113,7 @@ class MainActivity : ComponentActivity() {
     // App lock: leaving the app closes the profile when user.app_lock is on.
     override fun onStop() {
         super.onStop()
+        model.foreground = false
         lifecycleScope.launch { model.lockIfEnabled() }
     }
 

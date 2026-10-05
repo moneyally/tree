@@ -252,8 +252,9 @@ fun ChatInfoScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state:
         Text(
             when {
                 chat.channel -> t("채널 · 구독자 ${chat.others + 1}명", "Channel · ${chat.others + 1} subscribers")
-                chat.others > 1 -> t("멤버 ${chat.others + 1}명", "${chat.others + 1} members")
-                else -> t("끝단 암호화된 1:1 대화", "End-to-end encrypted chat")
+                chat.others > 1 -> t("멤버 ${chat.others + 1}명", "${chat.others + 1} members") +
+                    state.seen.values.count { Format.online(it) }.let { n -> if (n > 0) t(", 온라인 ${n}명", ", $n online") else "" }
+                else -> Format.seenLabel(state.seen.values.singleOrNull())
             },
             color = extra.muted, style = MaterialTheme.typography.bodyMedium,
         )
@@ -264,20 +265,12 @@ fun ChatInfoScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state:
             InfoAction(Icons.AutoMirrored.Rounded.Logout, t("나가기", "Leave"), Modifier.weight(1f)) { leaving = true }
         }
         CardGroup {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Rounded.Lock, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
-                Spacer(Modifier.width(12.dp))
-                Text(t("메시지와 파일은 끝단 암호화돼요. 서버도 내용을 볼 수 없어요.", "Messages and files are end-to-end encrypted. Not even the server can read them."), style = MaterialTheme.typography.bodyMedium)
-            }
             others.mapNotNull { it.account }.distinct().singleOrNull()?.takeIf { chat.others <= 1 }?.let { acc ->
-                RowDivider(50.dp)
                 SettingsRow(t("안전 번호 확인", "Verify safety number"), t("직접 만나서 숫자를 맞춰 보세요", "Compare the numbers in person"), Icons.Rounded.Shield, TreeColors.TileGreen, onClick = { scope.launch { safety = model.safetyNumber(acc) } })
             }
             if (admin && chat.others > 1) {
-                RowDivider(50.dp)
                 SettingsRow(t("초대 링크 만들기", "Make invite link"), t("24시간 동안 10명까지", "24 hours, up to 10 people"), Icons.Rounded.Link, TreeColors.TileIndigo, onClick = { scope.launch { link = model.inviteLink(chat.id) } }, trailing = null)
             }
-            RowDivider(50.dp)
             SettingsRow(if (chat.pinned) t("목록 위 고정 해제", "Unpin from top") else t("목록 위에 고정", "Pin to top"), null, Icons.Rounded.PushPin, TreeColors.TileAmber, onClick = { scope.launch { model.pin(chat.id, !chat.pinned) } }, trailing = null)
         }
         Spacer(Modifier.height(14.dp))
@@ -311,14 +304,16 @@ fun ChatInfoScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state:
                             Spacer(Modifier.width(14.dp))
                             Column(Modifier.weight(1f)) {
                                 Text(name + if (m.id == me) t(" (나)", " (you)") else "", style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                val seen = state.seen[m.id]
+                                val live = m.id == me || Format.online(seen)
                                 Text(
                                     when {
                                         m.bot != null -> t("봇", "Bot")
                                         m.restrictedUntil != null -> t("발언 제한 중", "Restricted")
-                                        m.admin -> t("대화방 관리 권한 있음", "Can manage the chat")
-                                        else -> t("멤버", "Member")
+                                        m.id == me -> t("온라인", "online")
+                                        else -> Format.seenLabel(seen)
                                     },
-                                    style = MaterialTheme.typography.bodySmall, color = extra.muted,
+                                    style = MaterialTheme.typography.bodySmall, color = if (live && m.bot == null) MaterialTheme.colorScheme.primary else extra.muted,
                                 )
                             }
                             val role = m.roles.firstOrNull()

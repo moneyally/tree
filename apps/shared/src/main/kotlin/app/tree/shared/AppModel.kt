@@ -87,6 +87,13 @@ data class LinkUi(
 /** What became of a scanned or pasted code ([AppModel.useScanned]). */
 enum class ScanOutcome { ACCEPTED, NOT_TREE, WRONG_KIND, FAILED }
 
+/**
+ * When a member was last around (unix seconds; null: unknown). `exact`: they
+ * said so themselves (user.last_seen on both sides); otherwise it is only
+ * their latest message, shown vaguely.
+ */
+data class Seen(val at: Long?, val exact: Boolean)
+
 /** A member typing: its name and when the indicator lapses if no "stopped" arrives. */
 data class Typer(val name: String, val until: Long)
 
@@ -111,6 +118,8 @@ data class UiState(
     val chatFeatures: List<Feature> = emptyList(),
     /** Members typing in the open chat (member ids). */
     val typing: Set<String> = emptySet(),
+    /** Open chat: when each other member was last around (member id). */
+    val seen: Map<String, Seen> = emptyMap(),
     /** Who is typing in every chat (chat -> member -> name and until when), for the chat list. */
     val typingIn: Map<String, Map<String, Typer>> = emptyMap(),
     /** My messages in the open chat that someone has read. */
@@ -253,6 +262,25 @@ class AppModel(
      * While own messages wait in the outbox it polls briefly and syncs
      * every round, which sends them when they are due.
      */
+    private var lastAnnounce = 0L
+
+    /** The app is in front (the platform sets it); only then is "seen" announced. */
+    @Volatile var foreground = true
+
+    /**
+     * The app is in front: tell the chats (user.last_seen; the core sends
+     * nothing while it is released). At most every two minutes.
+     */
+    suspend fun announceSeen() {
+        val now = System.currentTimeMillis()
+        if (session == null || !foreground || now - lastAnnounce < 120_000) return
+        lastAnnounce = now
+        val st = _state.value
+        for (c in st.chats) {
+            if (c.status == "accepted" && !c.channel && c.id != st.notes) call { it.announceSeen(c.id) }
+        }
+    }
+
     /** True while the receiving loop runs. */
     val receiving: Boolean get() = loop?.isActive == true
 
@@ -468,12 +496,19 @@ class AppModel(
         val me = session?.memberId()
         val names = members.associate { m -> m.id to if (m.id == me) "" else (m.name ?: m.id.take(6)) }
         val chatFeatures = if (open != null) call { it.chatFeatures(open) } ?: emptyList() else emptyList()
+        // When each member was last around: their "seen" (user.last_seen, both
+        // sides) or, failing that, their latest message here.
+        val seen = if (open != null) members.filter { it.id != me }.associate { m ->
+            val announced = call { it.lastSeen(open, m.id) }
+            val wrote = messages.lastOrNull { it.sender == m.id }?.receivedAt
+            m.id to Seen(maxOf(announced ?: 0, wrote ?: 0).takeIf { t -> t > 0 }, exact = announced != null && announced >= (wrote ?: 0))
+        } else emptyMap()
         val blocked = open != null && (call { it.screenshotBlocked(open) } ?: false)
         val sending = call { s -> s.outbox().any { it.state != "failed" } } ?: false
         _state.update {
             it.copy(
                 chats = chats.map { c -> if (c.id == open) c.copy(unread = 0, markedUnread = false) else c },
-                messages = messages, names = names, members = members, chatFeatures = chatFeatures,
+                messages = messages, names = names, members = members, chatFeatures = chatFeatures, seen = seen,
                 screenshotBlocked = blocked, folders = folders, readMine = readMine, sending = sending,
                 notes = notesId ?: it.notes,
             )

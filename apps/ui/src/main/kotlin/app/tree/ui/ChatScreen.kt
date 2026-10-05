@@ -256,14 +256,19 @@ private fun ChatTopBar(platform: TreePlatform, nav: TreeNav, state: UiState, med
                 if (typers.isNotEmpty() && !isNotes) {
                     TypingLine(if (group) typers else emptyList())
                 } else {
+                    val now = rememberNow(true) / 1000
+                    val onlineCount = state.seen.values.count { Format.online(it, now) }
+                    val peerSeen = state.seen.values.singleOrNull()
                     val sub = when {
                         isNotes -> t("내 기기에만 보여요", "Only on your devices")
-                        chat.channel -> t("채널 · 구독자 ${chat.others + 1}명", "Channel · ${chat.others + 1} subscribers")
-                        group -> t("멤버 ${chat.others + 1}명", "${chat.others + 1} members")
-                        chat.labels.contains("not_contact") -> t("연락처에 없는 사람", "Not in your contacts")
-                        else -> t("끝단 암호화", "End-to-end encrypted")
+                        chat.channel -> t("구독자 ${chat.others + 1}명", "${chat.others + 1} subscribers")
+                        group -> t("멤버 ${chat.others + 1}명", "${chat.others + 1} members") +
+                            if (onlineCount > 0) t(", 온라인 ${onlineCount}명", ", $onlineCount online") else ""
+                        chat.status == "request" -> t("메시지 요청", "Message request")
+                        else -> Format.seenLabel(peerSeen, now)
                     }
-                    Text(sub, style = MaterialTheme.typography.bodySmall, color = extra.muted, maxLines = 1)
+                    val live = !group && !isNotes && Format.online(peerSeen, now)
+                    Text(sub, style = MaterialTheme.typography.bodySmall, color = if (live) MaterialTheme.colorScheme.primary else extra.muted, maxLines = 1)
                 }
             }
         }

@@ -111,6 +111,11 @@ class ScreenshotTest {
         alice.openNotes()
         alice.send(alice.state.value.notes!!, "등산화 끈 바꾸기")
         alice.openChat(null)
+        // Last seen: Alice and Bob share it (user.last_seen on both sides); Carol does not.
+        alice.setFeature("user.last_seen", true)
+        bob.setFeature("user.last_seen", true)
+        bob.syncNow()
+        bob.announceSeen()
         // Unread in the list, and someone typing in the group.
         alice.syncNow()
         carol.typing(g, true)

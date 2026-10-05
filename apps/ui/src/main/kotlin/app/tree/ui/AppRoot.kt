@@ -104,6 +104,8 @@ private fun Signed(model: AppModel, platform: TreePlatform, nav: TreeNav, state:
     // Receiving runs whenever a profile is open. Started here, not by the
     // sign-in screen: that screen's own coroutines end as it closes.
     LaunchedEffect(Unit) { model.ensureSyncLoop() }
+    // "Seen" for the others (user.last_seen), now and while the app stays open.
+    LaunchedEffect(Unit) { while (true) { model.announceSeen(); kotlinx.coroutines.delay(150_000) } }
     // A device link in progress takes the whole screen until it ends.
     state.link?.let { LinkScreen(model, it, newDevice = false); return }
     val top = nav.top

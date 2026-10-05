@@ -28,51 +28,6 @@ import app.tree.shared.Strings
 import app.tree.shared.UiState
 import kotlinx.coroutines.launch
 
-/**
- * What a user setting does on a computer, shown under its switch, so the
- * settings screen never pretends: the keyboard and app-switcher switches
- * act on phones only, and screen-capture protection says whether this
- * system offers it.
- */
-@Composable
-fun platformNote(key: String): String? {
-    val active by DesktopProtection.active.collectAsState()
-    return when (key) {
-        "user.incognito_keyboard" -> Strings.t("note_incognito_desktop")
-        "user.app_switcher_blur" -> Strings.t("note_blur_desktop")
-        "user.pc_screen_security" -> Strings.t(
-            when {
-                !DesktopProtection.guard.available -> "capture_none"
-                active -> "capture_active"
-                else -> "capture_off"
-            },
-        )
-        else -> null
-    }
-}
-
-/** Search over the history on this computer (`user.search_index`). */
-@Composable
-fun SearchBox(model: AppModel) {
-    val scope = rememberCoroutineScope()
-    val found by model.device.search.collectAsState()
-    var q by remember { mutableStateOf("") }
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        OutlinedTextField(q, { q = it }, label = { Text(Strings.t("search")) }, singleLine = true, modifier = Modifier.width(170.dp))
-        TextButton(onClick = { scope.launch { model.device.search(q) } }) { Text("⌕") }
-    }
-    if (found.query.isNotEmpty()) {
-        if (found.results.isEmpty()) Text(Strings.t("search_none"), style = MaterialTheme.typography.bodySmall)
-        found.results.take(20).forEach { m ->
-            Text(
-                (m.text ?: "").take(60),
-                Modifier.fillMaxWidth().clickable { scope.launch { model.openChat(m.group); model.device.clearSearch() } }.padding(4.dp),
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
-    }
-}
-
 /** The lock screen's PIN field, while PIN unlock is on for this profile. */
 @Composable
 fun PinUnlockRow(model: AppModel, path: String, onOpen: suspend () -> Unit) {

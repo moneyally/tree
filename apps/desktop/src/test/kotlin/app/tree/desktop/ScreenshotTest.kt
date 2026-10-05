@@ -152,6 +152,27 @@ class ScreenshotTest {
         shot("12-desktop-light", alice, DesktopPlatform(alice, scope), TreeNav().apply { push(Route.Chat(g)) }, dark = false, phone = false)
         shot("13-desktop-dark", alice, DesktopPlatform(alice, scope), TreeNav().apply { push(Route.Chat(g)) }, dark = true, phone = false)
 
+        // A private channel with a comment, and a public channel.
+        val ch = alice.createChannel("산악회 소식")!!
+        alice.invite(ch, bob.state.value.account); bob.syncNow(); bob.accept(ch)
+        alice.syncNow(); alice.openChat(ch)
+        alice.setChatFeature(ch, "channel.comments", true)
+        alice.send(ch, "이번 달 정기 산행은 둘째 주 토요일이에요. 장소는 곧 공지할게요.")
+        bob.syncNow(); bob.openChat(ch)
+        val post = bob.state.value.messages.last { it.kind == "text" }
+        bob.commentOn(ch, post.id, "참석할게요!")
+        alice.syncNow(); alice.openChat(ch)
+        shot("17-channel-dark", alice, pa, TreeNav().apply { push(Route.Chat(ch)) }, dark = true)
+        shot("18-comments-dark", alice, pa, TreeNav().apply { push(Route.Comments(ch, post.id)) }, dark = true)
+        alice.openChat(null)
+        val space = alice.createPublic("channel", "Tree 소식", "treenews", "트리 업데이트 소식")
+        if (space != null) {
+            alice.postPublic("새 디자인이 나왔어요.")
+            shot("19-public-space-dark", alice, pa, TreeNav().apply { push(Route.PublicSpace(space)) }, dark = true)
+            alice.openPublic(null)
+        }
+        shot("20-public-dark", alice, pa, TreeNav().apply { push(Route.Public) }, dark = true)
+
         // The photo editor on a made-up picture (sky, ground, a sun).
         val pic = app.tree.shared.media.Raster(1200, 900).also { r ->
             for (y in 0 until r.height) for (x in 0 until r.width) {

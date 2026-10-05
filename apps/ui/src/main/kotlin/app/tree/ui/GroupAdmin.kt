@@ -22,6 +22,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import app.tree.shared.addBot
+import androidx.compose.material.icons.rounded.SmartToy
 import androidx.compose.material.icons.automirrored.rounded.Chat
 import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.rounded.Add
@@ -226,12 +228,14 @@ fun AdminCard(model: AppModel, nav: TreeNav, state: UiState, chat: Chat, onLink:
     val scope = rememberCoroutineScope()
     var welcome by remember { mutableStateOf(false) }
     var revoke by remember { mutableStateOf(false) }
+    var addingBot by remember { mutableStateOf(false) }
     val on = { key: String -> state.chatFeatures.any { it.key == key && it.applied } }
     CardGroup(title = t("관리", "Manage")) {
         if (on("chat.roles")) SettingsRow(t("역할", "Roles"), if (state.groups.roles.isEmpty()) t("없음", "None") else state.groups.roles.joinToString(", ") { it.name },
             Icons.Rounded.Label, TreeColors.TileViolet, onClick = { nav.push(Route.GroupAdmin(chat.id, "roles")) })
         SettingsRow(t("환영 메시지", "Welcome message"), state.groups.welcome ?: t("없음", "None"), Icons.Rounded.WavingHand, TreeColors.TileAmber, onClick = { welcome = true })
         if (on("chat.admin_log")) SettingsRow(t("관리 기록", "Admin log"), null, Icons.Rounded.History, TreeColors.TileGrey, onClick = { nav.push(Route.GroupAdmin(chat.id, "log")) })
+        if (on("chat.bots")) SettingsRow(t("봇 추가", "Add a bot"), t("@이름으로", "By @name"), Icons.Rounded.SmartToy, TreeColors.TileBlue, onClick = { addingBot = true }, trailing = null)
         SettingsRow(t("초대 링크 만들기", "Make invite link"), t("24시간 동안 10명까지", "24 hours, up to 10 people"), Icons.Rounded.Link, TreeColors.TileIndigo, onClick = onLink, trailing = null)
         SettingsRow(t("초대 링크 모두 취소", "Revoke invite links"), null, Icons.Rounded.LinkOff, TreeColors.TileRed, onClick = { revoke = true }, trailing = null)
     }
@@ -243,6 +247,21 @@ fun AdminCard(model: AppModel, nav: TreeNav, state: UiState, chat: Chat, onLink:
             text = { OutlinedTextField(text, { text = it }, placeholder = { Text(t("새로 온 사람에게 보여줄 말", "Shown to new members")) }, shape = RoundedCornerShape(14.dp), minLines = 3) },
             confirmButton = { TextButton(onClick = { welcome = false; scope.launch { model.setWelcome(chat.id, text) } }) { Text(t("저장", "Save"), fontWeight = FontWeight.SemiBold) } },
             dismissButton = { TextButton(onClick = { welcome = false }) { Text(t("취소", "Cancel")) } },
+        )
+    }
+    if (addingBot) {
+        var who by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { addingBot = false },
+            title = { Text(t("봇 추가", "Add a bot")) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(who, { who = it }, placeholder = { Text("@...bot") }, singleLine = true, shape = RoundedCornerShape(14.dp))
+                    Text(t("봇을 운영하는 사람은 봇에게 온 메시지를 읽을 수 있어요.", "Whoever runs the bot reads what it is sent."), style = MaterialTheme.typography.bodySmall, color = extra.warning)
+                }
+            },
+            confirmButton = { TextButton(onClick = { addingBot = false; scope.launch { model.addBot(chat.id, who) } }, enabled = who.isNotBlank()) { Text(t("추가", "Add"), fontWeight = FontWeight.SemiBold) } },
+            dismissButton = { TextButton(onClick = { addingBot = false }) { Text(t("취소", "Cancel")) } },
         )
     }
     if (revoke) {
@@ -287,7 +306,7 @@ fun GroupAdminScreen(model: AppModel, nav: TreeNav, state: UiState, chat: Chat, 
                         state.groups.adminLog.sortedByDescending { it.at }.forEach { e ->
                             Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp)) {
                                 Text(model.describeLog(e, state.names), style = MaterialTheme.typography.bodyMedium)
-                                Text(Format.listTime(e.at) + " " + Format.clock(e.at), style = MaterialTheme.typography.bodySmall, color = extra.muted)
+                                Text(Format.stamp(e.at), style = MaterialTheme.typography.bodySmall, color = extra.muted)
                             }
                         }
                     }

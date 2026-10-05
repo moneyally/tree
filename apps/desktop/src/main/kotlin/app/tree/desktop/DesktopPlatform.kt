@@ -27,6 +27,19 @@ import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
 import java.io.File
 
+/** Where profiles live: one encrypted database per account on this computer. */
+fun profilePath(): String {
+    val dir = File(System.getProperty("user.home"), ".tree")
+    dir.mkdirs()
+    return File(dir, "profile.db").path
+}
+
+/** A computer counts as an unmetered network; files that download by themselves go here. */
+suspend fun desktopMedia(model: AppModel) {
+    model.downloadDir = File(System.getProperty("user.home"), ".tree/downloads")
+    model.setNetwork(uniffi.tree_ffi.NetworkKind.WIFI)
+}
+
 /** The computer's side of the shared screens: file dialogs, paste instead of camera, PIN lock. */
 class DesktopPlatform(private val model: AppModel, private val scope: CoroutineScope) : TreePlatform {
     override val isPhone = false
@@ -129,24 +142,6 @@ class DesktopPlatform(private val model: AppModel, private val scope: CoroutineS
     override fun play(wav: ByteArray, onDone: () -> Unit) = DesktopAudio.play(wav, onDone)
     override fun stopPlaying() = DesktopAudio.stopPlaying()
 
-    override val extraScreens = listOf(
-        "bots" to t("봇 만들기", "Bot factory"),
-        "public" to t("공개 공간", "Public spaces"),
-    )
-
-    @Composable
-    override fun Extra(key: String, onBack: () -> Unit) {
-        val state by model.state.collectAsState()
-        Column(Modifier.fillMaxSize()) {
-            BackHeader(extraScreens.firstOrNull { it.first == key }?.second ?: "", onBack)
-            Box(Modifier.padding(horizontal = 16.dp)) {
-                when (key) {
-                    "bots" -> BotsScreen(model, state)
-                    "public" -> PublicScreen(model, state)
-                }
-            }
-        }
-    }
 }
 
 /** The bundled font, from the classpath (apps/ui/res). */

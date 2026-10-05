@@ -131,7 +131,12 @@ fun ChatScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state: UiS
     val isNotes = chat.id == state.notes
     val group = chat.others > 1 || chat.channel
     // A topic shown (chat.topics): only its messages.
-    val msgs = if (state.groups.topic != null) state.groups.topicMessages else state.messages
+    val msgs = when {
+        state.groups.topic != null -> state.groups.topicMessages
+        // A channel shows its posts; comments open from each post.
+        state.channel.isChannel -> state.messages.filter { it.replyTo == null }
+        else -> state.messages
+    }
     val byId = remember(msgs) { msgs.associateBy { it.id } }
     val replies = remember(msgs) { msgs.mapNotNull { it.replyTo }.groupingBy { it }.eachCount() }
     // How many were unread when the chat opened: the "unread" line stays there while it is open.
@@ -185,6 +190,8 @@ fun ChatScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state: UiS
                         onSelect = { selected = if (m.id in selected) selected - m.id else selected + m.id },
                         onForward = { forwarding = listOf(m.id) },
                     )
+                    if (m.buttons.isNotEmpty() && state.members.any { it.id == m.sender && it.bot != null }) BotButtons(model, chat.id, m)
+                    if (state.channel.isChannel && !isSystem(m)) CommentsLink(state, nav, chat, m, m.sender == me)
                 }
             }
             if (msgs.isEmpty()) item { EmptyChat(isNotes) }

@@ -187,7 +187,7 @@ fun ScheduledBar(model: AppModel, state: UiState) {
                     Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text(m.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                            Text(Format.listTime(m.at) + " " + Format.clock(m.at), style = MaterialTheme.typography.bodySmall, color = extra.muted)
+                            Text(Format.stamp(m.at), style = MaterialTheme.typography.bodySmall, color = extra.muted)
                         }
                         TextButton(onClick = { scope.launch { model.cancelScheduled(m.id) } }) { Text(t("취소", "Cancel"), color = extra.danger) }
                     }

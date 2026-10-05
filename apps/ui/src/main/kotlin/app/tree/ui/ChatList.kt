@@ -24,6 +24,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import app.tree.shared.createChannel
+import androidx.compose.material.icons.rounded.Campaign
 import androidx.compose.material.icons.rounded.ArrowUpward
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.automirrored.rounded.Note
@@ -80,6 +82,7 @@ fun ChatListScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state:
     var query by remember { mutableStateOf("") }
     var fabMenu by remember { mutableStateOf(false) }
     var joinDialog by remember { mutableStateOf(false) }
+    var channelDialog by remember { mutableStateOf(false) }
     val search by model.device.search.collectAsState()
     val requests = state.chats.filter { it.status == "request" }
     val list = model.visibleChats(state).filter { it.status != "request" && it.status != "declined" }
@@ -149,6 +152,7 @@ fun ChatListScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state:
             DropdownMenu(fabMenu, { fabMenu = false }) {
                 DropdownMenuItem({ Text(t("새 그룹", "New group")) }, leadingIcon = { Icon(Icons.Rounded.GroupAdd, null) }, onClick = { fabMenu = false; nav.push(Route.NewGroup) })
                 DropdownMenuItem({ Text(t("QR로 친구 추가", "Add friend by QR")) }, leadingIcon = { Icon(Icons.Rounded.QrCodeScanner, null) }, onClick = { fabMenu = false; nav.push(Route.Scan(CodeKind.USERNAME)) })
+                DropdownMenuItem({ Text(t("새 채널", "New channel")) }, leadingIcon = { Icon(Icons.Rounded.Campaign, null) }, onClick = { fabMenu = false; channelDialog = true })
                 DropdownMenuItem({ Text(t("초대 링크로 참여", "Join with a link")) }, leadingIcon = { Icon(Icons.Rounded.Link, null) }, onClick = { fabMenu = false; joinDialog = true })
                 DropdownMenuItem({ Text(t("나에게 메모", "Note to self")) }, leadingIcon = { Icon(Icons.Rounded.Bookmark, null) }, onClick = {
                     fabMenu = false
@@ -158,6 +162,21 @@ fun ChatListScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state:
         }
     }
     if (joinDialog) JoinDialog(model) { joinDialog = false }
+    if (channelDialog) {
+        var name by remember { mutableStateOf("") }
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { channelDialog = false },
+            title = { Text(t("새 채널", "New channel")) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    androidx.compose.material3.OutlinedTextField(name, { name = it.take(64) }, placeholder = { Text(t("채널 이름", "Channel name")) }, singleLine = true, shape = RoundedCornerShape(14.dp))
+                    Text(t("관리자만 글을 쓰고, 구독자는 읽어요. 끝단 암호화돼요.", "Admins post, subscribers read. End-to-end encrypted."), style = MaterialTheme.typography.bodySmall, color = extra.muted)
+                }
+            },
+            confirmButton = { androidx.compose.material3.TextButton(onClick = { channelDialog = false; scope.launch { model.createChannel(name)?.let { nav.push(Route.Chat(it)) } } }, enabled = name.isNotBlank()) { Text(t("만들기", "Create"), fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold) } },
+            dismissButton = { androidx.compose.material3.TextButton(onClick = { channelDialog = false }) { Text(t("취소", "Cancel")) } },
+        )
+    }
 }
 
 @Composable

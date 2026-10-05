@@ -276,7 +276,7 @@ fun EventContent(model: AppModel, chat: Chat, media: RichState, m: Message, text
             Spacer(Modifier.width(10.dp))
             Column {
                 Text(e.title, color = textColor, style = MaterialTheme.typography.titleSmall, textDecoration = if (e.cancelled) androidx.compose.ui.text.style.TextDecoration.LineThrough else null)
-                Text(Format.listTime(e.startsAt) + " " + Format.clock(e.startsAt) + (e.place?.let { " · $it" } ?: ""), color = extra.bubbleMeta, style = MaterialTheme.typography.bodySmall)
+                Text(Format.stamp(e.startsAt) + (e.place?.let { " · $it" } ?: ""), color = extra.bubbleMeta, style = MaterialTheme.typography.bodySmall)
             }
         }
         if (e.cancelled) Text(t("취소된 일정", "Cancelled"), color = extra.danger, style = MaterialTheme.typography.labelMedium)

@@ -82,15 +82,9 @@ interface TreePlatform {
     /** Copies text to the clipboard. */
     fun copy(text: String)
 
-    /** Screens only this platform has (bot factory, public spaces...), by key; null if none. */
-    @Composable
-    fun Extra(key: String, onBack: () -> Unit) {}
-
     /** The app's font (bundled Pretendard); null: the system's. */
     val font: androidx.compose.ui.text.font.FontFamily? get() = null
 
-    /** Which keys [Extra] can show. */
-    val extraScreens: List<Pair<String, String>> get() = emptyList()
 }
 
 /** PHOTO_ONCE: a picture the receiver can open once (chat.view_once). */

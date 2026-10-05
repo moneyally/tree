@@ -47,6 +47,10 @@ object Format {
         }
     }
 
+    /** A moment in full: the time today, else the day and the time. */
+    fun stamp(seconds: Long, now: Long = System.currentTimeMillis() / 1000): String =
+        if (sameDay(seconds, now)) clock(seconds) else listTime(seconds, now) + " " + clock(seconds)
+
     /** For the chat list: today's time, 어제, a weekday this week, or a date. */
     fun listTime(seconds: Long, now: Long = System.currentTimeMillis() / 1000): String {
         if (seconds <= 0) return ""

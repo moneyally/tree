@@ -38,10 +38,10 @@
 | GIF 검색·보내기 | 🟡 | 서버 릴레이 필요 |
 | 음성 메시지 녹음 | 🔴 | send_voice FFI만, 녹음기 필요 |
 | 영상 메시지 | 🟡 | sendVideoNote, 카메라 녹화 필요 |
-| 위치·실시간 위치 | 🟡 | sendLocation / startLive |
-| 일정·참석 여부 | 🟡 | createEvent / rsvp |
-| 투표 만들기·마감 | 🟡 | 보기·투표는 ✅ |
-| 한 번 보기 사진 | 🟡 | MediaOptions.viewOnce |
+| 위치 보내기·카드 | ✅ | Android: 누를 때만 권한 요청. 실시간 위치는 🟡 |
+| 일정·참석 여부 | ✅ | |
+| 투표 만들기 | ✅ | 마감은 🟡 |
+| 한 번 보기 사진 | ✅ | 미리보기 없이 보냄, 열면 사라짐 |
 | 전송 일시정지·재개 | 🟡 | pause/resumeTransfer |
 | 프로필 사진 삭제 | 🟡 | removePhoto |
 

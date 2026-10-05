@@ -35,6 +35,12 @@ interface TreePlatform {
     /** Lets the person pick a picture; gives its bytes and type. */
     fun pickImage(onPicked: (ByteArray, String) -> Unit)
 
+    /** This device can tell where it is (asks for permission first). */
+    val hasLocation: Boolean get() = false
+
+    /** Where the device is now: latitude, longitude, accuracy in metres; null if unknown or refused. */
+    fun currentLocation(onResult: (Triple<Double, Double, Int?>?) -> Unit) { onResult(null) }
+
     /** Lets the person choose where to save a received file. */
     fun saveAs(msgId: String, name: String)
 
@@ -58,7 +64,8 @@ interface TreePlatform {
     val extraScreens: List<Pair<String, String>> get() = emptyList()
 }
 
-enum class AttachKind { PHOTO, FILE }
+/** PHOTO_ONCE: a picture the receiver can open once (chat.view_once). */
+enum class AttachKind { PHOTO, PHOTO_ONCE, FILE }
 
 /** Short Korean / English text by the app's language. */
 fun t(ko: String, en: String): String = if (app.tree.shared.Strings.lang == app.tree.shared.Lang.KO) ko else en

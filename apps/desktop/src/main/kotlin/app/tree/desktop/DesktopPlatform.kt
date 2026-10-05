@@ -53,16 +53,19 @@ class DesktopPlatform(private val model: AppModel, private val scope: CoroutineS
     }
 
     override fun pickAndSend(group: String, kind: AttachKind) {
-        val f = open(if (kind == AttachKind.PHOTO) t("사진 보내기", "Send photo") else t("파일 보내기", "Send file")) ?: return
+        val f = open(if (kind == AttachKind.FILE) t("파일 보내기", "Send file") else t("사진 보내기", "Send photo")) ?: return
         scope.launch {
-            val picture = if (kind == AttachKind.PHOTO) DesktopMedia.load(f) else null
+            val picture = if (kind != AttachKind.FILE) DesktopMedia.load(f) else null
+            val once = kind == AttachKind.PHOTO_ONCE
             if (picture == null) {
+                // Not a picture this computer can read: a view-once one is not sent as a plain file.
+                if (once) { model.notice(t("사진만 한 번 보기로 보낼 수 있어요", "Only pictures can be view-once")); return@launch }
                 model.sendFile(group, f)
             } else {
                 // Re-encoded, so the original's metadata (place, camera) stays on this computer.
                 val jpeg = DesktopMedia.jpeg(picture)
                 model.sendMedia(group, jpeg, f.nameWithoutExtension + ".jpg", "image/jpeg",
-                    AppModel.picture(picture.width, picture.height, DesktopMedia.thumbnail(picture)))
+                    AppModel.picture(picture.width, picture.height, if (once) null else DesktopMedia.thumbnail(picture)).copy(viewOnce = once))
             }
         }
     }

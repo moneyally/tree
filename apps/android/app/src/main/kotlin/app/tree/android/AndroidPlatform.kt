@@ -53,6 +53,8 @@ class AndroidPlatform(private val activity: ComponentActivity, private val model
     private var pendingKind: AttachKind = AttachKind.FILE
     private var pendingImage: ((ByteArray, String) -> Unit)? = null
     private var pendingSave: String? = null
+    private var askLocation: (() -> Unit)? = null
+    private var pendingLocation: ((Triple<Double, Double, Int?>?) -> Unit)? = null
 
     /** Registers the system pickers; call once inside the activity's content. */
     @Composable
@@ -67,7 +69,13 @@ class AndroidPlatform(private val activity: ComponentActivity, private val model
                 model.notice(app.tree.ui.t("저장했어요", "Saved"))
             }
         }
+        val perm = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
+            val cb = pendingLocation
+            pendingLocation = null
+            if (cb != null) { if (granted.values.any { it }) locate(cb) else cb(null) }
+        }
         SideEffect {
+            askLocation = { perm.launch(arrayOf(android.Manifest.permission.ACCESS_FINE_LOCATION, android.Manifest.permission.ACCESS_COARSE_LOCATION)) }
             pickPhoto = { open.launch("image/*") }
             pickFile = { open.launch("*/*") }
             createDoc = { name -> save.launch(name) }
@@ -88,14 +96,17 @@ class AndroidPlatform(private val activity: ComponentActivity, private val model
             when {
                 image != null -> withContext(Dispatchers.Default) { reencode(bytes, 1024) }?.let { (jpeg, _) -> image(jpeg, "image/jpeg") }
                 group == null -> {}
-                kind == AttachKind.PHOTO && mime.startsWith("image/") -> {
+                kind != AttachKind.FILE && mime.startsWith("image/") -> {
                     // Re-encoded here, so the original's metadata (place, camera) stays on the phone.
                     val out = withContext(Dispatchers.Default) { reencode(bytes, 2560) }
-                    if (out == null) model.sendBytes(group, bytes, name, mime)
+                    if (out == null) { if (kind == AttachKind.PHOTO) model.sendBytes(group, bytes, name, mime) }
                     else {
                         val (jpeg, bmp) = out
-                        val thumb = withContext(Dispatchers.Default) { thumbnail(bmp) }
-                        model.sendMedia(group, jpeg, name.substringBeforeLast('.') + ".jpg", "image/jpeg", AppModel.picture(bmp.width, bmp.height, thumb))
+                        val once = kind == AttachKind.PHOTO_ONCE
+                        // A view-once picture carries no preview: nothing to see before it is opened.
+                        val thumb = if (once) null else withContext(Dispatchers.Default) { thumbnail(bmp) }
+                        model.sendMedia(group, jpeg, name.substringBeforeLast('.') + ".jpg", "image/jpeg",
+                            AppModel.picture(bmp.width, bmp.height, thumb).copy(viewOnce = once))
                         bmp.recycle()
                     }
                 }
@@ -167,7 +178,7 @@ class AndroidPlatform(private val activity: ComponentActivity, private val model
     override fun pickAndSend(group: String, kind: AttachKind) {
         pendingGroup = group
         pendingKind = kind
-        (if (kind == AttachKind.PHOTO) pickPhoto else pickFile)?.invoke("")
+        (if (kind == AttachKind.FILE) pickFile else pickPhoto)?.invoke("")
     }
 
     override fun pickImage(onPicked: (ByteArray, String) -> Unit) {
@@ -183,6 +194,40 @@ class AndroidPlatform(private val activity: ComponentActivity, private val model
 
     override fun decodeImage(bytes: ByteArray, maxPx: Int): ImageBitmap? =
         runCatching { decode(bytes, maxPx)?.asImageBitmap() }.getOrNull()
+
+    override val hasLocation = true
+
+    override fun currentLocation(onResult: (Triple<Double, Double, Int?>?) -> Unit) {
+        val granted = listOf(android.Manifest.permission.ACCESS_FINE_LOCATION, android.Manifest.permission.ACCESS_COARSE_LOCATION)
+            .any { activity.checkSelfPermission(it) == android.content.pm.PackageManager.PERMISSION_GRANTED }
+        if (granted) locate(onResult) else { pendingLocation = onResult; askLocation?.invoke() ?: onResult(null) }
+    }
+
+    /** One fix: the newest known one if it is recent, else a single new one (at most 20 s). */
+    @android.annotation.SuppressLint("MissingPermission")
+    private fun locate(onResult: (Triple<Double, Double, Int?>?) -> Unit) {
+        val lm = activity.getSystemService(android.location.LocationManager::class.java) ?: return onResult(null)
+        val providers = lm.getProviders(true).filter { it != android.location.LocationManager.PASSIVE_PROVIDER }
+        if (providers.isEmpty()) return onResult(null)
+        val recent = providers.mapNotNull { runCatching { lm.getLastKnownLocation(it) }.getOrNull() }
+            .filter { System.currentTimeMillis() - it.time < 2 * 60_000 }.minByOrNull { it.accuracy }
+        if (recent != null) return onResult(Triple(recent.latitude, recent.longitude, recent.accuracy.toInt()))
+        var done = false
+        val listener = object : android.location.LocationListener {
+            override fun onLocationChanged(l: android.location.Location) {
+                if (done) return
+                done = true
+                lm.removeUpdates(this)
+                onResult(Triple(l.latitude, l.longitude, l.accuracy.toInt()))
+            }
+            @Deprecated("old API") override fun onStatusChanged(p: String?, s: Int, e: android.os.Bundle?) {}
+            override fun onProviderEnabled(p: String) {}
+            override fun onProviderDisabled(p: String) {}
+        }
+        val provider = if (android.location.LocationManager.GPS_PROVIDER in providers) android.location.LocationManager.GPS_PROVIDER else providers.first()
+        runCatching { lm.requestLocationUpdates(provider, 0L, 0f, listener, android.os.Looper.getMainLooper()) }.onFailure { done = true; onResult(null); return }
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ if (!done) { done = true; lm.removeUpdates(listener); onResult(null) } }, 20_000)
+    }
 
     override fun copy(text: String) {
         activity.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText("Tree", text))

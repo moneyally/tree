@@ -451,7 +451,10 @@ private fun MessageBubble(
                     m.replyTo?.let { id -> ReplyQuote(byId[id], state, mine) }
                     when {
                         m.deleted -> TextWithMeta(AnnotatedString(t("삭제된 메시지입니다", "This message was deleted")), extra.bubbleMeta, m, mine, state, replyCount)
+                        m.kind == "file" && (m.file?.viewOnce == true || (m.file == null && state.files[m.id] == null && m.text == null)) -> { ViewOnceContent(model, platform, m, mine, textColor); MetaRow(m, mine, state, replyCount, Modifier.align(Alignment.End)) }
                         m.kind == "file" -> { FileContent(model, platform, state, m, textColor); MetaRow(m, mine, state, replyCount, Modifier.align(Alignment.End)) }
+                        m.kind == "location" -> { LocationContent(model, platform, media, m, textColor); MetaRow(m, mine, state, replyCount, Modifier.align(Alignment.End)) }
+                        m.kind == "event" -> { EventContent(model, chat, media, m, textColor); MetaRow(m, mine, state, replyCount, Modifier.align(Alignment.End)) }
                         m.kind == "poll" -> { state.rich.polls[m.id]?.let { PollContent(model, chat.id, it, textColor) } ?: Text(Format.preview(m), color = textColor); MetaRow(m, mine, state, replyCount, Modifier.align(Alignment.End)) }
                         else -> {
                             val formatted = m.formatted && state.chatFeatures.none { it.key == "chat.formatting" && !it.applied }
@@ -637,7 +640,7 @@ private fun Composer(model: AppModel, platform: TreePlatform, state: UiState, me
                 MentionBar(state, q) { name -> text = text.substring(0, text.lastIndexOf('@')) + "@" + name + " " }
             }
             Row(Modifier.fillMaxWidth().padding(4.dp), verticalAlignment = Alignment.Bottom) {
-                IconButton(onClick = { panel = !panel }) {
+                IconButton(onClick = { panel = !panel; attach = false }) {
                     Icon(if (panel) Icons.Rounded.Keyboard else Icons.Rounded.EmojiEmotions, t("이모지와 스티커", "Emoji and stickers"), tint = extra.muted)
                 }
                 Box(Modifier.weight(1f).heightIn(min = 48.dp).padding(vertical = 13.dp)) {
@@ -653,13 +656,7 @@ private fun Composer(model: AppModel, platform: TreePlatform, state: UiState, me
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
-                Box {
-                    IconButton(onClick = { attach = true }) { Icon(Icons.Rounded.AttachFile, t("첨부", "Attach"), tint = extra.muted) }
-                    DropdownMenu(attach, { attach = false }) {
-                        DropdownMenuItem({ Text(t("사진", "Photo")) }, leadingIcon = { Icon(Icons.Rounded.Image, null) }, onClick = { attach = false; platform.pickAndSend(chat.id, AttachKind.PHOTO) })
-                        DropdownMenuItem({ Text(t("파일", "File")) }, leadingIcon = { Icon(Icons.Rounded.InsertDriveFile, null) }, onClick = { attach = false; platform.pickAndSend(chat.id, AttachKind.FILE) })
-                    }
-                }
+                IconButton(onClick = { attach = !attach; panel = false }) { Icon(Icons.Rounded.AttachFile, t("첨부", "Attach"), tint = if (attach) MaterialTheme.colorScheme.primary else extra.muted) }
                 val canSend = text.isNotBlank()
                 var sendMenu by remember { mutableStateOf(false) }
                 fun send(silent: Boolean) {
@@ -691,6 +688,10 @@ private fun Composer(model: AppModel, platform: TreePlatform, state: UiState, me
                 }
             }
             if (panel) StickerPanel(model, platform, media, chat) { e -> text += e }
+            if (attach) {
+                HorizontalDivider(color = extra.divider)
+                AttachSheet(model, platform, state, chat) { attach = false }
+            }
         }
     }
 }

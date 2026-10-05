@@ -647,12 +647,49 @@ class AppModel(
             code.kind != want -> ScanOutcome.WRONG_KIND
             code.kind == CodeKind.DEVICE_LINK ->
                 if (scanLink(code.text) != null) ScanOutcome.ACCEPTED.also { watchLink() } else ScanOutcome.FAILED
+            code.kind == CodeKind.SAFETY -> {
+                // Only for the contact whose code was asked for; the core compares in constant time.
+                val acc = safetyTarget ?: return ScanOutcome.FAILED
+                val bytes = TreeCodes.safetyPayload(code) ?: return ScanOutcome.FAILED
+                if (call { it.verify(acc, bytes) } != null) {
+                    _state.update { it.copy(notice = Strings.t("safety_matched")) }
+                    loadContacts()
+                    ScanOutcome.ACCEPTED
+                } else ScanOutcome.FAILED
+            }
             else -> if (addByLink(code.text) != null) {
                 _state.update { it.copy(notice = Strings.t("qr_friend_added")) }
                 ScanOutcome.ACCEPTED
             } else ScanOutcome.FAILED
         }
     }
+
+    /** The contact a safety QR scan is for (set before the scanner opens). */
+    var safetyTarget: String? = null
+
+    /** My safety QR for [account] (show it; they scan it). */
+    suspend fun safetyQr(account: String): Pair<String, QrMatrix?>? =
+        call { it.safetyQr(account) }?.let { TreeCodes.safetyText(it) }?.let { it to QrCode.encode(it) }
+
+    // --- contacts and security ---
+
+    suspend fun block(account: String): Boolean = (call { it.block(account) } != null).also { loadContacts(); refresh() }
+
+    suspend fun unblock(account: String): Boolean = (call { it.unblock(account) } != null).also { loadContacts(); refresh() }
+
+    /** My own screenshot block for one chat (on top of the chat's setting). */
+    suspend fun setScreenshotBlock(group: String, on: Boolean): Boolean =
+        (call { it.setScreenshotBlock(group, on) } != null).also { refresh() }
+
+    /** After a suspected compromise: new keys in every chat now. How many chats. */
+    suspend fun refreshAllKeys(): Int? = call { it.refreshAll() }?.size
+
+    suspend fun recoveryStatus(): uniffi.tree_ffi.Recovery? = call { it.recoveryStatus() }
+
+    /** Turns recovery off (pending for a while unless the current phrase is given). */
+    suspend fun releaseRecovery(current: String?): uniffi.tree_ffi.Recovery? = call { it.releaseRecovery(current?.trim()?.takeIf { p -> p.isNotEmpty() }) }
+
+    suspend fun releaseUsername(): Boolean = (call { it.releaseUsername() } != null).also { loadUsernameLink() }
 
     suspend fun typing(group: String, on: Boolean) {
         call { it.setTyping(group, on) }
@@ -938,7 +975,7 @@ class AppModel(
         /** The line a scanning screen shows for [o] (null: nothing to say). */
         fun scanMessage(o: ScanOutcome, want: CodeKind): String? = when (o) {
             ScanOutcome.NOT_TREE -> Strings.t("qr_not_tree")
-            ScanOutcome.WRONG_KIND -> Strings.t(if (want == CodeKind.DEVICE_LINK) "qr_wrong_device" else "qr_wrong_friend")
+            ScanOutcome.WRONG_KIND -> Strings.t(when (want) { CodeKind.DEVICE_LINK -> "qr_wrong_device"; CodeKind.SAFETY -> "qr_wrong_safety"; else -> "qr_wrong_friend" })
             else -> null
         }
 

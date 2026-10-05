@@ -27,7 +27,7 @@ object ScanFrames {
         return when (code.kind) {
             want -> Decision.Use(code.text)
             CodeKind.NOT_TREE -> Decision.Ignore("qr_not_tree")
-            else -> Decision.Ignore(if (want == CodeKind.DEVICE_LINK) "qr_wrong_device" else "qr_wrong_friend")
+            else -> Decision.Ignore(when (want) { CodeKind.DEVICE_LINK -> "qr_wrong_device"; CodeKind.SAFETY -> "qr_wrong_safety"; else -> "qr_wrong_friend" })
         }
     }
 

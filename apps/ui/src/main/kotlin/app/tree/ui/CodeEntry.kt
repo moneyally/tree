@@ -43,7 +43,7 @@ fun PasteScanner(model: AppModel, kind: CodeKind, onClose: () -> Unit) {
     var message by remember { mutableStateOf<String?>(null) }
     val device = kind == CodeKind.DEVICE_LINK
     Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
-        BackHeader(if (device) t("기기 연결", "Link a device") else t("친구 추가", "Add a friend"), onClose)
+        BackHeader(when (kind) { CodeKind.DEVICE_LINK -> t("기기 연결", "Link a device"); CodeKind.SAFETY -> t("안전 번호 확인", "Verify safety number"); else -> t("친구 추가", "Add a friend") }, onClose)
         Column(
             Modifier.fillMaxWidth().padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -51,8 +51,11 @@ fun PasteScanner(model: AppModel, kind: CodeKind, onClose: () -> Unit) {
         ) {
             Icon(if (device) Icons.Rounded.Laptop else Icons.Rounded.PersonAdd, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 20.dp))
             Text(
-                if (device) t("새 기기 화면의 QR 아래에 있는 글자를 복사해서 붙여 넣으세요.", "Copy the text under the QR code on the new device and paste it here.")
-                else t("친구에게 받은 링크를 붙여 넣으세요.", "Paste the link your friend sent you."),
+                when (kind) {
+                    CodeKind.DEVICE_LINK -> t("새 기기 화면의 QR 아래에 있는 글자를 복사해서 붙여 넣으세요.", "Copy the text under the QR code on the new device and paste it here.")
+                    CodeKind.SAFETY -> t("상대 화면의 안전 번호 QR 아래 글자를 붙여 넣으세요.", "Paste the text under the safety number QR on their screen.")
+                    else -> t("친구에게 받은 링크를 붙여 넣으세요.", "Paste the link your friend sent you.")
+                },
                 textAlign = TextAlign.Center, color = extra.muted,
             )
             OutlinedTextField(

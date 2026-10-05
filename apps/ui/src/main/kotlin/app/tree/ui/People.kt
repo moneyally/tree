@@ -32,6 +32,7 @@ import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Screenshot
 import androidx.compose.material.icons.rounded.AlternateEmail
 import androidx.compose.material.icons.rounded.Archive
 import androidx.compose.material.icons.rounded.Block
@@ -176,30 +177,43 @@ fun ContactsScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state:
                 SettingsRow(t("아이디로 찾기", "Find by username"), null, Icons.Rounded.PersonAdd, TreeColors.TileGreen, onClick = { byName = true }, trailing = null)
             }
         }
-        if (list.isEmpty()) {
-            item { EmptyState(Icons.Outlined.PersonOutline, t("아직 연락처가 없어요", "No contacts yet"), t("QR이나 아이디로 친구를 추가해 보세요.", "Add friends by QR code or username.")) }
-        } else {
-            item { Text(t("내 연락처", "My contacts"), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(start = 22.dp, top = 14.dp, bottom = 4.dp)) }
-            items(list, key = { it.account }) { c ->
+        val active = list.filter { !it.blocked }
+        val blocked = list.filter { it.blocked }
+        if (active.isEmpty() && blocked.isEmpty()) {
+            item { EmptyState(Icons.Outlined.PersonOutline, t("아직 연락처가 없어요", "No contacts yet"), t("QR이나 아이디로 친구를 추가해요.", "Add friends by QR code or username.")) }
+        }
+        if (active.isNotEmpty()) {
+            item { SectionLabel(t("내 연락처", "My contacts")) }
+            items(active, key = { it.account }) { c ->
                 Row(
                     Modifier.fillMaxWidth().clickable { scope.launch { model.chatWith(c.account)?.let { nav.push(Route.Chat(it)) } } }.padding(horizontal = 18.dp, vertical = 9.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Avatar(c.name, c.account, 50.dp)
                     Spacer(Modifier.width(14.dp))
-                    Column(Modifier.weight(1f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(c.name, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            if (c.verified) { Spacer(Modifier.width(6.dp)); Icon(Icons.Rounded.VerifiedUser, t("안전 번호 확인됨", "Verified"), tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp)) }
-                        }
-                        Text(if (c.blocked) t("차단함", "Blocked") else if (c.verified) t("안전 번호 확인됨", "Safety number verified") else t("확인 안 됨", "Not verified"),
-                            style = MaterialTheme.typography.bodySmall, color = if (c.blocked) extra.danger else extra.muted)
-                    }
+                    Text(c.name, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                    if (c.verified) { Spacer(Modifier.width(6.dp)); Icon(Icons.Rounded.VerifiedUser, t("안전 번호 확인됨", "Verified"), tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(17.dp)) }
+                }
+            }
+        }
+        if (blocked.isNotEmpty()) {
+            item { SectionLabel(t("차단한 사람", "Blocked")) }
+            items(blocked, key = { "b" + it.account }) { c ->
+                Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 10.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Avatar(c.name, c.account, 44.dp)
+                    Spacer(Modifier.width(14.dp))
+                    Text(c.name, style = MaterialTheme.typography.titleMedium, color = extra.muted, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                    TextButton(onClick = { scope.launch { model.unblock(c.account) } }) { Text(t("차단 해제", "Unblock")) }
                 }
             }
         }
     }
     if (byName) FindByName(model, nav) { byName = false }
+}
+
+@Composable
+private fun SectionLabel(text: String) {
+    Text(text, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(start = 22.dp, top = 14.dp, bottom = 4.dp))
 }
 
 @Composable
@@ -231,7 +245,6 @@ private fun FindByName(model: AppModel, nav: TreeNav, onClose: () -> Unit) {
 @Composable
 fun ChatInfoScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state: UiState, chat: Chat) {
     val scope = rememberCoroutineScope()
-    var safety by remember { mutableStateOf<String?>(null) }
     var invite by remember { mutableStateOf(false) }
     var rename by remember { mutableStateOf(false) }
     var link by remember { mutableStateOf<String?>(null) }
@@ -242,6 +255,7 @@ fun ChatInfoScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state:
     var tab by remember(chat.id) { mutableStateOf(if (chat.others > 1 || chat.channel) InfoTab.MEMBERS else InfoTab.MEDIA) }
     var leaving by remember { mutableStateOf(false) }
     var muting by remember { mutableStateOf(false) }
+    var blocking by remember { mutableStateOf<String?>(null) }
     Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().verticalScroll(rememberScrollState()).padding(bottom = 30.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             androidx.compose.material3.IconButton(onClick = { nav.pop() }) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, t("뒤로", "Back")) }
@@ -270,13 +284,27 @@ fun ChatInfoScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state:
             InfoAction(Icons.AutoMirrored.Rounded.Logout, t("나가기", "Leave"), Modifier.weight(1f)) { leaving = true }
         }
         CardGroup {
-            others.mapNotNull { it.account }.distinct().singleOrNull()?.takeIf { chat.others <= 1 }?.let { acc ->
-                SettingsRow(t("안전 번호 확인", "Verify safety number"), t("직접 만나서 숫자를 맞춰 보세요", "Compare the numbers in person"), Icons.Rounded.Shield, TreeColors.TileGreen, onClick = { scope.launch { safety = model.safetyNumber(acc) } })
+            val peer = others.mapNotNull { it.account }.distinct().singleOrNull()?.takeIf { chat.others <= 1 && !chat.channel }
+            val contact = peer?.let { a -> state.contacts.firstOrNull { it.account == a } }
+            LaunchedEffect(peer) { if (peer != null && contact == null) model.loadContacts() }
+            if (peer != null) {
+                SettingsRow(
+                    t("안전 번호", "Safety number"), if (contact?.verified == true) t("확인됨", "Verified") else t("확인 안 됨", "Not verified"),
+                    Icons.Rounded.Shield, TreeColors.TileGreen, onClick = { nav.push(Route.Safety(chat.id, peer)) },
+                )
+            }
+            SwitchRow(t("화면 캡처 막기", "Block screenshots"), t("이 대화에서 내 화면만", "On my screen, in this chat"), state.screenshotBlocked, Icons.Rounded.Screenshot, TreeColors.TileTeal) { on ->
+                scope.launch { model.setScreenshotBlock(chat.id, on) }
             }
             if (admin && chat.others > 1) {
                 SettingsRow(t("초대 링크 만들기", "Make invite link"), t("24시간 동안 10명까지", "24 hours, up to 10 people"), Icons.Rounded.Link, TreeColors.TileIndigo, onClick = { scope.launch { link = model.inviteLink(chat.id) } }, trailing = null)
             }
             SettingsRow(if (chat.pinned) t("목록 위 고정 해제", "Unpin from top") else t("목록 위에 고정", "Pin to top"), null, Icons.Rounded.PushPin, TreeColors.TileAmber, onClick = { scope.launch { model.pin(chat.id, !chat.pinned) } }, trailing = null)
+            if (peer != null) {
+                val blocked = contact?.blocked == true
+                SettingsRow(if (blocked) t("차단 해제", "Unblock") else t("차단", "Block"), null, Icons.Rounded.Block, TreeColors.TileRed, titleColor = if (blocked) MaterialTheme.colorScheme.onSurface else extra.danger,
+                    onClick = { if (blocked) scope.launch { model.unblock(peer) } else blocking = peer }, trailing = null)
+            }
         }
         Spacer(Modifier.height(14.dp))
         val tabs = InfoTab.entries.filter { it != InfoTab.MEMBERS || chat.others > 1 || chat.channel }
@@ -353,7 +381,8 @@ fun ChatInfoScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state:
         if (admin && state.chatFeatures.isNotEmpty()) {
             var open by remember { mutableStateOf(false) }
             CardGroup {
-                SettingsRow(t("대화방 설정", "Chat settings"), t("관리자만 바꿀 수 있어요 · 사라지는 메시지, 캡처 막기 등", "Admins only · disappearing messages, screenshot block and more"),
+                SettingsRow(t("대화방 설정", "Chat settings"),
+                    if (chat.others > 1) t("관리자만 · 사라지는 메시지, 캡처 막기 등", "Admins only · disappearing messages, screenshots...") else t("사라지는 메시지, 캡처 막기 등", "Disappearing messages, screenshots..."),
                     Icons.Rounded.Tune, TreeColors.TileGrey, onClick = { open = !open },
                     trailing = { Icon(if (open) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore, null, tint = extra.muted) })
                 if (open) state.chatFeatures.filter { it.lockedBy == null }.forEach { f ->
@@ -365,6 +394,15 @@ fun ChatInfoScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state:
         }
     }
     if (muting) MuteDialog(model, chat) { muting = false }
+    blocking?.let { acc ->
+        AlertDialog(
+            onDismissRequest = { blocking = null },
+            title = { Text(t("${chat.title} 님을 차단할까요?", "Block ${chat.title}?")) },
+            text = { Text(t("차단하면 이 사람이 보내는 메시지와 초대를 받지 않아요. 상대에게 알리지 않아요.", "You won't get their messages or invitations. They aren't told."), color = extra.muted) },
+            confirmButton = { TextButton(onClick = { blocking = null; scope.launch { if (model.block(acc)) model.notice(t("차단했어요", "Blocked")) } }) { Text(t("차단", "Block"), color = extra.danger, fontWeight = FontWeight.SemiBold) } },
+            dismissButton = { TextButton(onClick = { blocking = null }) { Text(t("취소", "Cancel")) } },
+        )
+    }
     if (leaving) {
         AlertDialog(
             onDismissRequest = { leaving = false },
@@ -372,22 +410,6 @@ fun ChatInfoScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state:
             text = { Text(t("조용히 나가면 다른 사람에게 나갔다는 줄이 보이지 않아요.", "Leaving quietly shows no \"left\" line to the others."), color = extra.muted) },
             confirmButton = { TextButton(onClick = { leaving = false; scope.launch { if (model.leave(chat.id, false)) nav.home() } }) { Text(t("나가기", "Leave"), color = extra.danger, fontWeight = FontWeight.SemiBold) } },
             dismissButton = { TextButton(onClick = { leaving = false; scope.launch { if (model.leave(chat.id, true)) nav.home() } }) { Text(t("조용히 나가기", "Leave quietly")) } },
-        )
-    }
-    safety?.let { s ->
-        AlertDialog(
-            onDismissRequest = { safety = null },
-            title = { Text(t("안전 번호", "Safety number")) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text(t("상대 기기에 보이는 숫자와 같으면 ‘확인’을 누르세요.", "If the other device shows the same numbers, tap Verify."), color = extra.muted)
-                    Box(Modifier.clip(RoundedCornerShape(14.dp)).background(extra.card).padding(16.dp)) {
-                        Text(s.chunked(5).chunked(4).joinToString("\n") { it.joinToString("  ") }, fontFamily = FontFamily.Monospace, fontSize = 17.sp, lineHeight = 26.sp)
-                    }
-                }
-            },
-            confirmButton = { TextButton(onClick = { val acc = others.mapNotNull { it.account }.firstOrNull(); safety = null; if (acc != null) scope.launch { model.markVerified(acc) } }) { Text(t("확인", "Verify"), fontWeight = FontWeight.SemiBold) } },
-            dismissButton = { TextButton(onClick = { safety = null }) { Text(t("닫기", "Close")) } },
         )
     }
     link?.let { l ->
@@ -547,6 +569,43 @@ fun NewGroupScreen(model: AppModel, nav: TreeNav, state: UiState) {
                     busy = false
                 }
             })
+        }
+    }
+}
+
+
+/**
+ * Safety number with one contact: the digits to compare, this device's QR
+ * for them to scan, and the camera (or a paste field) to scan theirs; a
+ * matching scan marks the contact verified (the core checks it).
+ */
+@Composable
+fun SafetyScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state: UiState, account: String, title: String) {
+    val scope = rememberCoroutineScope()
+    val number by produceState<String?>(null, account) { value = model.safetyNumber(account) }
+    val qr by produceState<Pair<String, app.tree.shared.qr.QrMatrix?>?>(null, account) { value = model.safetyQr(account) }
+    val verified = state.contacts.firstOrNull { it.account == account }?.verified == true
+    LaunchedEffect(Unit) { model.loadContacts() }
+    Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
+        BackHeader(t("안전 번호", "Safety number"), { nav.pop() })
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 8.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(if (verified) Icons.Rounded.VerifiedUser else Icons.Rounded.Shield, null, tint = if (verified) MaterialTheme.colorScheme.primary else extra.muted, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(if (verified) t("$title 님과 확인됨", "Verified with $title") else t("$title 님과 아직 확인 안 됨", "Not yet verified with $title"),
+                    color = if (verified) MaterialTheme.colorScheme.primary else extra.muted, style = MaterialTheme.typography.titleSmall)
+            }
+            qr?.second?.let { m -> Box(Modifier.clip(RoundedCornerShape(20.dp)).background(Color.White).padding(14.dp)) { QrView(m, 220.dp) } }
+            number?.let { n ->
+                Text(n.filter { it.isDigit() }.chunked(5).chunked(4).joinToString("\n") { it.joinToString("   ") }, fontFamily = FontFamily.Monospace, fontSize = 18.sp, lineHeight = 28.sp, textAlign = TextAlign.Center)
+            }
+            Text(t("만나서 서로의 QR을 찍거나, 숫자가 상대 화면과 같은지 보세요. 같으면 둘 사이에 엿보는 사람이 없어요.",
+                "Scan each other's QR in person, or check the digits match their screen. If they match, nobody is in between."),
+                style = MaterialTheme.typography.bodySmall, color = extra.muted, textAlign = TextAlign.Center)
+            PillButton(t("상대 QR 찍기", "Scan their code"), { model.safetyTarget = account; nav.push(Route.Scan(CodeKind.SAFETY)) }, icon = Icons.Rounded.QrCodeScanner)
+            // Without a camera (computer): the code's text, to paste on the other device.
+            if (!platform.isPhone) qr?.let { (text, _) -> QuietButton(t("내 코드 글자 복사", "Copy my code as text"), { platform.copy(text); model.notice(t("복사했어요", "Copied")) }) }
+            if (!verified) QuietButton(t("숫자가 같아요", "The digits match"), { scope.launch { if (model.markVerified(account)) { model.loadContacts(); model.notice(t("확인됨으로 표시했어요", "Marked as verified")) } } })
         }
     }
 }

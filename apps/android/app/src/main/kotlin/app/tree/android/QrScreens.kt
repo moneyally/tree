@@ -194,9 +194,9 @@ fun ScanScreen(model: AppModel, want: CodeKind, onClose: () -> Unit) {
     }
 
     Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().verticalScroll(rememberScrollState())) {
-      app.tree.ui.BackHeader(Strings.t(if (want == CodeKind.DEVICE_LINK) "qr_link_new_device" else "qr_add_friend"), onClose)
+      app.tree.ui.BackHeader(Strings.t(when (want) { CodeKind.DEVICE_LINK -> "qr_link_new_device"; CodeKind.SAFETY -> "qr_safety_title"; else -> "qr_add_friend" }), onClose)
       Column(Modifier.padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Text(Strings.t(if (want == CodeKind.DEVICE_LINK) "qr_scan_device" else "qr_scan_friend"), color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(Strings.t(when (want) { CodeKind.DEVICE_LINK -> "qr_scan_device"; CodeKind.SAFETY -> "qr_scan_safety"; else -> "qr_scan_friend" }), color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (granted) {
             CameraScanner(
                 torch = torch,

@@ -338,14 +338,15 @@ this change have no self group until the next link.
 
 ### 6.5 QR codes (apps; `apps/shared/.../qr`)
 
-The apps show two kinds of QR code and scan the same two kinds, nothing
-else. The QR code's content is **the link text exactly**, byte for byte:
+The apps show three kinds of QR code and scan the same three kinds,
+nothing else. The QR code's content is **the link text exactly**, byte for byte:
 no extra prefix, no wrapper, no other encoding.
 
 | Code | Content | Shown by | Scanned by |
 | --- | --- | --- | --- |
 | Device link (PROTOCOL.md 8.11) | `tree://link/` + 194 base64url characters (version 2 invitation, 145 bytes) | the new device, while it waits (sign-up screen, "This is a new device — link to my account") | the existing device: Android "Link a new device (scan QR)"; the desktop takes the text pasted (below) |
 | Username link (PROTOCOL.md 8.4) | `tree://u/` + 22 base64url characters (16-byte token) | settings, while `user.username_link` is applied (desktop: "My QR code" dialog; Android: in settings) | Android "Add friend by QR"; both apps also take the text pasted |
+| Safety number (PROTOCOL.md, safety numbers) | `tree://safety/` + 87 base64url characters (65-byte `safety_qr` payload: version, both fingerprints, the shower's first) | a 1:1 chat's info, "Safety number" | the other person's device, for that same contact: `verify(account, payload)` checks it in constant time and marks the contact verified only if it matches |
 
 Encoding: ISO/IEC 18004 QR code, byte mode (the texts contain lower-case
 letters), error correction level M, a quiet zone of 4 modules, black on
@@ -357,7 +358,7 @@ Scanner rules (`TreeCodes.parse`, `AppModel.useScanned`, Android
 `ScanFrames`):
 
 - Leading and trailing white space is dropped; nothing else is changed.
-  The text must start with `tree://link/` or `tree://u/` (lower case, exact)
+  The text must start with `tree://link/`, `tree://u/` or `tree://safety/` (lower case, exact)
   followed by exactly the right number of base64url characters
   (`A-Z a-z 0-9 - _`, no padding). Anything else, including web
   addresses, other schemes, `tree://join/...` and other Tree links, is

@@ -136,6 +136,8 @@ class ScreenshotTest {
 
         alice.openChat(dm)
         shot("07-dm-dark", alice, pa, TreeNav().apply { push(Route.Chat(dm)) }, dark = true)
+        shot("07b-dm-info-dark", alice, pa, TreeNav().apply { push(Route.ChatInfo(dm)) }, dark = true)
+        shot("07c-safety-dark", alice, pa, TreeNav().apply { push(Route.Safety(dm, bob.state.value.account)) }, dark = true)
         alice.openChat(null)
 
         shot("08-settings-dark", alice, pa, TreeNav().apply { tab = Tab.SETTINGS }, dark = true)

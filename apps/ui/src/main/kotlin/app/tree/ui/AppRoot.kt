@@ -66,6 +66,7 @@ sealed class Route {
     data class Extra(val key: String) : Route()
     data object NewGroup : Route()
     data class ChatSearch(val id: String) : Route()
+    data class Safety(val chat: String, val account: String) : Route()
 }
 
 enum class Tab(val ko: String, val en: String, val on: ImageVector, val off: ImageVector) {
@@ -141,6 +142,7 @@ private fun Signed(model: AppModel, platform: TreePlatform, nav: TreeNav, state:
         is Route.Scan -> platform.Scanner(top.kind) { nav.pop() }
         is Route.Extra -> platform.Extra(top.key) { nav.pop() }
         is Route.NewGroup -> NewGroupScreen(model, nav, state)
+        is Route.Safety -> SafetyScreen(model, platform, nav, state, top.account, state.chats.firstOrNull { it.id == top.chat }?.title ?: "")
         is Route.ChatSearch -> state.chats.firstOrNull { it.id == top.id }?.let { ChatSearchScreen(model, nav, state, it) }
             ?: LaunchedEffect(top) { nav.pop() }
     }

@@ -19,6 +19,10 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.runtime.produceState
+import androidx.compose.material.icons.rounded.AlternateEmail
+import androidx.compose.material.icons.rounded.KeyOff
+import androidx.compose.material.icons.rounded.Autorenew
 import androidx.compose.material.icons.rounded.AccountCircle
 import androidx.compose.material.icons.rounded.Badge
 import androidx.compose.material.icons.rounded.Block
@@ -196,6 +200,18 @@ fun SettingsPage(model: AppModel, platform: TreePlatform, nav: TreeNav, state: U
                 "security" -> {
                     CardGroup { PAGES.getValue(page).forEach { k -> state.features.firstOrNull { it.key == k }?.let { FeatureRow(model, it) } } }
                     platform.AppLockSettings()
+                    var refresh by remember { mutableStateOf(false) }
+                    CardGroup {
+                        SettingsRow(t("모든 대화 키 새로 고침", "Refresh keys in all chats"), t("기기를 잃었거나 누가 봤다고 의심될 때", "If a device was lost or you suspect someone saw it"),
+                            Icons.Rounded.Autorenew, TreeColors.TileIndigo, onClick = { refresh = true })
+                    }
+                    if (refresh) AlertDialog(
+                        onDismissRequest = { refresh = false },
+                        title = { Text(t("키를 새로 고칠까요?", "Refresh keys?")) },
+                        text = { Text(t("모든 대화의 암호 키를 지금 바꿔요. 예전 키로는 앞으로의 메시지를 읽을 수 없어요.", "Every chat gets new keys now. Old keys can't read anything sent from now on."), color = extra.muted) },
+                        confirmButton = { TextButton(onClick = { refresh = false; scope.launch { model.refreshAllKeys()?.let { n -> model.notice(t("대화 ${n}개의 키를 바꿨어요", "New keys in $n chats")) } } }) { Text(t("새로 고침", "Refresh"), fontWeight = FontWeight.SemiBold) } },
+                        dismissButton = { TextButton(onClick = { refresh = false }) { Text(t("취소", "Cancel")) } },
+                    )
                     Caption(t("앱 잠금을 켜면 앱을 나갈 때 대화가 잠기고, 기기 잠금 문장·PIN·지문으로만 다시 열려요.", "With app lock on, leaving the app locks your chats until you unlock again."))
                 }
                 else -> CardGroup {
@@ -263,7 +279,15 @@ private fun AccountPage(model: AppModel, nav: TreeNav, state: UiState) {
     var phrase by remember { mutableStateOf<String?>(null) }
     var confirmDelete by remember { mutableStateOf(false) }
     var username by remember { mutableStateOf("") }
+    val current by produceState<String?>(null, state.usernameLink) { value = runCatching { model.session?.username() }.getOrNull() }
+    var recovery by remember { mutableStateOf<uniffi.tree_ffi.Recovery?>(null) }
+    var releasing by remember { mutableStateOf(false) }
+    LaunchedEffect(phrase) { recovery = model.recoveryStatus() }
     CardGroup(title = t("아이디", "Username")) {
+        current?.let { u ->
+            SettingsRow("@$u", t("지금 쓰는 아이디", "Your username"), Icons.Rounded.AlternateEmail, TreeColors.TileBlue,
+                trailing = { TextButton(onClick = { scope.launch { if (model.releaseUsername()) model.notice(t("아이디를 지웠어요", "Username removed")) } }) { Text(t("지우기", "Remove"), color = extra.danger) } })
+        }
         Row(Modifier.padding(horizontal = 16.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(username, { username = it }, placeholder = { Text("@username") }, singleLine = true, shape = RoundedCornerShape(14.dp), modifier = Modifier.weight(1f))
             TextButton(onClick = { scope.launch { model.setUsername(username.trim().removePrefix("@"))?.let { model.notice(t("아이디를 정했어요: @$it", "Username set: @$it")) } } }, enabled = username.isNotBlank()) { Text(t("저장", "Save")) }
@@ -274,9 +298,35 @@ private fun AccountPage(model: AppModel, nav: TreeNav, state: UiState) {
         )
     }
     CardGroup(title = t("복구", "Recovery")) {
-        SettingsRow(t("복구 문구 만들기", "Make a recovery phrase"), t("기기를 모두 잃어도 계정을 되찾는 24단어", "24 words to get your account back"), Icons.Rounded.Key, TreeColors.TileAmber, onClick = {
-            scope.launch { phrase = model.recoveryPhrase(Strings.lang == Lang.KO) }
-        })
+        val r = recovery
+        val pendingNote = r?.pending?.let { kind ->
+            val at = r.pendingAt?.let { Format.listTime(it) } ?: ""
+            if (kind == "release") t("복구 끄기 대기 중 · $at", "Turning off · $at") else t("새 문구로 바꾸는 중 · $at", "Replacing · $at")
+        }
+        SettingsRow(
+            if (r?.active == true) t("복구 문구 다시 만들기", "Make a new recovery phrase") else t("복구 문구 만들기", "Make a recovery phrase"),
+            pendingNote ?: if (r?.active == true) t("켜져 있어요", "On") else t("기기를 모두 잃어도 계정을 되찾는 24단어", "24 words to get your account back"),
+            Icons.Rounded.Key, TreeColors.TileAmber, onClick = { scope.launch { phrase = model.recoveryPhrase(Strings.lang == Lang.KO) } },
+        )
+        if (r?.active == true && r.pending == null) {
+            RowDivider()
+            SettingsRow(t("복구 끄기", "Turn off recovery"), t("문구로 계정을 되찾을 수 없게 돼요", "The phrase stops working"), Icons.Rounded.KeyOff, TreeColors.TileGrey, onClick = { releasing = true })
+        }
+    }
+    if (releasing) {
+        var words by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { releasing = false },
+            title = { Text(t("복구를 끌까요?", "Turn off recovery?")) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(t("지금 문구를 넣으면 바로 꺼져요. 비워 두면 며칠 뒤에 꺼지고, 그 사이 다른 기기에 알려요.", "With the current phrase it turns off now; without it, after a few days, and your other devices are told."), color = extra.muted)
+                    OutlinedTextField(words, { words = it }, placeholder = { Text(t("지금 복구 문구 (선택)", "Current phrase (optional)")) }, shape = RoundedCornerShape(14.dp))
+                }
+            },
+            confirmButton = { TextButton(onClick = { releasing = false; scope.launch { recovery = model.releaseRecovery(words) ?: recovery } }) { Text(t("끄기", "Turn off"), color = extra.danger, fontWeight = FontWeight.SemiBold) } },
+            dismissButton = { TextButton(onClick = { releasing = false }) { Text(t("취소", "Cancel")) } },
+        )
     }
     CardGroup(title = t("계정 정보", "Account info")) {
         SettingsRow(t("계정 ID", "Account ID"), state.account, Icons.Rounded.Badge, TreeColors.TileGrey)

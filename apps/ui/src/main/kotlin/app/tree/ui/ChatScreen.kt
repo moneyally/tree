@@ -906,8 +906,18 @@ private fun FileContent(model: AppModel, platform: TreePlatform, state: UiState,
         }
     }
     state.transfers[m.id]?.let { tr ->
+        val scope = rememberCoroutineScope()
         val p = if (tr.total.toLong() > 0) tr.done.toFloat() / tr.total.toFloat() else 0f
-        LinearProgressIndicator(progress = { p }, modifier = Modifier.padding(top = 6.dp).width(200.dp))
+        Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.width(170.dp).height(5.dp).clip(RoundedCornerShape(3.dp)).background(textColor.copy(alpha = 0.15f))) {
+                Box(Modifier.fillMaxWidth(p).height(5.dp).clip(RoundedCornerShape(3.dp)).background(MaterialTheme.colorScheme.primary))
+            }
+            Spacer(Modifier.width(8.dp))
+            // Large files can wait: pause and pick up where it stopped.
+            val paused = tr.state == "paused" || tr.state == "failed"
+            Text(if (paused) t("계속", "Resume") else t("멈춤", "Pause"), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium,
+                modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable { scope.launch { if (paused) model.resumeTransfer(m.id) else model.pauseTransfer(m.id) } }.padding(4.dp))
+        }
     }
 }
 

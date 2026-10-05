@@ -2,6 +2,8 @@ package app.tree.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.material.icons.rounded.Badge
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -94,6 +96,13 @@ fun ProfileScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state: 
     val scope = rememberCoroutineScope()
     val username by produceState<String?>(null, state.usernameLink) { value = runCatching { model.session?.username() }.getOrNull() }
     var editName by remember { mutableStateOf(false) }
+    var removingPhoto by remember { mutableStateOf(false) }
+    if (removingPhoto) AlertDialog(
+        onDismissRequest = { removingPhoto = false },
+        title = { Text(t("프로필 사진을 지울까요?", "Remove your photo?")) },
+        confirmButton = { TextButton(onClick = { removingPhoto = false; scope.launch { model.rich.removePhoto() } }) { Text(t("지우기", "Remove"), color = extra.danger, fontWeight = FontWeight.SemiBold) } },
+        dismissButton = { TextButton(onClick = { removingPhoto = false }) { Text(t("취소", "Cancel")) } },
+    )
     LaunchedEffect(Unit) { model.loadUsernameLink() }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom = 120.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp)) {
@@ -105,7 +114,7 @@ fun ProfileScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state: 
         Text(username?.let { "@$it" } ?: t("아이디 없음", "No username yet"), color = extra.muted, style = MaterialTheme.typography.bodyLarge)
         Spacer(Modifier.height(22.dp))
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            ActionCard(Icons.Rounded.PhotoCamera, t("사진 설정", "Set photo"), Modifier.weight(1f)) { platform.pickImage { b, m -> scope.launch { if (model.rich.setPhoto(b, m)) model.notice(t("사진을 바꿨어요", "Photo updated")) } } }
+            ActionCard(Icons.Rounded.PhotoCamera, t("사진 설정", "Set photo"), Modifier.weight(1f), onLong = if (model.rich.state.value.myPhoto != null) ({ removingPhoto = true }) else null) { platform.pickImage { b, m -> scope.launch { if (model.rich.setPhoto(b, m)) model.notice(t("사진을 바꿨어요", "Photo updated")) } } }
             ActionCard(Icons.Rounded.Edit, t("정보 수정", "Edit info"), Modifier.weight(1f)) { nav.push(Route.Settings("account")) }
             ActionCard(Icons.Rounded.Settings, t("설정", "Settings"), Modifier.weight(1f)) { nav.tab = Tab.SETTINGS }
         }
@@ -139,9 +148,10 @@ fun ProfileScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state: 
 }
 
 @Composable
-private fun ActionCard(icon: ImageVector, label: String, modifier: Modifier, onClick: () -> Unit) {
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+private fun ActionCard(icon: ImageVector, label: String, modifier: Modifier, onLong: (() -> Unit)? = null, onClick: () -> Unit) {
     Column(
-        modifier.clip(RoundedCornerShape(20.dp)).background(extra.card).clickable(onClick = onClick).padding(vertical = 16.dp),
+        modifier.clip(RoundedCornerShape(20.dp)).background(extra.card).combinedClickable(onClick = onClick, onLongClick = onLong).padding(vertical = 16.dp),
         horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Icon(icon, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(26.dp))
@@ -378,6 +388,23 @@ fun ChatInfoScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state:
                         SettingsRow(url, Format.listTime(m.receivedAt), Icons.Rounded.Link, TreeColors.TileIndigo, onClick = { platform.copy(url); model.notice(t("링크를 복사했어요", "Link copied")) }, trailing = null)
                     }
                 }
+            }
+        }
+        if (chat.others > 1 && state.chatFeatures.none { it.key == "chat.allow_per_chat_profiles" && !it.applied }) {
+            val mine = model.rich.state.collectAsState().value.chatProfile?.name
+            var naming by remember { mutableStateOf(false) }
+            CardGroup {
+                SettingsRow(t("이 방에서 내 이름", "My name in this chat"), mine ?: state.name, Icons.Rounded.Badge, TreeColors.TileTeal, onClick = { naming = true })
+            }
+            if (naming) {
+                var v by remember { mutableStateOf(mine ?: "") }
+                AlertDialog(
+                    onDismissRequest = { naming = false },
+                    title = { Text(t("이 방에서 내 이름", "My name in this chat")) },
+                    text = { OutlinedTextField(v, { v = it.take(64) }, placeholder = { Text(state.name) }, singleLine = true, shape = RoundedCornerShape(14.dp)) },
+                    confirmButton = { TextButton(onClick = { naming = false; scope.launch { if (v.isBlank()) model.rich.clearChatProfile(chat.id) else model.rich.setChatName(chat.id, v) } }) { Text(t("저장", "Save"), fontWeight = FontWeight.SemiBold) } },
+                    dismissButton = { TextButton(onClick = { naming = false }) { Text(t("취소", "Cancel")) } },
+                )
             }
         }
         if (chat.others > 1 && state.groups.admin) AdminCard(model, nav, state, chat, onLink = { scope.launch { link = model.inviteLink(chat.id) } })

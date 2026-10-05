@@ -69,15 +69,15 @@ import java.time.ZoneId
 
 /** What the attach button offers, as a grid of tiles; each only where the chat allows it. */
 @Composable
-fun AttachSheet(model: AppModel, platform: TreePlatform, state: UiState, chat: Chat, onClose: () -> Unit) {
+fun AttachSheet(model: AppModel, platform: TreePlatform, state: UiState, chat: Chat, onEdit: (Boolean) -> Unit, onClose: () -> Unit) {
     var poll by remember { mutableStateOf(false) }
     var event by remember { mutableStateOf(false) }
     var place by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val allowed = { key: String -> state.chatFeatures.none { it.key == key && !it.applied } }
     val tiles = buildList {
-        if (allowed("chat.media")) add(Triple(Icons.Rounded.Image, t("사진", "Photo"), TreeColors.TileBlue) to { platform.pickAndSend(chat.id, AttachKind.PHOTO); onClose() })
-        if (allowed("chat.media") && allowed("chat.view_once")) add(Triple(Icons.Rounded.Visibility, t("한 번 보기", "View once"), TreeColors.TileViolet) to { platform.pickAndSend(chat.id, AttachKind.PHOTO_ONCE); onClose() })
+        if (allowed("chat.media")) add(Triple(Icons.Rounded.Image, t("사진", "Photo"), TreeColors.TileBlue) to { onEdit(false); onClose() })
+        if (allowed("chat.media") && allowed("chat.view_once")) add(Triple(Icons.Rounded.Visibility, t("한 번 보기", "View once"), TreeColors.TileViolet) to { onEdit(true); onClose() })
         if (allowed("chat.media")) add(Triple(Icons.Rounded.InsertDriveFile, t("파일", "File"), TreeColors.TileSky) to { platform.pickAndSend(chat.id, AttachKind.FILE); onClose() })
         if (allowed("chat.polls")) add(Triple(Icons.Rounded.BarChart, t("투표", "Poll"), TreeColors.TileAmber) to { poll = true })
         if (allowed("chat.events")) add(Triple(Icons.Rounded.Event, t("일정", "Event"), TreeColors.TileRed) to { event = true })

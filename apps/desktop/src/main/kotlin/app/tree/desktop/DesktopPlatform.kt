@@ -102,6 +102,17 @@ class DesktopPlatform(private val model: AppModel, private val scope: CoroutineS
 
     override val font = Fonts.pretendard
 
+    override fun pickPhotoToEdit(onPicked: (app.tree.shared.media.Raster, String) -> Unit) {
+        val f = open(t("사진 고르기", "Choose a photo")) ?: return
+        val r = DesktopMedia.load(f) ?: return model.notice(t("이 사진은 열 수 없어요", "Can't open this picture"))
+        val (w, h) = app.tree.shared.media.MediaEdit.fit(r.width, r.height, 2560)
+        onPicked(if (w < r.width) app.tree.shared.media.MediaEdit.scaleDown(r, w, h) else r, f.nameWithoutExtension)
+    }
+
+    override fun rasterBitmap(r: app.tree.shared.media.Raster) = DesktopMedia.toImage(r).toComposeImageBitmap()
+    override fun encodeJpeg(r: app.tree.shared.media.Raster, quality: Float): ByteArray? = runCatching { DesktopMedia.jpeg(r, quality) }.getOrNull()
+    override val textPainter = DesktopMedia.text
+
     override val canRecord: Boolean get() = DesktopAudio.available
     override fun startRecording(onStarted: (Boolean) -> Unit) = onStarted(DesktopAudio.start())
     override fun stopRecording(cancel: Boolean): ByteArray? = DesktopAudio.stop(cancel)

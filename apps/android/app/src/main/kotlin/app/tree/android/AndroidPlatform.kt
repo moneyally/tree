@@ -52,6 +52,7 @@ class AndroidPlatform(private val activity: ComponentActivity, private val model
     private var pendingGroup: String? = null
     private var pendingKind: AttachKind = AttachKind.FILE
     private var pendingImage: ((ByteArray, String) -> Unit)? = null
+    private var pendingEdit: ((app.tree.shared.media.Raster, String) -> Unit)? = null
     private var pendingSave: String? = null
     private var askLocation: (() -> Unit)? = null
     private var askMic: (() -> Unit)? = null
@@ -92,6 +93,8 @@ class AndroidPlatform(private val activity: ComponentActivity, private val model
 
     private fun picked(uri: Uri) {
         val image = pendingImage
+        val edit = pendingEdit
+        pendingEdit = null
         val group = pendingGroup
         val kind = pendingKind
         pendingImage = null
@@ -102,6 +105,10 @@ class AndroidPlatform(private val activity: ComponentActivity, private val model
             val mime = r.getType(uri) ?: "application/octet-stream"
             val bytes = withContext(Dispatchers.IO) { r.openInputStream(uri)?.use { it.readBytes() } } ?: return@lifecycleScopeLaunch
             when {
+                edit != null -> {
+                    val r = withContext(Dispatchers.Default) { decode(bytes, 2560)?.let { bmp -> toRaster(bmp).also { bmp.recycle() } } }
+                    if (r == null) model.notice(app.tree.ui.t("이 사진은 열 수 없어요", "Can't open this picture")) else edit(r, name.substringBeforeLast('.'))
+                }
                 image != null -> withContext(Dispatchers.Default) { reencode(bytes, 1024) }?.let { (jpeg, _) -> image(jpeg, "image/jpeg") }
                 group == null -> {}
                 kind != AttachKind.FILE && mime.startsWith("image/") -> {
@@ -193,6 +200,48 @@ class AndroidPlatform(private val activity: ComponentActivity, private val model
         pendingGroup = null
         pendingImage = onPicked
         pickPhoto?.invoke("")
+    }
+
+    override fun pickPhotoToEdit(onPicked: (app.tree.shared.media.Raster, String) -> Unit) {
+        pendingGroup = null
+        pendingImage = null
+        pendingEdit = onPicked
+        pickPhoto?.invoke("")
+    }
+
+    private fun toRaster(b: Bitmap): app.tree.shared.media.Raster {
+        val r = app.tree.shared.media.Raster(b.width, b.height)
+        b.getPixels(r.pixels, 0, b.width, 0, 0, b.width, b.height)
+        return r
+    }
+
+    private fun toBitmap(r: app.tree.shared.media.Raster): Bitmap = Bitmap.createBitmap(r.pixels, r.width, r.height, Bitmap.Config.ARGB_8888)
+
+    override fun rasterBitmap(r: app.tree.shared.media.Raster): ImageBitmap = toBitmap(r).asImageBitmap()
+
+    /** Android's encoder writes no EXIF; the edited pixels are all that leaves. */
+    override fun encodeJpeg(r: app.tree.shared.media.Raster, quality: Float): ByteArray? {
+        val b = toBitmap(r)
+        val out = ByteArrayOutputStream()
+        b.compress(Bitmap.CompressFormat.JPEG, (quality * 100).toInt().coerceIn(10, 100), out)
+        b.recycle()
+        return out.toByteArray()
+    }
+
+    override val textPainter = app.tree.shared.media.TextPainter { target, op ->
+        val b = toBitmap(target).copy(Bitmap.Config.ARGB_8888, true)
+        val c = android.graphics.Canvas(b)
+        val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            textSize = op.size
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+        }
+        val base = op.y - p.ascent()
+        p.style = android.graphics.Paint.Style.STROKE; p.strokeWidth = op.size / 10f; p.color = 0xA0000000.toInt()
+        c.drawText(op.text, op.x.toFloat(), base, p)
+        p.style = android.graphics.Paint.Style.FILL; p.color = op.argb
+        c.drawText(op.text, op.x.toFloat(), base, p)
+        b.getPixels(target.pixels, 0, b.width, 0, 0, b.width, b.height)
+        b.recycle()
     }
 
     override fun saveAs(msgId: String, name: String) {

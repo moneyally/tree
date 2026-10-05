@@ -138,6 +138,7 @@ fun ChatScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state: UiS
     var replyTo by remember(chat.id) { mutableStateOf<Message?>(null) }
     var selected by remember(chat.id) { mutableStateOf(setOf<String>()) }
     var forwarding by remember(chat.id) { mutableStateOf<List<String>?>(null) }
+    var editing by remember(chat.id) { mutableStateOf<Triple<app.tree.shared.media.Raster, String, Boolean>?>(null) }
     var headerPx by remember { mutableStateOf(0) }
     var footerPx by remember { mutableStateOf(0) }
     val listState = rememberLazyListState()
@@ -241,9 +242,14 @@ fun ChatScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state: UiS
                     .let { if (platform.isPhone) it.navigationBarsPadding().imePadding() else it }
                     .onSizeChanged { footerPx = it.height },
             ) {
-                Composer(model, platform, state, media, chat, replyTo, byId) { replyTo = null }
+                Composer(model, platform, state, media, chat, replyTo, byId, onEdit = { once ->
+                    platform.pickPhotoToEdit { r, n -> editing = Triple(r, n, once) }
+                }) { replyTo = null }
             }
         }
+    }
+    editing?.let { (r, n, once) ->
+        PhotoEditor(model, platform, chat.id, r, n, viewOnceAllowed = state.chatFeatures.none { it.key == "chat.view_once" && !it.applied }, startOnce = once) { editing = null }
     }
     forwarding?.let { ids -> ForwardDialog(model, platform, state, chat.id, ids) { forwarding = null; selected = emptySet() } }
 }
@@ -617,7 +623,7 @@ private fun StickerImage(model: AppModel, platform: TreePlatform, pack: String, 
 /** The floating composer: emoji and stickers, the field, attach, send. */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun Composer(model: AppModel, platform: TreePlatform, state: UiState, media: RichState, chat: Chat, replyTo: Message?, byId: Map<String, Message>, clearReply: () -> Unit) {
+private fun Composer(model: AppModel, platform: TreePlatform, state: UiState, media: RichState, chat: Chat, replyTo: Message?, byId: Map<String, Message>, onEdit: (Boolean) -> Unit, clearReply: () -> Unit) {
     val scope = rememberCoroutineScope()
     var text by remember(chat.id) { mutableStateOf(chat.draft ?: "") }
     var attach by remember { mutableStateOf(false) }
@@ -721,7 +727,7 @@ private fun Composer(model: AppModel, platform: TreePlatform, state: UiState, me
             if (panel) StickerPanel(model, platform, media, chat) { e -> text += e }
             if (attach) {
                 HorizontalDivider(color = extra.divider)
-                AttachSheet(model, platform, state, chat) { attach = false }
+                AttachSheet(model, platform, state, chat, onEdit = onEdit) { attach = false }
             }
         }
     }

@@ -55,6 +55,18 @@ interface TreePlatform {
 
     fun stopPlaying() {}
 
+    /** Lets the person pick a picture to edit before sending: its pixels (at most 2560 px) and name. */
+    fun pickPhotoToEdit(onPicked: (app.tree.shared.media.Raster, String) -> Unit) {}
+
+    /** Pixels as something Compose can draw. */
+    fun rasterBitmap(r: app.tree.shared.media.Raster): androidx.compose.ui.graphics.ImageBitmap? = null
+
+    /** A JPEG of the pixels, without any metadata. */
+    fun encodeJpeg(r: app.tree.shared.media.Raster, quality: Float): ByteArray? = null
+
+    /** Draws an editor text operation (platform fonts). */
+    val textPainter: app.tree.shared.media.TextPainter? get() = null
+
     /** Lets the person choose where to save a received file. */
     fun saveAs(msgId: String, name: String)
 

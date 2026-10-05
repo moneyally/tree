@@ -152,6 +152,20 @@ class ScreenshotTest {
         shot("12-desktop-light", alice, DesktopPlatform(alice, scope), TreeNav().apply { push(Route.Chat(g)) }, dark = false, phone = false)
         shot("13-desktop-dark", alice, DesktopPlatform(alice, scope), TreeNav().apply { push(Route.Chat(g)) }, dark = true, phone = false)
 
+        // The photo editor on a made-up picture (sky, ground, a sun).
+        val pic = app.tree.shared.media.Raster(1200, 900).also { r ->
+            for (y in 0 until r.height) for (x in 0 until r.width) {
+                val sun = (x - 860) * (x - 860) + (y - 260) * (y - 260) < 110 * 110
+                r[x, y] = when { sun -> 0xFFFFD54F.toInt(); y < 560 -> (0xFF shl 24) or ((90 + y / 8) shl 16) or ((150 + y / 10) shl 8) or 235; else -> 0xFF2E7D32.toInt() }
+            }
+        }
+        ImageComposeScene(width = 412 * 2, height = 900 * 2, density = Density(2f)) {
+            app.tree.ui.TreeTheme(dark = true, font = Fonts.pretendard) { app.tree.ui.PhotoEditor(alice, pa, g, pic, "photo", true, false) {} }
+        }.use { scene ->
+            scene.render(0); Thread.sleep(300)
+            File(out, "16-editor.png").writeBytes(scene.render(500_000_000L).encodeToData(EncodedImageFormat.PNG)!!.bytes)
+        }
+
         // Linking a computer: its QR code, then the digits.
         val desk = AppModel(this, Dispatchers.IO)
         val text = desk.startLinkNewDevice("$dir/desk.db", "pw", "정원", url)!!

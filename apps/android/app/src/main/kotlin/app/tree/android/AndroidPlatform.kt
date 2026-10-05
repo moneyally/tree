@@ -21,6 +21,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
 import app.tree.shared.AppModel
+import app.tree.shared.exportChat
 import app.tree.shared.qr.CodeKind
 import app.tree.ui.AttachKind
 import app.tree.ui.TreePlatform
@@ -242,6 +243,14 @@ class AndroidPlatform(private val activity: ComponentActivity, private val model
         c.drawText(op.text, op.x.toFloat(), base, p)
         b.getPixels(target.pixels, 0, b.width, 0, 0, b.width, b.height)
         b.recycle()
+    }
+
+    /** Into the app's own documents folder (no permission needed; the person can share it from a file manager). */
+    override suspend fun exportChat(model: AppModel, group: String, title: String): String? {
+        val dir = activity.getExternalFilesDir(android.os.Environment.DIRECTORY_DOCUMENTS) ?: activity.filesDir
+        val safe = title.replace(Regex("[^\\p{L}\\p{N} _-]"), "").ifBlank { "chat" }
+        val files = model.exportChat(group, java.io.File(dir, safe).path) ?: return null
+        return files.joinToString("\n")
     }
 
     override fun saveAs(msgId: String, name: String) {

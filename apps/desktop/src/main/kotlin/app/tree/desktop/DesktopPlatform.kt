@@ -12,6 +12,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.unit.dp
 import app.tree.shared.AppModel
+import app.tree.shared.exportChat
 import app.tree.shared.qr.CodeKind
 import app.tree.ui.AttachKind
 import app.tree.ui.BackHeader
@@ -74,6 +75,15 @@ class DesktopPlatform(private val model: AppModel, private val scope: CoroutineS
         val f = open(t("사진 고르기", "Choose a photo")) ?: return
         val picture = DesktopMedia.load(f) ?: return
         onPicked(DesktopMedia.jpeg(picture), "image/jpeg")
+    }
+
+    override suspend fun exportChat(model: AppModel, group: String, title: String): String? {
+        val d = FileDialog(null as Frame?, t("대화 내보내기", "Export chat"), FileDialog.SAVE)
+        d.file = title.replace(Regex("[^\\p{L}\\p{N} _-]"), "").ifBlank { "chat" }
+        d.isVisible = true
+        val name = d.file ?: return null
+        val files = model.exportChat(group, File(d.directory, name).path) ?: return null
+        return files.joinToString("\n")
     }
 
     override fun saveAs(msgId: String, name: String) {

@@ -32,6 +32,7 @@ import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Screenshot
 import androidx.compose.material.icons.rounded.AlternateEmail
 import androidx.compose.material.icons.rounded.Archive
@@ -298,6 +299,8 @@ fun ChatInfoScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state:
                 scope.launch { model.setScreenshotBlock(chat.id, on) }
             }
             SettingsRow(if (chat.pinned) t("목록 위 고정 해제", "Unpin from top") else t("목록 위에 고정", "Pin to top"), null, Icons.Rounded.PushPin, TreeColors.TileAmber, onClick = { scope.launch { model.pin(chat.id, !chat.pinned) } }, trailing = null)
+            if (state.rich.exportAllowed) SettingsRow(t("대화 내보내기", "Export chat"), t("이 기기에 글자 파일로 저장", "Save as a text file on this device"), Icons.Rounded.Download, TreeColors.TileSky,
+                onClick = { scope.launch { platform.exportChat(model, chat.id, chat.title)?.let { where -> model.notice(t("저장했어요: $where", "Saved: $where")) } } }, trailing = null)
             if (peer != null) {
                 val blocked = contact?.blocked == true
                 SettingsRow(if (blocked) t("차단 해제", "Unblock") else t("차단", "Block"), null, Icons.Rounded.Block, TreeColors.TileRed, titleColor = if (blocked) MaterialTheme.colorScheme.onSurface else extra.danger,

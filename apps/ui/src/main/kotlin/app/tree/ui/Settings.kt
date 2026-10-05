@@ -218,6 +218,7 @@ fun SettingsPage(model: AppModel, platform: TreePlatform, nav: TreeNav, state: U
                     PAGES[page]?.forEach { k -> state.features.firstOrNull { it.key == k }?.let { FeatureRow(model, it) } }
                 }
             }
+            if (page == "folders") FoldersCard(model, state)
             if (page == "data") {
                 CardGroup {
                     SettingsRow(t("지금 정리하기", "Clean up now"), t("오래된 받은 파일을 지워요", "Delete old downloads"), Icons.Rounded.CleaningServices, TreeColors.TileOrange, onClick = {

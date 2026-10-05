@@ -67,6 +67,9 @@ interface TreePlatform {
     /** Draws an editor text operation (platform fonts). */
     val textPainter: app.tree.shared.media.TextPainter? get() = null
 
+    /** Writes a chat's export where the person chooses (or the app's documents); a line saying where, or null. */
+    suspend fun exportChat(model: app.tree.shared.AppModel, group: String, title: String): String? = null
+
     /** Lets the person choose where to save a received file. */
     fun saveAs(msgId: String, name: String)
 

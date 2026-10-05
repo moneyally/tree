@@ -108,6 +108,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.material.icons.automirrored.rounded.Forward
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Mic
+import androidx.compose.material.icons.rounded.Alarm
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.sp
@@ -215,6 +216,7 @@ fun ChatScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state: UiS
             if (group && !isNotes && (state.groups.topics.isNotEmpty() || state.groups.mayCreateTopics)) TopicBar(model, state, chat)
             if (state.rich.pins.isNotEmpty()) PinnedBar(state, listState, msgs)
             LiveShareBar(model, platform, media, chat)
+            ScheduledBar(model, state)
             if (chat.status == "request") RequestBanner(model, chat)
         }
 
@@ -409,6 +411,8 @@ private fun MessageBubble(
     val scope = rememberCoroutineScope()
     var menu by remember { mutableStateOf(false) }
     var revealed by remember(m.id) { mutableStateOf(false) }
+    var reminding by remember { mutableStateOf(false) }
+    if (reminding) RemindDialog(model, chat, m.id) { reminding = false }
     var editing by remember { mutableStateOf(false) }
     val sticker = if (m.kind == "sticker" && !m.deleted) media.stickers[m.id] else null
     val bare = sticker != null || (m.kind == "text" && !m.deleted && m.replyTo == null && bigEmoji(m.text))
@@ -488,6 +492,7 @@ private fun MessageBubble(
                 if (!m.deleted && chat.status != "request") DropdownMenuItem({ Text(t("답장", "Reply")) }, leadingIcon = { Icon(Icons.AutoMirrored.Rounded.Reply, null) }, onClick = { menu = false; onReply() })
                 if (!m.deleted && state.rich.forwardingAllowed) DropdownMenuItem({ Text(t("전달", "Forward")) }, leadingIcon = { Icon(Icons.AutoMirrored.Rounded.Forward, null) }, onClick = { menu = false; onForward() })
                 DropdownMenuItem({ Text(t("선택", "Select")) }, leadingIcon = { Icon(Icons.Rounded.CheckCircle, null) }, onClick = { menu = false; onSelect() })
+                if (!m.deleted) DropdownMenuItem({ Text(t("나중에 알림", "Remind me")) }, leadingIcon = { Icon(Icons.Rounded.Alarm, null) }, onClick = { menu = false; reminding = true })
                 if (m.kind == "text" && state.rich.forwardingAllowed) DropdownMenuItem({ Text(t("복사", "Copy")) }, leadingIcon = { Icon(Icons.Rounded.ContentCopy, null) }, onClick = { menu = false; platform.copy(m.text ?: ""); model.notice(t("복사했어요", "Copied")) })
                 if (state.rich.mayPin) DropdownMenuItem({ Text(if (state.rich.pins.any { it.messageId == m.id }) t("고정 해제", "Unpin") else t("고정", "Pin")) }, leadingIcon = { Icon(Icons.Rounded.PushPin, null) }, onClick = {
                     menu = false
@@ -629,6 +634,7 @@ private fun Composer(model: AppModel, platform: TreePlatform, state: UiState, me
     var attach by remember { mutableStateOf(false) }
     var panel by remember { mutableStateOf(false) }
     var recordingSince by remember(chat.id) { mutableStateOf<Long?>(null) }
+    var scheduling by remember(chat.id) { mutableStateOf<String?>(null) }
     if (state.channel.isChannel && !state.channel.mayPost) {
         Box(Modifier.fillMaxWidth().padding(10.dp).clip(RoundedCornerShape(26.dp)).background(extra.floating).padding(16.dp), contentAlignment = Alignment.Center) {
             Text(t("관리자만 글을 쓸 수 있는 채널이에요", "Only admins post in this channel"), color = extra.muted, style = MaterialTheme.typography.bodyMedium)
@@ -721,10 +727,12 @@ private fun Composer(model: AppModel, platform: TreePlatform, state: UiState, me
                     // Hold the button: send without a sound on the others' phones.
                     DropdownMenu(sendMenu, { sendMenu = false }) {
                         DropdownMenuItem({ Text(t("조용히 보내기", "Send without sound")) }, leadingIcon = { Icon(Icons.Rounded.NotificationsOff, null) }, onClick = { sendMenu = false; send(true) })
+                        DropdownMenuItem({ Text(t("예약 보내기", "Schedule")) }, leadingIcon = { Icon(Icons.Rounded.Schedule, null) }, onClick = { sendMenu = false; scheduling = text.trim() })
                     }
                 }
             }
             if (panel) StickerPanel(model, platform, media, chat) { e -> text += e }
+            scheduling?.let { v -> ScheduleDialog(model, chat, v) { ok -> scheduling = null; if (ok) { text = ""; scope.launch { model.saveDraft(chat.id, "") } } } }
             if (attach) {
                 HorizontalDivider(color = extra.divider)
                 AttachSheet(model, platform, state, chat, onEdit = onEdit) { attach = false }

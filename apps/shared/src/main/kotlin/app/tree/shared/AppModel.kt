@@ -697,7 +697,9 @@ class AppModel(
 
     suspend fun createFolder(name: String): Boolean = (call { it.createFolder(name) } != null).also { refresh() }
 
-    suspend fun fileChat(folder: String, group: String): Boolean = (call { it.fileChat(folder, group, true) } != null).also { refresh() }
+    suspend fun fileChat(folder: String, group: String, add: Boolean = true): Boolean = (call { it.fileChat(folder, group, add) } != null).also { refresh() }
+
+    suspend fun deleteFolder(name: String): Boolean = (call { it.deleteFolder(name) } != null).also { refresh() }
 
     suspend fun newChat(): String? = call { it.createGroup() }?.also { refresh(); openChat(it) }
 

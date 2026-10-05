@@ -24,6 +24,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.ArrowUpward
+import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.automirrored.rounded.Note
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.rounded.Archive
@@ -205,7 +207,9 @@ private fun ChatRow(model: AppModel, platform: TreePlatform, nav: TreeNav, state
     val scope = rememberCoroutineScope()
     var menu by remember { mutableStateOf(false) }
     var muting by remember { mutableStateOf(false) }
+    var folderPick by remember { mutableStateOf(false) }
     if (muting) MuteDialog(model, c) { muting = false }
+    if (folderPick) FolderPickDialog(model, state, c) { folderPick = false }
     val me = model.session?.memberId()
     val last = c.last
     val isNotes = c.id == state.notes
@@ -279,6 +283,12 @@ private fun ChatRow(model: AppModel, platform: TreePlatform, nav: TreeNav, state
                 menu = false
                 if (c.muted) scope.launch { model.unmute(c.id) } else muting = true
             })
+            DropdownMenuItem({ Text(t("폴더에 넣기", "Add to folder")) }, leadingIcon = { Icon(Icons.Rounded.Folder, null) }, onClick = { menu = false; folderPick = true })
+            if (c.pinned) {
+                val pinned = state.chats.filter { it.pinned }
+                val idx = pinned.indexOfFirst { it.id == c.id }
+                if (idx > 0) DropdownMenuItem({ Text(t("위로 올리기", "Move up")) }, leadingIcon = { Icon(Icons.Rounded.ArrowUpward, null) }, onClick = { menu = false; scope.launch { model.movePin(c.id, idx - 1) } })
+            }
             DropdownMenuItem({ Text(if (c.archived) t("보관 해제", "Unarchive") else t("보관", "Archive")) }, leadingIcon = { Icon(Icons.Rounded.Archive, null) }, onClick = { menu = false; scope.launch { model.archive(c.id, !c.archived) } })
             DropdownMenuItem({ Text(if (c.unread > 0 || c.markedUnread) t("읽음으로 표시", "Mark as read") else t("안 읽음으로 표시", "Mark as unread")) }, leadingIcon = { Icon(Icons.AutoMirrored.Rounded.Note, null) }, onClick = {
                 menu = false

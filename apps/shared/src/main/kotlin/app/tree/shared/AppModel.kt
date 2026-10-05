@@ -352,6 +352,7 @@ class AppModel(
     }
 
     suspend fun refresh() {
+        val notesId = call { it.notesChat() }
         val chats = call { s ->
             // In list order: pinned first, then by last activity.
             s.chatList().map { c ->
@@ -369,7 +370,7 @@ class AppModel(
                     )
                 } ?: emptyList()
                 Chat(
-                    g, info.name ?: names.joinToString(", ").ifEmpty { g.take(8) }, info.status, info.requestFrom,
+                    g, if (g == notesId) Strings.t("notes") else info.name ?: names.joinToString(", ").ifEmpty { g.take(8) }, info.status, info.requestFrom,
                     c.unread.toInt(), c.pinned, c.archived, c.muted, c.mutedUntil, c.markedUnread, c.draft, labels, info.channel,
                 )
             }
@@ -396,6 +397,7 @@ class AppModel(
                 chats = chats.map { c -> if (c.id == open) c.copy(unread = 0, markedUnread = false) else c },
                 messages = messages, names = names, members = members, chatFeatures = chatFeatures,
                 screenshotBlocked = blocked, folders = folders, readMine = readMine, sending = sending,
+                notes = notesId ?: it.notes,
             )
         }
         loadRich()
@@ -427,7 +429,8 @@ class AppModel(
      * [UiState.showArchived].
      */
     fun visibleChats(s: UiState): List<Chat> {
-        val list = s.chats.filter { it.archived == s.showArchived }
+        // The notes chat has its own row above the list.
+        val list = s.chats.filter { it.archived == s.showArchived && it.id != s.notes }
         val f = s.folder ?: return list
         val ids = s.folders.firstOrNull { it.name == f }?.chats?.toSet() ?: return list
         return list.filter { it.id in ids }

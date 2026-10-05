@@ -374,7 +374,7 @@ private fun ChatView(model: AppModel, state: UiState, chat: Chat) {
                 TextButton(onClick = { scope.launch { model.decline(chat.id, false) } }) { Text(Strings.t("decline")) }
                 TextButton(onClick = { scope.launch { model.decline(chat.id, true) } }) { Text(Strings.t("block")) }
             }
-        } else {
+        } else if (chat.id != state.notes) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 OutlinedTextField(who, { who = it }, label = { Text(Strings.t("invite")) }, singleLine = true)
                 TextButton(onClick = { scope.launch { if (model.invite(chat.id, who)) who = "" } }) { Text("+") }
@@ -430,8 +430,11 @@ private fun ChatView(model: AppModel, state: UiState, chat: Chat) {
                     } else if (m.kind == "file") {
                         FileRow(model, state, m.id)
                     }
-                    TextButton(onClick = { scope.launch { model.report(chat.id, listOf(m.id), "user report") } }) {
-                        Text(Strings.t("report"))
+                    // Only other people's messages can be reported.
+                    if (m.sender != model.session?.memberId()) {
+                        TextButton(onClick = { scope.launch { model.report(chat.id, listOf(m.id), "user report") } }) {
+                            Text(Strings.t("report"))
+                        }
                     }
                     ModeratorDelete(model, state, chat.id, m)
                     MessageMenu(model, state, chat.id, m)

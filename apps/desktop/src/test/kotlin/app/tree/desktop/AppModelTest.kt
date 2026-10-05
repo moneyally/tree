@@ -244,6 +244,11 @@ class AppModelTest {
         // Notes and folders.
         val notes = assertNotNull(bob.openNotes())
         assertEquals(notes, bob.openNotes(), "one notes chat")
+        // The notes chat has its own row: never listed among the chats, and
+        // titled as notes (not by its id), also after a fresh refresh.
+        bob.refresh()
+        assertTrue(bob.visibleChats(bob.state.value).none { it.id == notes }, "notes not listed twice")
+        assertEquals(Strings.t("notes"), bob.state.value.chats.first { it.id == notes }.title)
         bob.openChat(g)
         assertTrue(bob.createFolder("가족"))
         assertTrue(bob.fileChat("가족", g))

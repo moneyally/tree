@@ -52,6 +52,22 @@ data class Chat(
     val labels: List<String> = emptyList(),
     /** A private channel (end-to-end; only admins post). */
     val channel: Boolean = false,
+    /** The newest message, for the list's second line and time. */
+    val last: Message? = null,
+    /** Members other than this device's account, and their names. */
+    val others: Int = 0,
+    /** The other person's account in a 1:1 chat. */
+    val peer: String? = null,
+)
+
+/** A person as the contacts screen shows them. */
+data class ContactRow(
+    val account: String,
+    val name: String,
+    val verified: Boolean,
+    val blocked: Boolean,
+    /** A 1:1 chat with them, if any. */
+    val chat: String? = null,
 )
 
 /**
@@ -75,6 +91,8 @@ data class UiState(
     val name: String = "",
     val account: String = "",
     val chats: List<Chat> = emptyList(),
+    /** People this account knows (contacts screen). */
+    val contacts: List<ContactRow> = emptyList(),
     val open: String? = null,
     val messages: List<Message> = emptyList(),
     /** Member id -> display name in the open chat ("" = this device). */
@@ -378,9 +396,12 @@ class AppModel(
                         "name_unverified".takeIf { l.nameUnverified },
                     )
                 } ?: emptyList()
+                val last = s.history(g, 1u).lastOrNull()
+                val peerAccount = others.mapNotNull { it.account }.distinct().singleOrNull()?.takeIf { others.size <= 3 && info.name == null }
                 Chat(
-                    g, if (g == notesId) Strings.t("notes") else info.name ?: names.joinToString(", ").ifEmpty { g.take(8) }, info.status, info.requestFrom,
+                    g, if (g == notesId) Strings.t("notes") else info.name ?: names.distinct().joinToString(", ").ifEmpty { g.take(8) }, info.status, info.requestFrom,
                     c.unread.toInt(), c.pinned, c.archived, c.muted, c.mutedUntil, c.markedUnread, c.draft, labels, info.channel,
+                    last = last, others = others.size, peer = peerAccount,
                 )
             }
         } ?: return
@@ -414,6 +435,42 @@ class AppModel(
         loadGroups()
         loadChannel()
         loadPublic()
+    }
+
+    /**
+     * The contacts screen: every known account with the name its devices
+     * announced in shared chats, and the 1:1 chat with it if there is one.
+     */
+    suspend fun loadContacts() {
+        val rows = call { s ->
+            val me = s.memberId()
+            val nameOf = mutableMapOf<String, String>()
+            val oneToOne = mutableMapOf<String, String>()
+            for (g in s.groups()) {
+                val ms = s.members(g).filter { it.id != me }
+                for (m in ms) {
+                    val a = m.account ?: continue
+                    m.name?.let { nameOf.putIfAbsent(a, it) }
+                }
+                val accounts = ms.mapNotNull { it.account }.distinct()
+                if (accounts.size == 1 && s.group(g).name == null) oneToOne.putIfAbsent(accounts[0], g)
+            }
+            s.contacts().filter { it.accepted || it.verified }.map { c ->
+                ContactRow(c.account, nameOf[c.account] ?: c.account.take(8), c.verified, c.blocked, oneToOne[c.account])
+            }.sortedBy { it.name.lowercase() }
+        } ?: return
+        _state.update { it.copy(contacts = rows) }
+    }
+
+    /** Opens the 1:1 chat with an account, starting one if needed. */
+    suspend fun chatWith(account: String): String? {
+        _state.value.contacts.firstOrNull { it.account == account }?.chat?.let { openChat(it); return it }
+        val g = call { it.createGroup() } ?: return null
+        call { it.invite(g, account) }
+        refresh()
+        openChat(g)
+        loadContacts()
+        return g
     }
 
     suspend fun openChat(group: String?) {
@@ -533,6 +590,22 @@ class AppModel(
     }
 
     /** A failed message (status "failed"): try again now. True if it went out. */
+    /** Names a group (admins). */
+    suspend fun renameGroup(group: String, name: String?): Boolean =
+        (call { it.setGroupName(group, name?.takeIf { n -> n.isNotBlank() }) }?.accepted == true).also { refresh() }
+
+    /** Adds (or with `remove` takes back) an emoji reaction (chat.reactions). */
+    suspend fun react(group: String, id: String, emoji: String, remove: Boolean = false): Boolean =
+        (call { it.react(group, id, emoji, remove) } != null).also { refresh() }
+
+    /** Edits an own text message (chat.edit, within the window). */
+    suspend fun edit(group: String, id: String, text: String): Boolean =
+        (call { it.edit(group, id, text) } != null).also { refresh() }
+
+    /** Deletes an own message for everyone (chat.delete_for_all, within the window). */
+    suspend fun deleteForAll(group: String, id: String): Boolean =
+        (call { it.deleteForAll(group, id) } != null).also { refresh() }
+
     suspend fun retrySend(messageId: String): Boolean = (call { it.retrySend(messageId) } == true).also { refresh() }
 
     /** A failed message: give up; it leaves the chat on this device. */
@@ -757,6 +830,9 @@ class AppModel(
 
     /** Removes another device of this account from its chats and the server. */
     suspend fun removeDevice(deviceId: String): Boolean = (call { it.removeDevice(deviceId) } != null).also { loadDevices(); refresh() }
+
+    /** Shows a short message to the person (the app shows notices for a few seconds). */
+    fun notice(text: String) = _state.update { it.copy(notice = text) }
 
     fun clearMessages() = _state.update { it.copy(error = null, notice = null) }
 

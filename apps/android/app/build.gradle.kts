@@ -38,7 +38,7 @@ android {
         sourceCompatibility = JavaVersion.VERSION_21
         targetCompatibility = JavaVersion.VERSION_21
     }
-    sourceSets["main"].kotlin.srcDirs(generated, File(repoRoot, "apps/shared/src/main/kotlin"))
+    sourceSets["main"].kotlin.srcDirs(generated, File(repoRoot, "apps/shared/src/main/kotlin"), File(repoRoot, "apps/ui/src/main/kotlin"))
     packaging { jniLibs { useLegacyPackaging = false } }
 }
 
@@ -49,6 +49,7 @@ tasks.named("preBuild") { dependsOn(bindings) }
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2025.05.00"))
     implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.activity:activity-compose:1.10.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")

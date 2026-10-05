@@ -8,12 +8,16 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 
 fun main() = application {
-    Window(onCloseRequest = ::exitApplication, title = Strings.t("app")) {
+    Window(
+        onCloseRequest = ::exitApplication, title = Strings.t("app"),
+        state = androidx.compose.ui.window.rememberWindowState(width = 1180.dp, height = 800.dp),
+    ) {
         val scope = rememberCoroutineScope()
         val model = remember { AppModel(scope).also { it.notifier = ::notify } }
         val state by model.state.collectAsState()
@@ -29,7 +33,11 @@ fun main() = application {
                 model.lockIfEnabled()
             }
         }
-        App(model)
+        val platform = remember { DesktopPlatform(model, scope) }
+        val nav = remember { app.tree.ui.TreeNav() }
+        // Downloads and the network kind, once a profile is open.
+        LaunchedEffect(state.signedIn) { if (state.signedIn) desktopMedia(model) }
+        app.tree.ui.TreeUi(model, platform, nav)
     }
 }
 

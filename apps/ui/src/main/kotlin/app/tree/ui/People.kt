@@ -1,0 +1,421 @@
+package app.tree.ui
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.AlternateEmail
+import androidx.compose.material.icons.rounded.Archive
+import androidx.compose.material.icons.rounded.Block
+import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.ExitToApp
+import androidx.compose.material.icons.rounded.GroupAdd
+import androidx.compose.material.icons.rounded.Link
+import androidx.compose.material.icons.rounded.NotificationsOff
+import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material.icons.rounded.PersonAdd
+import androidx.compose.material.icons.rounded.PhotoCamera
+import androidx.compose.material.icons.rounded.PushPin
+import androidx.compose.material.icons.rounded.QrCode2
+import androidx.compose.material.icons.rounded.QrCodeScanner
+import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Shield
+import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material.icons.rounded.VerifiedUser
+import androidx.compose.material.icons.outlined.PersonOutline
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import app.tree.shared.AppModel
+import app.tree.shared.Chat
+import app.tree.shared.UiState
+import app.tree.shared.qr.CodeKind
+import kotlinx.coroutines.launch
+
+/** Profile tab: big picture and name, quick actions, username and my QR. */
+@Composable
+fun ProfileScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state: UiState) {
+    val scope = rememberCoroutineScope()
+    val username by produceState<String?>(null, state.usernameLink) { value = runCatching { model.session?.username() }.getOrNull() }
+    var editName by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { model.loadUsernameLink() }
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom = 120.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp)) {
+            androidx.compose.material3.IconButton(onClick = { nav.push(Route.Scan(CodeKind.USERNAME)) }) { Icon(Icons.Rounded.QrCodeScanner, t("QR 찍기", "Scan QR")) }
+        }
+        val photo = state.rich.myPhoto?.bytes
+        val image = remember(photo) { photo?.let { platform.decodeImage(it) } }
+        Avatar(state.name, state.account, 112.dp, image = image)
+        Spacer(Modifier.height(14.dp))
+        Text(state.name, style = MaterialTheme.typography.headlineMedium)
+        Text(username?.let { "@$it" } ?: t("아이디 없음", "No username yet"), color = extra.muted, style = MaterialTheme.typography.bodyLarge)
+        Spacer(Modifier.height(22.dp))
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            ActionCard(Icons.Rounded.PhotoCamera, t("사진 설정", "Set photo"), Modifier.weight(1f)) { platform.pickImage { b, m -> scope.launch { if (model.rich.setPhoto(b, m)) model.notice(t("사진을 바꿨어요", "Photo updated")) } } }
+            ActionCard(Icons.Rounded.Edit, t("정보 수정", "Edit info"), Modifier.weight(1f)) { nav.push(Route.Settings("account")) }
+            ActionCard(Icons.Rounded.Settings, t("설정", "Settings"), Modifier.weight(1f)) { nav.tab = Tab.SETTINGS }
+        }
+        Spacer(Modifier.height(6.dp))
+        CardGroup {
+            InfoLine(username?.let { "@$it" } ?: t("아이디를 정해 보세요", "Pick a username"), t("아이디", "Username"), Icons.Rounded.AlternateEmail) { nav.push(Route.Settings("account")) }
+            RowDivider(20.dp)
+            InfoLine(state.account.take(12) + "…", t("계정 ID · 누르면 복사", "Account ID · tap to copy"), Icons.Rounded.ContentCopy) { platform.copy(state.account); model.notice(t("복사했어요", "Copied")) }
+        }
+        CardGroup(title = t("내 QR 코드", "My QR code")) {
+            val qr = state.usernameQr
+            Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (qr != null && state.usernameLink != null) {
+                    Box(Modifier.clip(RoundedCornerShape(20.dp)).background(Color.White).padding(14.dp)) { QrView(qr, 200.dp) }
+                    Text(t("친구가 이 QR을 찍으면 나를 추가할 수 있어요.", "Friends can scan this to add you."), color = extra.muted, style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center)
+                    Row {
+                        QuietButton(t("링크 복사", "Copy link"), { platform.copy(state.usernameLink!!); model.notice(t("복사했어요", "Copied")) })
+                        QuietButton(t("새로 만들기", "Reset"), { scope.launch { model.resetUsernameLink() } }, color = extra.muted)
+                    }
+                } else {
+                    Text(
+                        if (username == null) t("아이디를 먼저 정하면 내 QR을 만들 수 있어요.", "Set a username first to get your QR code.")
+                        else t("QR을 만들면 친구가 찍어서 나를 추가할 수 있어요.", "Make a QR code so friends can add you."),
+                        color = extra.muted, textAlign = TextAlign.Center, style = MaterialTheme.typography.bodyMedium,
+                    )
+                    if (username != null) PillButton(t("내 QR 만들기", "Make my QR"), { scope.launch { model.resetUsernameLink() } }, icon = Icons.Rounded.QrCode2)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ActionCard(icon: ImageVector, label: String, modifier: Modifier, onClick: () -> Unit) {
+    Column(
+        modifier.clip(RoundedCornerShape(20.dp)).background(extra.card).clickable(onClick = onClick).padding(vertical = 16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Icon(icon, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(26.dp))
+        Text(label, style = MaterialTheme.typography.labelLarge)
+    }
+}
+
+@Composable
+private fun InfoLine(value: String, label: String, icon: ImageVector, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 20.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(value, style = MaterialTheme.typography.bodyLarge)
+            Text(label, style = MaterialTheme.typography.bodySmall, color = extra.muted)
+        }
+        Icon(icon, null, tint = extra.muted, modifier = Modifier.size(20.dp))
+    }
+}
+
+/** Contacts tab: search, add by QR or username, everyone known. */
+@Composable
+fun ContactsScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state: UiState) {
+    val scope = rememberCoroutineScope()
+    var query by remember { mutableStateOf("") }
+    var byName by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { model.loadContacts() }
+    val list = state.contacts.filter { query.isBlank() || it.name.contains(query, ignoreCase = true) || it.account.startsWith(query) }
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 120.dp)) {
+        item { BigHeader(t("연락처", "Contacts")) }
+        item { SearchField(query, { query = it }, t("연락처 검색", "Search contacts")) }
+        item {
+            CardGroup {
+                SettingsRow(t("QR로 친구 추가", "Add friend by QR"), null, Icons.Rounded.QrCodeScanner, TreeColors.TileBlue, onClick = { nav.push(Route.Scan(CodeKind.USERNAME)) }, trailing = null)
+                RowDivider()
+                SettingsRow(t("아이디로 찾기", "Find by username"), null, Icons.Rounded.PersonAdd, TreeColors.TileGreen, onClick = { byName = true }, trailing = null)
+            }
+        }
+        if (list.isEmpty()) {
+            item { EmptyState(Icons.Outlined.PersonOutline, t("아직 연락처가 없어요", "No contacts yet"), t("QR이나 아이디로 친구를 추가해 보세요.", "Add friends by QR code or username.")) }
+        } else {
+            item { Text(t("내 연락처", "My contacts"), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(start = 22.dp, top = 14.dp, bottom = 4.dp)) }
+            items(list, key = { it.account }) { c ->
+                Row(
+                    Modifier.fillMaxWidth().clickable { scope.launch { model.chatWith(c.account)?.let { nav.push(Route.Chat(it)) } } }.padding(horizontal = 18.dp, vertical = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Avatar(c.name, c.account, 50.dp)
+                    Spacer(Modifier.width(14.dp))
+                    Column(Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(c.name, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            if (c.verified) { Spacer(Modifier.width(6.dp)); Icon(Icons.Rounded.VerifiedUser, t("안전 번호 확인됨", "Verified"), tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp)) }
+                        }
+                        Text(if (c.blocked) t("차단함", "Blocked") else if (c.verified) t("안전 번호 확인됨", "Safety number verified") else t("확인 안 됨", "Not verified"),
+                            style = MaterialTheme.typography.bodySmall, color = if (c.blocked) extra.danger else extra.muted)
+                    }
+                }
+            }
+        }
+    }
+    if (byName) FindByName(model, nav) { byName = false }
+}
+
+@Composable
+private fun FindByName(model: AppModel, nav: TreeNav, onClose: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    var name by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text(t("아이디로 찾기", "Find by username")) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(name, { name = it }, placeholder = { Text("@username") }, singleLine = true, shape = RoundedCornerShape(14.dp))
+                Text(t("상대가 ‘아이디로 찾기 허용’을 켠 경우에만 찾을 수 있어요.", "Works only if they allow being found by username."), style = MaterialTheme.typography.bodySmall, color = extra.muted)
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                scope.launch {
+                    val g = model.newChat() ?: return@launch
+                    if (model.invite(g, "@" + name.trim().removePrefix("@"))) { onClose(); nav.push(Route.Chat(g)) }
+                }
+            }, enabled = name.isNotBlank()) { Text(t("대화 시작", "Start chat"), fontWeight = FontWeight.SemiBold) }
+        },
+        dismissButton = { TextButton(onClick = onClose) { Text(t("취소", "Cancel")) } },
+    )
+}
+
+/** Chat info: who is in it, safety number, notifications, the chat's own settings, leaving. */
+@Composable
+fun ChatInfoScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state: UiState, chat: Chat) {
+    val scope = rememberCoroutineScope()
+    var safety by remember { mutableStateOf<String?>(null) }
+    var invite by remember { mutableStateOf(false) }
+    var rename by remember { mutableStateOf(false) }
+    var link by remember { mutableStateOf<String?>(null) }
+    val me = model.session?.memberId()
+    val others = state.members.filter { it.id != me }
+    val admin = state.members.firstOrNull { it.id == me }?.admin == true
+    Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
+        BackHeader("", { nav.pop() })
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom = 30.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Avatar(chat.title, chat.id, 96.dp)
+            Spacer(Modifier.height(12.dp))
+            Text(chat.title, style = MaterialTheme.typography.headlineMedium, textAlign = TextAlign.Center, modifier = Modifier.padding(horizontal = 24.dp))
+            Text(
+                if (chat.others > 1) t("멤버 ${chat.others + 1}명 · 끝단 암호화", "${chat.others + 1} members · end-to-end encrypted") else t("끝단 암호화된 대화", "End-to-end encrypted chat"),
+                color = extra.muted, style = MaterialTheme.typography.bodyMedium,
+            )
+            Spacer(Modifier.height(18.dp))
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                InfoAction(Icons.Rounded.NotificationsOff, if (chat.muted) t("알림 켜기", "Unmute") else t("알림 끄기", "Mute"), Modifier.weight(1f)) { scope.launch { if (chat.muted) model.unmute(chat.id) else model.mute(chat.id, null) } }
+                InfoAction(Icons.Rounded.PushPin, if (chat.pinned) t("고정 해제", "Unpin") else t("고정", "Pin"), Modifier.weight(1f)) { scope.launch { model.pin(chat.id, !chat.pinned) } }
+                InfoAction(Icons.Rounded.Archive, if (chat.archived) t("보관 해제", "Unarchive") else t("보관", "Archive"), Modifier.weight(1f)) { scope.launch { model.archive(chat.id, !chat.archived) } }
+            }
+            others.mapNotNull { it.account }.distinct().singleOrNull()?.let { acc ->
+                CardGroup(title = t("보안", "Security")) {
+                    SettingsRow(t("안전 번호 확인", "Verify safety number"), t("직접 만나서 숫자를 맞춰 보면 중간에서 엿보는 사람이 없다는 걸 확인할 수 있어요", "Compare in person to make sure nobody is in the middle"), Icons.Rounded.Shield, TreeColors.TileGreen, onClick = {
+                        scope.launch { safety = model.safetyNumber(acc) }
+                    })
+                }
+            }
+            CardGroup(title = t("멤버", "Members")) {
+                if (state.groups.mayAdd) SettingsRow(t("멤버 초대", "Add members"), null, Icons.Rounded.GroupAdd, TreeColors.TileBlue, onClick = { invite = true }, trailing = null)
+                if (admin) SettingsRow(t("초대 링크 만들기", "Make invite link"), t("24시간 동안 10명까지", "24 hours, up to 10 people"), Icons.Rounded.Link, TreeColors.TileIndigo, onClick = { scope.launch { link = model.inviteLink(chat.id) } }, trailing = null)
+                state.members.forEach { m ->
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        val name = if (m.id == me) state.name else (m.name ?: m.id.take(6))
+                        Avatar(name, m.account ?: m.id, 40.dp)
+                        Spacer(Modifier.width(12.dp))
+                        Text(name + if (m.id == me) t(" (나)", " (you)") else "", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (m.admin) Tag(t("관리자", "Admin"), MaterialTheme.colorScheme.primary)
+                    }
+                }
+            }
+            if (admin && state.chatFeatures.isNotEmpty()) {
+                CardGroup(title = t("이 대화방 설정 (관리자)", "Chat settings (admins)")) {
+                    if (chat.others > 1) SettingsRow(t("대화방 이름", "Chat name"), chat.title, Icons.Rounded.Edit, TreeColors.TileAmber, onClick = { rename = true })
+                    state.chatFeatures.filter { it.lockedBy == null }.forEach { f ->
+                        SwitchRow(chatFeatureName(f.key), f.option, f.applied, Icons.Rounded.Tune, TreeColors.TileGrey) { on -> scope.launch { model.setChatFeature(chat.id, f.key, on) } }
+                    }
+                }
+            }
+            CardGroup {
+                SettingsRow(t("대화방 나가기", "Leave chat"), null, Icons.Rounded.ExitToApp, TreeColors.TileRed, titleColor = extra.danger, onClick = { scope.launch { if (model.leave(chat.id, false)) nav.home() } }, trailing = null)
+                SettingsRow(t("조용히 나가기", "Leave quietly"), t("나갔다는 알림을 띄우지 않아요", "No \"left\" line in the chat"), Icons.Rounded.ExitToApp, TreeColors.TileGrey, onClick = { scope.launch { if (model.leave(chat.id, true)) nav.home() } }, trailing = null)
+            }
+        }
+    }
+    safety?.let { s ->
+        AlertDialog(
+            onDismissRequest = { safety = null },
+            title = { Text(t("안전 번호", "Safety number")) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(t("상대 기기에 보이는 숫자와 같으면 ‘확인’을 누르세요.", "If the other device shows the same numbers, tap Verify."), color = extra.muted)
+                    Box(Modifier.clip(RoundedCornerShape(14.dp)).background(extra.card).padding(16.dp)) {
+                        Text(s.chunked(5).chunked(4).joinToString("\n") { it.joinToString("  ") }, fontFamily = FontFamily.Monospace, fontSize = 17.sp, lineHeight = 26.sp)
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { val acc = others.mapNotNull { it.account }.firstOrNull(); safety = null; if (acc != null) scope.launch { model.markVerified(acc) } }) { Text(t("확인", "Verify"), fontWeight = FontWeight.SemiBold) } },
+            dismissButton = { TextButton(onClick = { safety = null }) { Text(t("닫기", "Close")) } },
+        )
+    }
+    link?.let { l ->
+        AlertDialog(
+            onDismissRequest = { link = null },
+            title = { Text(t("초대 링크", "Invite link")) },
+            text = { Text(l, style = MaterialTheme.typography.bodySmall) },
+            confirmButton = { TextButton(onClick = { platform.copy(l); link = null; model.notice(t("복사했어요", "Copied")) }) { Text(t("복사", "Copy"), fontWeight = FontWeight.SemiBold) } },
+        )
+    }
+    if (invite) InviteDialog(model, chat.id) { invite = false }
+    if (rename) {
+        var name by remember { mutableStateOf(chat.title) }
+        AlertDialog(
+            onDismissRequest = { rename = false },
+            title = { Text(t("대화방 이름", "Chat name")) },
+            text = { OutlinedTextField(name, { name = it }, singleLine = true, shape = RoundedCornerShape(14.dp)) },
+            confirmButton = { TextButton(onClick = { rename = false; scope.launch { model.renameGroup(chat.id, name) } }) { Text(t("저장", "Save"), fontWeight = FontWeight.SemiBold) } },
+            dismissButton = { TextButton(onClick = { rename = false }) { Text(t("취소", "Cancel")) } },
+        )
+    }
+}
+
+private fun chatFeatureName(key: String) = when (key) {
+    "chat.disappearing" -> t("사라지는 메시지", "Disappearing messages")
+    "chat.media" -> t("사진·영상·파일", "Photos, videos, files")
+    "chat.voice" -> t("음성 메시지", "Voice messages")
+    "chat.reactions" -> t("반응", "Reactions")
+    "chat.edit" -> t("메시지 수정", "Edit messages")
+    "chat.delete_for_all" -> t("모두에게서 삭제", "Delete for everyone")
+    "chat.screenshot_block" -> t("화면 캡처 막기", "Block screenshots")
+    "chat.view_once" -> t("한 번 보기", "View once")
+    "chat.formatting" -> t("글자 서식", "Text formatting")
+    "chat.mention_all" -> t("@모두 멘션", "@all mentions")
+    "chat.invite_link" -> t("초대 링크", "Invite links")
+    "chat.pins" -> t("메시지 고정", "Pinned messages")
+    "chat.polls" -> t("투표", "Polls")
+    "chat.forwarding" -> t("전달·저장 허용", "Forwarding and saving")
+    "chat.export" -> t("대화 내보내기", "Export chat")
+    "chat.stickers" -> t("스티커", "Stickers")
+    "chat.gifs" -> "GIF"
+    "chat.location" -> t("위치 보내기", "Location")
+    "chat.events" -> t("일정", "Events")
+    "chat.video_notes" -> t("영상 메시지", "Video messages")
+    "chat.topics" -> t("주제", "Topics")
+    "chat.roles" -> t("역할", "Roles")
+    "chat.admin_log" -> t("관리 기록", "Admin log")
+    "chat.welcome" -> t("환영 메시지", "Welcome message")
+    "chat.history_share" -> t("새 멤버에게 최근 대화 공유", "Share recent history with new members")
+    "chat.join_approval" -> t("가입 승인", "Approve joins")
+    "chat.slow_mode" -> t("느린 모드", "Slow mode")
+    "chat.restrict" -> t("멤버 발언 제한", "Restrict members")
+    "chat.member_adds" -> t("멤버도 초대 가능", "Members can add people")
+    "chat.bots" -> t("봇 허용", "Allow bots")
+    else -> key
+}
+
+@Composable
+private fun InfoAction(icon: ImageVector, label: String, modifier: Modifier, onClick: () -> Unit) {
+    Column(
+        modifier.clip(RoundedCornerShape(18.dp)).background(extra.card).clickable(onClick = onClick).padding(vertical = 14.dp),
+        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(5.dp),
+    ) {
+        Icon(icon, null, tint = MaterialTheme.colorScheme.primary)
+        Text(label, style = MaterialTheme.typography.labelMedium)
+    }
+}
+
+@Composable
+private fun InviteDialog(model: AppModel, group: String, onClose: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    var who by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text(t("멤버 초대", "Add members")) },
+        text = { OutlinedTextField(who, { who = it }, placeholder = { Text(t("@아이디 또는 계정 ID", "@username or account ID")) }, singleLine = true, shape = RoundedCornerShape(14.dp)) },
+        confirmButton = { TextButton(onClick = { scope.launch { if (model.invite(group, who)) onClose() } }, enabled = who.isNotBlank()) { Text(t("초대", "Add"), fontWeight = FontWeight.SemiBold) } },
+        dismissButton = { TextButton(onClick = onClose) { Text(t("취소", "Cancel")) } },
+    )
+}
+
+/** A new group: its name and the first people, then it opens. */
+@Composable
+fun NewGroupScreen(model: AppModel, nav: TreeNav, state: UiState) {
+    val scope = rememberCoroutineScope()
+    var name by remember { mutableStateOf("") }
+    var who by remember { mutableStateOf("") }
+    val people = remember { mutableStateListOf<String>() }
+    var busy by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { model.loadContacts() }
+    Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
+        BackHeader(t("새 그룹", "New group"), { nav.pop() })
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            OutlinedTextField(name, { name = it }, label = { Text(t("그룹 이름", "Group name")) }, singleLine = true, shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth())
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(who, { who = it }, label = { Text(t("@아이디로 추가", "Add by @username")) }, singleLine = true, shape = RoundedCornerShape(16.dp), modifier = Modifier.weight(1f))
+                TextButton(onClick = { if (who.isNotBlank()) { people.add(who.trim()); who = "" } }) { Text(t("추가", "Add")) }
+            }
+            if (state.contacts.isNotEmpty()) Text(t("연락처에서 고르기", "From your contacts"), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.titleSmall)
+            state.contacts.forEach { c ->
+                val picked = c.account in people
+                Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).clickable { if (picked) people.remove(c.account) else people.add(c.account) }.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Avatar(c.name, c.account, 40.dp)
+                    Spacer(Modifier.width(12.dp))
+                    Text(c.name, modifier = Modifier.weight(1f))
+                    if (picked) Icon(Icons.Rounded.VerifiedUser, null, tint = MaterialTheme.colorScheme.primary)
+                }
+            }
+            people.filter { p -> state.contacts.none { it.account == p } }.forEach { p -> Text("• $p", color = extra.muted) }
+        }
+        Box(Modifier.padding(16.dp)) {
+            PillButton(t("그룹 만들기", "Create group"), enabled = !busy && people.isNotEmpty(), onClick = {
+                busy = true
+                scope.launch {
+                    val g = model.newChat()
+                    if (g != null) {
+                        if (name.isNotBlank()) model.renameGroup(g, name)
+                        people.forEach { model.invite(g, it) }
+                        nav.pop(); nav.push(Route.Chat(g))
+                    }
+                    busy = false
+                }
+            })
+        }
+    }
+}

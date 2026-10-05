@@ -102,6 +102,12 @@ class DesktopPlatform(private val model: AppModel, private val scope: CoroutineS
 
     override val font = Fonts.pretendard
 
+    override val canRecord: Boolean get() = DesktopAudio.available
+    override fun startRecording(onStarted: (Boolean) -> Unit) = onStarted(DesktopAudio.start())
+    override fun stopRecording(cancel: Boolean): ByteArray? = DesktopAudio.stop(cancel)
+    override fun play(wav: ByteArray, onDone: () -> Unit) = DesktopAudio.play(wav, onDone)
+    override fun stopPlaying() = DesktopAudio.stopPlaying()
+
     override val extraScreens = listOf(
         "bots" to t("봇 만들기", "Bot factory"),
         "public" to t("공개 공간", "Public spaces"),

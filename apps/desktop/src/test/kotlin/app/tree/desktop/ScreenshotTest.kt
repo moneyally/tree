@@ -107,6 +107,9 @@ class ScreenshotTest {
         alice.send(g, "날씨 좋대요 ☀️ 물 꼭 챙기세요")
         bob.syncNow(); carol.syncNow()
         bob.send(g, "넵 ㅎㅎ")
+        val voice = ByteArray(app.tree.shared.media.Wav.RATE * 2 * 4) { i -> ((kotlin.math.sin(i / 40.0) * (i % 9000) / 60).toInt()).toByte() }
+        bob.sendMedia(g, app.tree.shared.media.Wav.encode(voice), "voice.wav", "audio/wav", AppModel.plainFile().copy(voice = true, durationMs = 4000u))
+        val created = carol.createPoll(g, "몇 시에 만날까요?", listOf("9시", "10시", "11시"))
         // Notes to self.
         alice.openNotes()
         alice.send(alice.state.value.notes!!, "등산화 끈 바꾸기")

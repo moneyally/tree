@@ -70,7 +70,7 @@ data class TreeExtra(
     /** The faint drawings on the chat wallpaper. */
     val wallpaperInk: Color = Color(0x1A9FD8BF),
     /** Floating bars over the chat (top bar, composer). */
-    val floating: Color = Color(0xEB1C1D21),
+    val floating: Color = Color(0xFA1C1D21),
 )
 
 private val DarkScheme: ColorScheme = darkColorScheme(
@@ -132,7 +132,7 @@ private val DarkExtra = TreeExtra(
 private val LightExtra = TreeExtra(
     chatBackground = Color(0xFFE8EEEA),
     wallpaperInk = Color(0x241E8A5D),
-    floating = Color(0xF2FFFFFF),
+    floating = Color(0xFCFFFFFF),
     bubbleMine = Color(0xFFD3F2E2),
     bubbleMineText = Color(0xFF0E241A),
     bubbleTheirs = Color(0xFFFFFFFF),

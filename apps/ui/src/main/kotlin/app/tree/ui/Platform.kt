@@ -41,6 +41,20 @@ interface TreePlatform {
     /** Where the device is now: latitude, longitude, accuracy in metres; null if unknown or refused. */
     fun currentLocation(onResult: (Triple<Double, Double, Int?>?) -> Unit) { onResult(null) }
 
+    /** This device can record voice notes (asks for the microphone first). */
+    val canRecord: Boolean get() = false
+
+    /** Starts recording; `onStarted(false)` if the microphone is refused or busy. */
+    fun startRecording(onStarted: (Boolean) -> Unit) { onStarted(false) }
+
+    /** Stops; the note as WAV ([app.tree.shared.media.Wav]), or null when cancelled or empty. */
+    fun stopRecording(cancel: Boolean): ByteArray? = null
+
+    /** Plays a WAV note; `onDone` when it ends or is stopped. Only one plays at a time. */
+    fun play(wav: ByteArray, onDone: () -> Unit) { onDone() }
+
+    fun stopPlaying() {}
+
     /** Lets the person choose where to save a received file. */
     fun saveAs(msgId: String, name: String)
 

@@ -50,6 +50,15 @@ class MediaComposeTest {
         assertNotNull(b.fileBytes(once.id), "opens once")
         b.refresh()
         assertNull(b.state.value.messages.first { it.id == once.id }.file, "and then it is gone")
+        // A voice note (WAV, 16 kHz mono) arrives as one and plays back the same samples.
+        val pcm = ByteArray(app.tree.shared.media.Wav.RATE * 2) { (it % 50).toByte() }
+        val note = app.tree.shared.media.Wav.encode(pcm)
+        assertTrue(a.sendMedia(g, note, "voice.wav", "audio/wav", AppModel.plainFile().copy(voice = true, durationMs = 1000u)))
+        b.syncNow(); b.openChat(g)
+        val v = b.state.value.messages.last { it.kind == "file" && it.file?.voice == true }
+        assertEquals(1000uL, v.file?.durationMs)
+        val back = app.tree.shared.media.Wav.decode(b.fileBytes(v.id)!!)!!
+        kotlin.test.assertContentEquals(pcm, back.first)
         a.stop(); b.stop()
     }
 }

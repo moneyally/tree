@@ -13,6 +13,8 @@
          (asked then; never in the background). -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <!-- Voice messages, only while the person records one (asked then). -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
     <!-- Finding push distributor apps (open distributor protocol). -->
     <queries>

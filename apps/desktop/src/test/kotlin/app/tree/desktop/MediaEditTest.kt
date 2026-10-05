@@ -191,3 +191,18 @@ class MediaEditTest {
         assertTrue(!AppModel.safeName("a/b\\c").contains('/') && !AppModel.safeName("a/b\\c").contains('\\'))
     }
 }
+
+class WavTest {
+    @Test
+    fun roundTrip() {
+        val pcm = ByteArray(32_000) { (it % 7).toByte() }
+        val wav = app.tree.shared.media.Wav.encode(pcm)
+        val (back, rate) = app.tree.shared.media.Wav.decode(wav)!!
+        kotlin.test.assertContentEquals(pcm, back)
+        kotlin.test.assertEquals(16_000, rate)
+        kotlin.test.assertEquals(1000L, app.tree.shared.media.Wav.durationMs(back))
+        kotlin.test.assertEquals(24, app.tree.shared.media.Wav.levels(back, 24).size)
+        kotlin.test.assertNull(app.tree.shared.media.Wav.decode(ByteArray(10)))
+        kotlin.test.assertNull(app.tree.shared.media.Wav.decode(wav.copyOf(50)), "a cut file is refused")
+    }
+}

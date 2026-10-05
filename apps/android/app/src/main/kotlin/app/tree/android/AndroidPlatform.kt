@@ -54,6 +54,8 @@ class AndroidPlatform(private val activity: ComponentActivity, private val model
     private var pendingImage: ((ByteArray, String) -> Unit)? = null
     private var pendingSave: String? = null
     private var askLocation: (() -> Unit)? = null
+    private var askMic: (() -> Unit)? = null
+    private var pendingMic: ((Boolean) -> Unit)? = null
     private var pendingLocation: ((Triple<Double, Double, Int?>?) -> Unit)? = null
 
     /** Registers the system pickers; call once inside the activity's content. */
@@ -74,7 +76,13 @@ class AndroidPlatform(private val activity: ComponentActivity, private val model
             pendingLocation = null
             if (cb != null) { if (granted.values.any { it }) locate(cb) else cb(null) }
         }
+        val mic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
+            val cb = pendingMic
+            pendingMic = null
+            cb?.invoke(ok && AndroidAudio.start())
+        }
         SideEffect {
+            askMic = { mic.launch(android.Manifest.permission.RECORD_AUDIO) }
             askLocation = { perm.launch(arrayOf(android.Manifest.permission.ACCESS_FINE_LOCATION, android.Manifest.permission.ACCESS_COARSE_LOCATION)) }
             pickPhoto = { open.launch("image/*") }
             pickFile = { open.launch("*/*") }
@@ -194,6 +202,17 @@ class AndroidPlatform(private val activity: ComponentActivity, private val model
 
     override fun decodeImage(bytes: ByteArray, maxPx: Int): ImageBitmap? =
         runCatching { decode(bytes, maxPx)?.asImageBitmap() }.getOrNull()
+
+    override val canRecord = true
+
+    override fun startRecording(onStarted: (Boolean) -> Unit) {
+        if (activity.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED) onStarted(AndroidAudio.start())
+        else { pendingMic = onStarted; askMic?.invoke() ?: onStarted(false) }
+    }
+
+    override fun stopRecording(cancel: Boolean): ByteArray? = AndroidAudio.stop(cancel)
+    override fun play(wav: ByteArray, onDone: () -> Unit) = AndroidAudio.play(wav) { activity.runOnUiThread(onDone) }
+    override fun stopPlaying() = AndroidAudio.stopPlaying()
 
     override val hasLocation = true
 

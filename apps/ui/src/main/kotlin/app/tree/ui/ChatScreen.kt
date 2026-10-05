@@ -105,6 +105,7 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.material.icons.automirrored.rounded.Forward
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.sp
@@ -452,6 +453,7 @@ private fun MessageBubble(
                     when {
                         m.deleted -> TextWithMeta(AnnotatedString(t("삭제된 메시지입니다", "This message was deleted")), extra.bubbleMeta, m, mine, state, replyCount)
                         m.kind == "file" && (m.file?.viewOnce == true || (m.file == null && state.files[m.id] == null && m.text == null)) -> { ViewOnceContent(model, platform, m, mine, textColor); MetaRow(m, mine, state, replyCount, Modifier.align(Alignment.End)) }
+                        m.kind == "file" && m.file?.voice == true -> { VoiceContent(model, platform, m, mine, textColor); MetaRow(m, mine, state, replyCount, Modifier.align(Alignment.End)) }
                         m.kind == "file" -> { FileContent(model, platform, state, m, textColor); MetaRow(m, mine, state, replyCount, Modifier.align(Alignment.End)) }
                         m.kind == "location" -> { LocationContent(model, platform, media, m, textColor); MetaRow(m, mine, state, replyCount, Modifier.align(Alignment.End)) }
                         m.kind == "event" -> { EventContent(model, chat, media, m, textColor); MetaRow(m, mine, state, replyCount, Modifier.align(Alignment.End)) }
@@ -617,6 +619,7 @@ private fun Composer(model: AppModel, platform: TreePlatform, state: UiState, me
     var text by remember(chat.id) { mutableStateOf(chat.draft ?: "") }
     var attach by remember { mutableStateOf(false) }
     var panel by remember { mutableStateOf(false) }
+    var recordingSince by remember(chat.id) { mutableStateOf<Long?>(null) }
     if (state.channel.isChannel && !state.channel.mayPost) {
         Box(Modifier.fillMaxWidth().padding(10.dp).clip(RoundedCornerShape(26.dp)).background(extra.floating).padding(16.dp), contentAlignment = Alignment.Center) {
             Text(t("관리자만 글을 쓸 수 있는 채널이에요", "Only admins post in this channel"), color = extra.muted, style = MaterialTheme.typography.bodyMedium)
@@ -643,7 +646,9 @@ private fun Composer(model: AppModel, platform: TreePlatform, state: UiState, me
                 IconButton(onClick = { panel = !panel; attach = false }) {
                     Icon(if (panel) Icons.Rounded.Keyboard else Icons.Rounded.EmojiEmotions, t("이모지와 스티커", "Emoji and stickers"), tint = extra.muted)
                 }
-                Box(Modifier.weight(1f).heightIn(min = 48.dp).padding(vertical = 13.dp)) {
+                if (recordingSince != null) Box(Modifier.weight(1f)) {
+                    RecordingBar(recordingSince!!) { platform.stopRecording(cancel = true); recordingSince = null }
+                } else Box(Modifier.weight(1f).heightIn(min = 48.dp).padding(vertical = 13.dp)) {
                     if (text.isEmpty()) Text(t("메시지", "Message"), color = extra.muted, style = MaterialTheme.typography.bodyLarge)
                     BasicTextField(
                         text, { v ->
@@ -656,8 +661,10 @@ private fun Composer(model: AppModel, platform: TreePlatform, state: UiState, me
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
-                IconButton(onClick = { attach = !attach; panel = false }) { Icon(Icons.Rounded.AttachFile, t("첨부", "Attach"), tint = if (attach) MaterialTheme.colorScheme.primary else extra.muted) }
-                val canSend = text.isNotBlank()
+                if (recordingSince == null) IconButton(onClick = { attach = !attach; panel = false }) { Icon(Icons.Rounded.AttachFile, t("첨부", "Attach"), tint = if (attach) MaterialTheme.colorScheme.primary else extra.muted) }
+                val voiceOk = platform.canRecord && state.chatFeatures.none { (it.key == "chat.voice" || it.key == "chat.media") && !it.applied }
+                val mic = text.isBlank() && voiceOk && recordingSince == null
+                val canSend = text.isNotBlank() || mic || recordingSince != null
                 var sendMenu by remember { mutableStateOf(false) }
                 fun send(silent: Boolean) {
                     val v = text.trim()
@@ -678,9 +685,30 @@ private fun Composer(model: AppModel, platform: TreePlatform, state: UiState, me
                     Box(
                         Modifier.padding(start = 2.dp, end = 2.dp, bottom = 2.dp).size(46.dp).clip(CircleShape)
                             .background(if (canSend) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
-                            .combinedClickable(enabled = canSend, onClick = { send(false) }, onLongClick = { sendMenu = true }),
+                            .combinedClickable(enabled = canSend, onClick = {
+                                when {
+                                    recordingSince != null -> {
+                                        val started = recordingSince!!
+                                        recordingSince = null
+                                        val wav = platform.stopRecording(cancel = false)
+                                        if (wav != null) scope.launch {
+                                            val ms = System.currentTimeMillis() - started
+                                            model.sendMedia(chat.id, wav, "voice.wav", "audio/wav",
+                                                AppModel.plainFile().copy(voice = true, durationMs = ms.toULong()))
+                                        }
+                                    }
+                                    mic -> platform.startRecording { ok ->
+                                        if (ok) recordingSince = System.currentTimeMillis()
+                                        else model.notice(t("마이크를 쓸 수 없어요", "Can't use the microphone"))
+                                    }
+                                    else -> send(false)
+                                }
+                            }, onLongClick = { if (text.isNotBlank()) sendMenu = true }),
                         contentAlignment = Alignment.Center,
-                    ) { Icon(Icons.AutoMirrored.Rounded.Send, t("보내기", "Send"), tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(21.dp)) }
+                    ) {
+                        Icon(if (mic) Icons.Rounded.Mic else Icons.AutoMirrored.Rounded.Send, if (mic) t("음성 녹음", "Record voice") else t("보내기", "Send"),
+                            tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(21.dp))
+                    }
                     // Hold the button: send without a sound on the others' phones.
                     DropdownMenu(sendMenu, { sendMenu = false }) {
                         DropdownMenuItem({ Text(t("조용히 보내기", "Send without sound")) }, leadingIcon = { Icon(Icons.Rounded.NotificationsOff, null) }, onClick = { sendMenu = false; send(true) })
@@ -836,7 +864,9 @@ private fun PollContent(model: AppModel, group: String, p: uniffi.tree_ffi.PollI
                     Text((if (chosen) "✓ " else "") + o, color = textColor, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
                     Text("${n * 100 / total}%", color = extra.bubbleMeta, style = MaterialTheme.typography.bodySmall)
                 }
-                LinearProgressIndicator(progress = { n.toFloat() / total }, modifier = Modifier.fillMaxWidth().padding(top = 3.dp).height(5.dp).clip(RoundedCornerShape(3.dp)))
+                Box(Modifier.fillMaxWidth().padding(top = 4.dp).height(6.dp).clip(RoundedCornerShape(3.dp)).background(textColor.copy(alpha = 0.12f))) {
+                    Box(Modifier.fillMaxWidth(n.toFloat() / total).height(6.dp).clip(RoundedCornerShape(3.dp)).background(if (chosen) MaterialTheme.colorScheme.primary else textColor.copy(alpha = 0.45f)))
+                }
             }
         }
     }

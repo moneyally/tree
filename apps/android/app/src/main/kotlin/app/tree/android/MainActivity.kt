@@ -29,6 +29,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         pendingLink = intent?.dataString
         val profile = app.profile
+        val platform = AndroidPlatform(this, model, profile)
+        val nav = app.tree.ui.TreeNav()
+        androidx.activity.enableEdgeToEdge(this)
         setContent {
             val state by model.state.collectAsState()
             // Screenshots and the recent-apps preview (APP_PROTOCOL.md 6.3).
@@ -54,7 +57,10 @@ class MainActivity : ComponentActivity() {
             }
             // user.incognito_keyboard: every text field asks the keyboard not to learn.
             IncognitoKeyboard(DeviceProtection.incognitoKeyboard(state)) {
-                TreeApp(model, profile)
+                platform.Launchers()
+                // The system back button walks back through the app's screens.
+                androidx.activity.compose.BackHandler(enabled = nav.canPop) { nav.pop() }
+                app.tree.ui.TreeUi(model, platform, nav)
             }
         }
     }

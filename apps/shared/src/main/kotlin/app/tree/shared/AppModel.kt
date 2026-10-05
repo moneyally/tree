@@ -86,6 +86,13 @@ data class LinkUi(
 /** What became of a scanned or pasted code ([AppModel.useScanned]). */
 enum class ScanOutcome { ACCEPTED, NOT_TREE, WRONG_KIND, FAILED }
 
+/** A member typing: its name and when the indicator lapses if no "stopped" arrives. */
+data class Typer(val name: String, val until: Long)
+
+/** The names of who is typing in [group] now (expired ones left out). */
+fun UiState.typersIn(group: String, now: Long = System.currentTimeMillis()): List<String> =
+    typingIn[group]?.values?.filter { it.until > now }?.map { it.name }.orEmpty()
+
 data class UiState(
     val signedIn: Boolean = false,
     val name: String = "",
@@ -103,6 +110,8 @@ data class UiState(
     val chatFeatures: List<Feature> = emptyList(),
     /** Members typing in the open chat (member ids). */
     val typing: Set<String> = emptySet(),
+    /** Who is typing in every chat (chat -> member -> name and until when), for the chat list. */
+    val typingIn: Map<String, Map<String, Typer>> = emptyMap(),
     /** My messages in the open chat that someone has read. */
     val readMine: Set<String> = emptySet(),
     /** Folders (user and built-in) and the one selected (null = all chats). */
@@ -342,7 +351,14 @@ class AppModel(
 
     private suspend fun onEvent(e: TreeEvent) {
         when (e) {
-            is TreeEvent.Text -> maybeNotify(e.group, e.silent, e.text)
+            is TreeEvent.Text -> {
+                // A message ends its sender's "typing".
+                _state.update {
+                    val inChat = it.typingIn[e.group].orEmpty() - e.from
+                    it.copy(typing = it.typing - e.from, typingIn = if (inChat.isEmpty()) it.typingIn - e.group else it.typingIn + (e.group to inChat))
+                }
+                maybeNotify(e.group, e.silent, e.text)
+            }
             is TreeEvent.File -> {
                 _state.update { it.copy(files = it.files + (e.file.msgId to e.file)) }
                 maybeNotify(e.group, false, null)
@@ -355,8 +371,18 @@ class AppModel(
             is TreeEvent.LeaveRequested -> call { s ->
                 if (s.group(e.group).admins.contains(s.memberId())) s.remove(e.group, listOf(e.member))
             }
-            is TreeEvent.Typing -> if (e.group == _state.value.open) {
-                _state.update { it.copy(typing = if (e.on) it.typing + e.from else it.typing - e.from) }
+            is TreeEvent.Typing -> {
+                val name = if (e.on) {
+                    _state.value.names[e.from] ?: call { s -> s.members(e.group).firstOrNull { it.id == e.from }?.name } ?: Strings.t("someone")
+                } else ""
+                _state.update {
+                    val inChat = it.typingIn[e.group].orEmpty()
+                    val now = if (e.on) inChat + (e.from to Typer(name, System.currentTimeMillis() + TYPING_MS)) else inChat - e.from
+                    it.copy(
+                        typing = if (e.group != it.open) it.typing else if (e.on) it.typing + e.from else it.typing - e.from,
+                        typingIn = if (now.isEmpty()) it.typingIn - e.group else it.typingIn + (e.group to now),
+                    )
+                }
             }
             is TreeEvent.GroupSafetyNotice -> _state.update { it.copy(notice = Strings.t("group_notice")) }
             is TreeEvent.KeyChanged -> _state.update { it.copy(notice = Strings.t("key_changed")) }
@@ -587,6 +613,12 @@ class AppModel(
     suspend fun send(group: String, text: String, silent: Boolean = false): Boolean {
         if (text.isBlank()) return false
         return (call { it.sendTextWith(group, text, false, emptyList(), false, null, silent) } != null).also { refresh() }
+    }
+
+    /** A text answering message [replyTo] (quoted above it). */
+    suspend fun reply(group: String, text: String, replyTo: String): Boolean {
+        if (text.isBlank()) return false
+        return (call { it.sendReply(group, text, replyTo) } != null).also { refresh() }
     }
 
     /** A failed message (status "failed"): try again now. True if it went out. */
@@ -838,6 +870,9 @@ class AppModel(
 
     companion object {
         private val ENDED = setOf("linked", "cancelled")
+
+        /** A typing indicator lapses after this long without news (a lost "stopped"). */
+        const val TYPING_MS = 6_000L
 
         /** The line a scanning screen shows for [o] (null: nothing to say). */
         fun scanMessage(o: ScanOutcome, want: CodeKind): String? = when (o) {

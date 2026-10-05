@@ -21,6 +21,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -43,6 +45,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -190,12 +193,10 @@ fun ScanScreen(model: AppModel, want: CodeKind, onClose: () -> Unit) {
         }
     }
 
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = onClose) { Text("←") }
-            Text(Strings.t(if (want == CodeKind.DEVICE_LINK) "qr_link_new_device" else "qr_add_friend"), style = MaterialTheme.typography.titleLarge)
-        }
-        Text(Strings.t(if (want == CodeKind.DEVICE_LINK) "qr_scan_device" else "qr_scan_friend"))
+    Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().verticalScroll(rememberScrollState())) {
+      app.tree.ui.BackHeader(Strings.t(if (want == CodeKind.DEVICE_LINK) "qr_link_new_device" else "qr_add_friend"), onClose)
+      Column(Modifier.padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Text(Strings.t(if (want == CodeKind.DEVICE_LINK) "qr_scan_device" else "qr_scan_friend"), color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (granted) {
             CameraScanner(
                 torch = torch,
@@ -219,6 +220,7 @@ fun ScanScreen(model: AppModel, want: CodeKind, onClose: () -> Unit) {
             OutlinedTextField(pasted, { pasted = it; message = null }, singleLine = true, modifier = Modifier.weight(1f))
             TextButton(onClick = { use(pasted, fromCamera = false) }) { Text("→") }
         }
+      }
     }
 }
 
@@ -266,7 +268,23 @@ private fun CameraScanner(torch: Boolean, onTorch: (Boolean) -> Unit, onText: (S
         }
     }
     LaunchedEffect(torch, camera) { camera?.cameraControl?.enableTorch(torch) }
-    AndroidView({ view }, Modifier.fillMaxWidth().aspectRatio(3f / 4f))
+    androidx.compose.foundation.layout.Box(Modifier.fillMaxWidth().aspectRatio(3f / 4f).clip(androidx.compose.foundation.shape.RoundedCornerShape(28.dp))) {
+        AndroidView({ view }, Modifier.fillMaxSize())
+        // The square to put the code in: four bright corners.
+        val accent = MaterialTheme.colorScheme.primary
+        androidx.compose.foundation.Canvas(Modifier.fillMaxSize()) {
+            val side = size.minDimension * 0.62f
+            val l = (size.width - side) / 2
+            val t = (size.height - side) / 2
+            val arm = side * 0.16f
+            val w = 5.dp.toPx()
+            val cap = androidx.compose.ui.graphics.StrokeCap.Round
+            for ((x, y, dx, dy) in listOf(listOf(l, t, 1f, 1f), listOf(l + side, t, -1f, 1f), listOf(l, t + side, 1f, -1f), listOf(l + side, t + side, -1f, -1f))) {
+                drawLine(accent, androidx.compose.ui.geometry.Offset(x, y), androidx.compose.ui.geometry.Offset(x + arm * dx, y), w, cap)
+                drawLine(accent, androidx.compose.ui.geometry.Offset(x, y), androidx.compose.ui.geometry.Offset(x, y + arm * dy), w, cap)
+            }
+        }
+    }
 }
 
 /** Settings: my username, my QR code (with the link and a copy button), and the two scanners. */

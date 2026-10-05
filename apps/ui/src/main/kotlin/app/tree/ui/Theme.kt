@@ -6,6 +6,7 @@ import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.Typography
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
@@ -66,6 +67,10 @@ data class TreeExtra(
     val publicBadge: Color,
     val botBadge: Color,
     val warning: Color,
+    /** The faint drawings on the chat wallpaper. */
+    val wallpaperInk: Color = Color(0x1A9FD8BF),
+    /** Floating bars over the chat (top bar, composer). */
+    val floating: Color = Color(0xEB1C1D21),
 )
 
 private val DarkScheme: ColorScheme = darkColorScheme(
@@ -107,7 +112,7 @@ private val LightScheme: ColorScheme = lightColorScheme(
 )
 
 private val DarkExtra = TreeExtra(
-    chatBackground = Color(0xFF0E1114),
+    chatBackground = Color(0xFF0A0D0C),
     bubbleMine = Color(0xFF1F5A41),
     bubbleMineText = Color(0xFFF1FBF6),
     bubbleTheirs = Color(0xFF1F2025),
@@ -126,6 +131,8 @@ private val DarkExtra = TreeExtra(
 
 private val LightExtra = TreeExtra(
     chatBackground = Color(0xFFE8EEEA),
+    wallpaperInk = Color(0x241E8A5D),
+    floating = Color(0xF2FFFFFF),
     bubbleMine = Color(0xFFD3F2E2),
     bubbleMineText = Color(0xFF0E241A),
     bubbleTheirs = Color(0xFFFFFFFF),
@@ -144,19 +151,26 @@ private val LightExtra = TreeExtra(
 
 val LocalTreeExtra = staticCompositionLocalOf { DarkExtra }
 
-private val TreeTypography = Typography(
-    headlineLarge = TextStyle(fontSize = 30.sp, fontWeight = FontWeight.Bold, lineHeight = 38.sp),
-    headlineMedium = TextStyle(fontSize = 26.sp, fontWeight = FontWeight.Bold, lineHeight = 32.sp),
-    titleLarge = TextStyle(fontSize = 22.sp, fontWeight = FontWeight.Bold, lineHeight = 28.sp),
-    titleMedium = TextStyle(fontSize = 17.sp, fontWeight = FontWeight.SemiBold, lineHeight = 22.sp),
-    titleSmall = TextStyle(fontSize = 15.sp, fontWeight = FontWeight.SemiBold, lineHeight = 20.sp),
-    bodyLarge = TextStyle(fontSize = 16.sp, lineHeight = 22.sp),
-    bodyMedium = TextStyle(fontSize = 15.sp, lineHeight = 20.sp),
-    bodySmall = TextStyle(fontSize = 13.sp, lineHeight = 18.sp),
-    labelLarge = TextStyle(fontSize = 15.sp, fontWeight = FontWeight.SemiBold),
-    labelMedium = TextStyle(fontSize = 13.sp, fontWeight = FontWeight.Medium),
-    labelSmall = TextStyle(fontSize = 11.sp, fontWeight = FontWeight.SemiBold),
-)
+/** The type scale, in the app's font (Pretendard, OFL; bundled) with slightly tight tracking. */
+private fun treeTypography(f: FontFamily?): Typography {
+    fun st(size: Int, weight: FontWeight, line: Int? = null, track: Float = -0.2f) = TextStyle(
+        fontFamily = f, fontSize = size.sp, fontWeight = weight, letterSpacing = track.sp,
+        lineHeight = line?.sp ?: androidx.compose.ui.unit.TextUnit.Unspecified,
+    )
+    return Typography(
+        headlineLarge = st(30, FontWeight.Bold, 38, -0.6f),
+        headlineMedium = st(26, FontWeight.Bold, 32, -0.5f),
+        titleLarge = st(22, FontWeight.Bold, 28, -0.4f),
+        titleMedium = st(17, FontWeight.SemiBold, 22, -0.3f),
+        titleSmall = st(15, FontWeight.SemiBold, 20),
+        bodyLarge = st(16, FontWeight.Normal, 23),
+        bodyMedium = st(15, FontWeight.Normal, 21),
+        bodySmall = st(13, FontWeight.Normal, 18, -0.1f),
+        labelLarge = st(15, FontWeight.SemiBold, 20),
+        labelMedium = st(13, FontWeight.Medium, 17, -0.1f),
+        labelSmall = st(11, FontWeight.Medium, 14, 0f),
+    )
+}
 
 private val TreeShapes = Shapes(
     small = RoundedCornerShape(10.dp),
@@ -166,11 +180,12 @@ private val TreeShapes = Shapes(
 )
 
 @Composable
-fun TreeTheme(dark: Boolean = isSystemInDarkTheme(), content: @Composable () -> Unit) {
+fun TreeTheme(dark: Boolean = isSystemInDarkTheme(), font: FontFamily? = null, content: @Composable () -> Unit) {
+    val typography = androidx.compose.runtime.remember(font) { treeTypography(font) }
     CompositionLocalProvider(LocalTreeExtra provides if (dark) DarkExtra else LightExtra) {
         MaterialTheme(
             colorScheme = if (dark) DarkScheme else LightScheme,
-            typography = TreeTypography,
+            typography = typography,
             shapes = TreeShapes,
             content = content,
         )

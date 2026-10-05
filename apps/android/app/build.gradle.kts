@@ -32,13 +32,18 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
+        // The server new accounts use unless changed under 고급 (-PtreeServer=...;
+        // the emulator reaches the host at 10.0.2.2).
+        buildConfigField("String", "TREE_SERVER", "\"" + (project.findProperty("treeServer") ?: "https://") + "\"")
     }
-    buildFeatures { compose = true }
+    buildFeatures { compose = true; buildConfig = true }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_21
         targetCompatibility = JavaVersion.VERSION_21
     }
     sourceSets["main"].kotlin.srcDirs(generated, File(repoRoot, "apps/shared/src/main/kotlin"), File(repoRoot, "apps/ui/src/main/kotlin"))
+    // The shared screens' font (Pretendard, OFL: apps/ui/FONT_LICENSE.txt).
+    sourceSets["main"].res.srcDirs("src/main/res", File(repoRoot, "apps/ui/res"))
     packaging { jniLibs { useLegacyPackaging = false } }
 }
 

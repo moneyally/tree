@@ -37,7 +37,9 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -272,7 +274,7 @@ fun PillButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier,
             Icon(icon, contentDescription = null, modifier = Modifier.size(20.dp))
             Spacer(Modifier.width(10.dp))
         }
-        Text(text, style = MaterialTheme.typography.labelLarge)
+        Text(text, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
     }
 }
 
@@ -307,4 +309,50 @@ fun EmptyState(icon: ImageVector, title: String, text: String, modifier: Modifie
 @Composable
 fun Caption(text: String) {
     Text(text, style = MaterialTheme.typography.bodySmall, color = extra.muted, modifier = Modifier.padding(horizontal = 30.dp, vertical = 4.dp))
+}
+
+/** Three dots rising in turn, for "typing". */
+@Composable
+fun TypingDots(color: Color = MaterialTheme.colorScheme.primary, dot: Dp = 4.dp) {
+    val tr = androidx.compose.animation.core.rememberInfiniteTransition(label = "typing")
+    val phase by tr.animateFloat(
+        0f, 3f,
+        androidx.compose.animation.core.infiniteRepeatable(androidx.compose.animation.core.tween(1200, easing = androidx.compose.animation.core.LinearEasing)),
+        label = "phase",
+    )
+    Row(horizontalArrangement = Arrangement.spacedBy(dot * 0.7f), verticalAlignment = Alignment.CenterVertically, modifier = Modifier.height(dot * 3)) {
+        for (i in 0 until 3) {
+            val d = ((phase - i + 3f) % 3f)
+            val lift = if (d < 1f) kotlin.math.sin(d * Math.PI).toFloat() else 0f
+            Box(Modifier.padding(bottom = dot * lift).size(dot).clip(CircleShape).background(color.copy(alpha = 0.5f + 0.5f * lift)))
+        }
+    }
+}
+
+/** "A 님이 입력 중", "A, B 님이 입력 중", "A, B 님 외 2명이 입력 중". */
+fun typingText(names: List<String>): String = when {
+    names.isEmpty() -> t("입력 중", "typing")
+    names.size == 1 -> t("${names[0]} 님이 입력 중", "${names[0]} is typing")
+    names.size == 2 -> t("${names[0]}, ${names[1]} 님이 입력 중", "${names[0]} and ${names[1]} are typing")
+    else -> t("${names[0]}, ${names[1]} 님 외 ${names.size - 2}명이 입력 중", "${names[0]}, ${names[1]} and ${names.size - 2} more are typing")
+}
+
+/** The clock, ticking each second only while [active] (typing indicators lapse by it). */
+@Composable
+fun rememberNow(active: Boolean): Long {
+    val now = androidx.compose.runtime.produceState(System.currentTimeMillis(), active) {
+        value = System.currentTimeMillis()
+        while (active) { kotlinx.coroutines.delay(1000); value = System.currentTimeMillis() }
+    }
+    return now.value
+}
+
+/** The typing line: dots and who. */
+@Composable
+fun TypingLine(names: List<String>, modifier: Modifier = Modifier) {
+    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+        TypingDots()
+        Spacer(Modifier.width(6.dp))
+        Text(typingText(names), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
 }

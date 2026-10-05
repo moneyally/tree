@@ -22,6 +22,15 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.Logout
+import androidx.compose.material.icons.rounded.ExpandLess
+import androidx.compose.material.icons.rounded.ExpandMore
+import androidx.compose.material.icons.rounded.ChatBubble
+import androidx.compose.material.icons.rounded.Description
+import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material.icons.rounded.AlternateEmail
 import androidx.compose.material.icons.rounded.Archive
 import androidx.compose.material.icons.rounded.Block
@@ -50,6 +59,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -86,9 +96,7 @@ fun ProfileScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state: 
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp)) {
             androidx.compose.material3.IconButton(onClick = { nav.push(Route.Scan(CodeKind.USERNAME)) }) { Icon(Icons.Rounded.QrCodeScanner, t("QR 찍기", "Scan QR")) }
         }
-        val photo = state.rich.myPhoto?.bytes
-        val image = remember(photo) { photo?.let { platform.decodeImage(it) } }
-        Avatar(state.name, state.account, 112.dp, image = image)
+        Avatar(state.name, state.account, 112.dp, image = rememberPhoto(platform, "me", model.rich.state.collectAsState().value.myPhoto?.bytes, 384))
         Spacer(Modifier.height(14.dp))
         Text(state.name, style = MaterialTheme.typography.headlineMedium)
         Text(username?.let { "@$it" } ?: t("아이디 없음", "No username yet"), color = extra.muted, style = MaterialTheme.typography.bodyLarge)
@@ -229,55 +237,141 @@ fun ChatInfoScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state:
     val me = model.session?.memberId()
     val others = state.members.filter { it.id != me }
     val admin = state.members.firstOrNull { it.id == me }?.admin == true
-    Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
-        BackHeader("", { nav.pop() })
-        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom = 30.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            Avatar(chat.title, chat.id, 96.dp)
-            Spacer(Modifier.height(12.dp))
-            Text(chat.title, style = MaterialTheme.typography.headlineMedium, textAlign = TextAlign.Center, modifier = Modifier.padding(horizontal = 24.dp))
-            Text(
-                if (chat.others > 1) t("멤버 ${chat.others + 1}명 · 끝단 암호화", "${chat.others + 1} members · end-to-end encrypted") else t("끝단 암호화된 대화", "End-to-end encrypted chat"),
-                color = extra.muted, style = MaterialTheme.typography.bodyMedium,
-            )
-            Spacer(Modifier.height(18.dp))
-            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                InfoAction(Icons.Rounded.NotificationsOff, if (chat.muted) t("알림 켜기", "Unmute") else t("알림 끄기", "Mute"), Modifier.weight(1f)) { scope.launch { if (chat.muted) model.unmute(chat.id) else model.mute(chat.id, null) } }
-                InfoAction(Icons.Rounded.PushPin, if (chat.pinned) t("고정 해제", "Unpin") else t("고정", "Pin"), Modifier.weight(1f)) { scope.launch { model.pin(chat.id, !chat.pinned) } }
-                InfoAction(Icons.Rounded.Archive, if (chat.archived) t("보관 해제", "Unarchive") else t("보관", "Archive"), Modifier.weight(1f)) { scope.launch { model.archive(chat.id, !chat.archived) } }
+    val media by model.rich.state.collectAsState()
+    var tab by remember(chat.id) { mutableStateOf(if (chat.others > 1 || chat.channel) InfoTab.MEMBERS else InfoTab.MEDIA) }
+    var leaving by remember { mutableStateOf(false) }
+    Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().verticalScroll(rememberScrollState()).padding(bottom = 30.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            androidx.compose.material3.IconButton(onClick = { nav.pop() }) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, t("뒤로", "Back")) }
+            Spacer(Modifier.weight(1f))
+            if (admin && chat.others > 1) androidx.compose.material3.IconButton(onClick = { rename = true }) { Icon(Icons.Rounded.Edit, t("이름 바꾸기", "Rename")) }
+        }
+        Avatar(chat.title, chat.peer ?: chat.id, 110.dp, image = rememberPhoto(platform, chat.id, media.chatPhotos[chat.id]?.bytes, 384))
+        Spacer(Modifier.height(14.dp))
+        Text(chat.title, style = MaterialTheme.typography.headlineMedium, textAlign = TextAlign.Center, modifier = Modifier.padding(horizontal = 24.dp))
+        Text(
+            when {
+                chat.channel -> t("채널 · 구독자 ${chat.others + 1}명", "Channel · ${chat.others + 1} subscribers")
+                chat.others > 1 -> t("멤버 ${chat.others + 1}명", "${chat.others + 1} members")
+                else -> t("끝단 암호화된 1:1 대화", "End-to-end encrypted chat")
+            },
+            color = extra.muted, style = MaterialTheme.typography.bodyMedium,
+        )
+        Spacer(Modifier.height(20.dp))
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            InfoAction(Icons.Rounded.ChatBubble, t("메시지", "Message"), Modifier.weight(1f)) { nav.pop() }
+            InfoAction(if (chat.muted) Icons.Rounded.Notifications else Icons.Rounded.NotificationsOff, if (chat.muted) t("알림 켜기", "Unmute") else t("알림 끄기", "Mute"), Modifier.weight(1f)) { scope.launch { if (chat.muted) model.unmute(chat.id) else model.mute(chat.id, null) } }
+            InfoAction(Icons.AutoMirrored.Rounded.Logout, t("나가기", "Leave"), Modifier.weight(1f)) { leaving = true }
+        }
+        CardGroup {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Rounded.Lock, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(12.dp))
+                Text(t("메시지와 파일은 끝단 암호화돼요. 서버도 내용을 볼 수 없어요.", "Messages and files are end-to-end encrypted. Not even the server can read them."), style = MaterialTheme.typography.bodyMedium)
             }
-            others.mapNotNull { it.account }.distinct().singleOrNull()?.let { acc ->
-                CardGroup(title = t("보안", "Security")) {
-                    SettingsRow(t("안전 번호 확인", "Verify safety number"), t("직접 만나서 숫자를 맞춰 보면 중간에서 엿보는 사람이 없다는 걸 확인할 수 있어요", "Compare in person to make sure nobody is in the middle"), Icons.Rounded.Shield, TreeColors.TileGreen, onClick = {
-                        scope.launch { safety = model.safetyNumber(acc) }
-                    })
-                }
+            others.mapNotNull { it.account }.distinct().singleOrNull()?.takeIf { chat.others <= 1 }?.let { acc ->
+                RowDivider(50.dp)
+                SettingsRow(t("안전 번호 확인", "Verify safety number"), t("직접 만나서 숫자를 맞춰 보세요", "Compare the numbers in person"), Icons.Rounded.Shield, TreeColors.TileGreen, onClick = { scope.launch { safety = model.safetyNumber(acc) } })
             }
-            CardGroup(title = t("멤버", "Members")) {
-                if (state.groups.mayAdd) SettingsRow(t("멤버 초대", "Add members"), null, Icons.Rounded.GroupAdd, TreeColors.TileBlue, onClick = { invite = true }, trailing = null)
-                if (admin) SettingsRow(t("초대 링크 만들기", "Make invite link"), t("24시간 동안 10명까지", "24 hours, up to 10 people"), Icons.Rounded.Link, TreeColors.TileIndigo, onClick = { scope.launch { link = model.inviteLink(chat.id) } }, trailing = null)
-                state.members.forEach { m ->
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        val name = if (m.id == me) state.name else (m.name ?: m.id.take(6))
-                        Avatar(name, m.account ?: m.id, 40.dp)
-                        Spacer(Modifier.width(12.dp))
-                        Text(name + if (m.id == me) t(" (나)", " (you)") else "", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        if (m.admin) Tag(t("관리자", "Admin"), MaterialTheme.colorScheme.primary)
-                    }
-                }
+            if (admin && chat.others > 1) {
+                RowDivider(50.dp)
+                SettingsRow(t("초대 링크 만들기", "Make invite link"), t("24시간 동안 10명까지", "24 hours, up to 10 people"), Icons.Rounded.Link, TreeColors.TileIndigo, onClick = { scope.launch { link = model.inviteLink(chat.id) } }, trailing = null)
             }
-            if (admin && state.chatFeatures.isNotEmpty()) {
-                CardGroup(title = t("이 대화방 설정 (관리자)", "Chat settings (admins)")) {
-                    if (chat.others > 1) SettingsRow(t("대화방 이름", "Chat name"), chat.title, Icons.Rounded.Edit, TreeColors.TileAmber, onClick = { rename = true })
-                    state.chatFeatures.filter { it.lockedBy == null }.forEach { f ->
-                        SwitchRow(chatFeatureName(f.key), f.option, f.applied, Icons.Rounded.Tune, TreeColors.TileGrey) { on -> scope.launch { model.setChatFeature(chat.id, f.key, on) } }
-                    }
-                }
-            }
-            CardGroup {
-                SettingsRow(t("대화방 나가기", "Leave chat"), null, Icons.Rounded.ExitToApp, TreeColors.TileRed, titleColor = extra.danger, onClick = { scope.launch { if (model.leave(chat.id, false)) nav.home() } }, trailing = null)
-                SettingsRow(t("조용히 나가기", "Leave quietly"), t("나갔다는 알림을 띄우지 않아요", "No \"left\" line in the chat"), Icons.Rounded.ExitToApp, TreeColors.TileGrey, onClick = { scope.launch { if (model.leave(chat.id, true)) nav.home() } }, trailing = null)
+            RowDivider(50.dp)
+            SettingsRow(if (chat.pinned) t("목록 위 고정 해제", "Unpin from top") else t("목록 위에 고정", "Pin to top"), null, Icons.Rounded.PushPin, TreeColors.TileAmber, onClick = { scope.launch { model.pin(chat.id, !chat.pinned) } }, trailing = null)
+        }
+        Spacer(Modifier.height(14.dp))
+        val tabs = InfoTab.entries.filter { it != InfoTab.MEMBERS || chat.others > 1 || chat.channel }
+        Row(
+            Modifier.clip(RoundedCornerShape(24.dp)).background(extra.card).padding(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            tabs.forEach { tb ->
+                val on = tb == tab
+                Text(
+                    t(tb.ko, tb.en), style = MaterialTheme.typography.titleSmall,
+                    color = if (on) MaterialTheme.colorScheme.primary else extra.muted,
+                    modifier = Modifier.clip(RoundedCornerShape(20.dp))
+                        .background(if (on) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f) else androidx.compose.ui.graphics.Color.Transparent)
+                        .clickable { tab = tb }.padding(horizontal = 16.dp, vertical = 8.dp),
+                )
             }
         }
+        CardGroup {
+            when (tab) {
+                InfoTab.MEMBERS -> {
+                    if (state.groups.mayAdd) {
+                        SettingsRow(t("멤버 초대", "Add members"), null, Icons.Rounded.GroupAdd, TreeColors.TileBlue, onClick = { invite = true }, trailing = null)
+                        RowDivider(76.dp)
+                    }
+                    state.members.forEachIndexed { i, m ->
+                        val name = if (m.id == me) state.name else (m.name ?: m.id.take(6))
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Avatar(name, m.account ?: m.id, 46.dp, image = rememberPhoto(platform, "m:" + m.id, media.photos[m.id]?.bytes, 128))
+                            Spacer(Modifier.width(14.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(name + if (m.id == me) t(" (나)", " (you)") else "", style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(
+                                    when {
+                                        m.bot != null -> t("봇", "Bot")
+                                        m.restrictedUntil != null -> t("발언 제한 중", "Restricted")
+                                        m.admin -> t("대화방 관리 권한 있음", "Can manage the chat")
+                                        else -> t("멤버", "Member")
+                                    },
+                                    style = MaterialTheme.typography.bodySmall, color = extra.muted,
+                                )
+                            }
+                            val role = m.roles.firstOrNull()
+                            when {
+                                role != null -> PillTag(role.name, runCatching { androidx.compose.ui.graphics.Color(("FF" + role.color.removePrefix("#")).toLong(16)) }.getOrDefault(MaterialTheme.colorScheme.primary))
+                                m.admin -> PillTag(t("관리자", "Admin"), MaterialTheme.colorScheme.primary)
+                            }
+                        }
+                        if (i < state.members.lastIndex) RowDivider(76.dp)
+                    }
+                }
+                InfoTab.MEDIA -> MediaGrid(platform, state.messages.filter { (it.file ?: state.files[it.id])?.mime?.startsWith("image/") == true && !it.deleted }, state)
+                InfoTab.FILES -> {
+                    val files = state.messages.filter { it.kind == "file" && !it.deleted && (it.file ?: state.files[it.id])?.mime?.startsWith("image/") != true }
+                    if (files.isEmpty()) InfoEmpty(t("주고받은 파일이 없어요", "No files yet"))
+                    files.asReversed().forEach { m ->
+                        val f = m.file ?: state.files[m.id]
+                        SettingsRow(f?.name ?: t("파일", "File"), listOfNotNull(f?.let { Format.size(it.size.toLong()) }, Format.listTime(m.receivedAt)).joinToString(" · "), Icons.Rounded.Description, TreeColors.TileSky,
+                            onClick = { f?.let { platform.saveAs(m.id, it.name) } }, trailing = null)
+                    }
+                }
+                InfoTab.LINKS -> {
+                    val re = Regex("https?://[^\\s]+")
+                    val links = state.messages.filter { !it.deleted && it.kind == "text" }.flatMap { m -> re.findAll(m.text ?: "").map { it.value to m }.toList() }
+                    if (links.isEmpty()) InfoEmpty(t("주고받은 링크가 없어요", "No links yet"))
+                    links.asReversed().forEach { (url, m) ->
+                        SettingsRow(url, Format.listTime(m.receivedAt), Icons.Rounded.Link, TreeColors.TileIndigo, onClick = { platform.copy(url); model.notice(t("링크를 복사했어요", "Link copied")) }, trailing = null)
+                    }
+                }
+            }
+        }
+        if (admin && state.chatFeatures.isNotEmpty()) {
+            var open by remember { mutableStateOf(false) }
+            CardGroup {
+                SettingsRow(t("대화방 설정", "Chat settings"), t("관리자만 바꿀 수 있어요 · 사라지는 메시지, 캡처 막기 등", "Admins only · disappearing messages, screenshot block and more"),
+                    Icons.Rounded.Tune, TreeColors.TileGrey, onClick = { open = !open },
+                    trailing = { Icon(if (open) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore, null, tint = extra.muted) })
+                if (open) state.chatFeatures.filter { it.lockedBy == null }.forEach { f ->
+                    val name = chatFeatureName(f.key) ?: return@forEach
+                    RowDivider()
+                    SwitchRow(name, null, f.applied) { on -> scope.launch { model.setChatFeature(chat.id, f.key, on) } }
+                }
+            }
+        }
+    }
+    if (leaving) {
+        AlertDialog(
+            onDismissRequest = { leaving = false },
+            title = { Text(t("대화방을 나갈까요?", "Leave this chat?")) },
+            text = { Text(t("조용히 나가면 다른 사람에게 나갔다는 줄이 보이지 않아요.", "Leaving quietly shows no \"left\" line to the others."), color = extra.muted) },
+            confirmButton = { TextButton(onClick = { leaving = false; scope.launch { if (model.leave(chat.id, false)) nav.home() } }) { Text(t("나가기", "Leave"), color = extra.danger, fontWeight = FontWeight.SemiBold) } },
+            dismissButton = { TextButton(onClick = { leaving = false; scope.launch { if (model.leave(chat.id, true)) nav.home() } }) { Text(t("조용히 나가기", "Leave quietly")) } },
+        )
     }
     safety?.let { s ->
         AlertDialog(
@@ -316,7 +410,40 @@ fun ChatInfoScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state:
     }
 }
 
-private fun chatFeatureName(key: String) = when (key) {
+private enum class InfoTab(val ko: String, val en: String) { MEMBERS("멤버", "Members"), MEDIA("미디어", "Media"), FILES("파일", "Files"), LINKS("링크", "Links") }
+
+@Composable
+private fun PillTag(text: String, color: androidx.compose.ui.graphics.Color) {
+    Text(text, color = color, style = MaterialTheme.typography.labelLarge, maxLines = 1,
+        modifier = Modifier.clip(RoundedCornerShape(14.dp)).background(color.copy(alpha = 0.16f)).padding(horizontal = 10.dp, vertical = 4.dp))
+}
+
+@Composable
+private fun InfoEmpty(text: String) {
+    Text(text, color = extra.muted, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(28.dp))
+}
+
+/** Pictures of the chat, three to a row, from their previews (through the shared cache). */
+@Composable
+private fun MediaGrid(platform: TreePlatform, pics: List<uniffi.tree_ffi.Message>, state: UiState) {
+    if (pics.isEmpty()) { InfoEmpty(t("주고받은 사진이 없어요", "No photos yet")); return }
+    Column(Modifier.padding(4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        pics.asReversed().chunked(3).forEach { row ->
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                row.forEach { m ->
+                    val f = m.file ?: state.files[m.id]
+                    val img by rememberImage(platform, "thumb:" + m.id, 320) { f?.thumbnail }
+                    Box(Modifier.weight(1f).aspectRatio(1f).clip(RoundedCornerShape(10.dp)).background(extra.divider).clickable { f?.let { platform.saveAs(m.id, it.name) } }) {
+                        img?.let { androidx.compose.foundation.Image(it, f?.name, Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop) }
+                    }
+                }
+                repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+            }
+        }
+    }
+}
+
+private fun chatFeatureName(key: String): String? = when (key) {
     "chat.disappearing" -> t("사라지는 메시지", "Disappearing messages")
     "chat.media" -> t("사진·영상·파일", "Photos, videos, files")
     "chat.voice" -> t("음성 메시지", "Voice messages")
@@ -347,7 +474,10 @@ private fun chatFeatureName(key: String) = when (key) {
     "chat.restrict" -> t("멤버 발언 제한", "Restrict members")
     "chat.member_adds" -> t("멤버도 초대 가능", "Members can add people")
     "chat.bots" -> t("봇 허용", "Allow bots")
-    else -> key
+    "chat.allow_per_chat_profiles" -> t("방마다 다른 프로필", "Per-chat profiles")
+    "chat.owner_succession" -> t("방장 자동 승계", "Owner succession")
+    "chat.public_listing" -> t("공개 목록에 표시", "Listed publicly")
+    else -> null
 }
 
 @Composable

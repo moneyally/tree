@@ -963,6 +963,12 @@ impl TreeSession {
         Ok(self.s().send_text(&unhex(&group, "group")?, &text)?)
     }
 
+    /// A text that answers message `reply_to` of the same chat (shown quoted above it).
+    pub fn send_reply(&self, group: String, text: String, reply_to: String) -> R<String> {
+        let o = TextOptions { reply_to: Some(reply_to), ..Default::default() };
+        Ok(self.s().send_text_with(&unhex(&group, "group")?, &text, &o)?)
+    }
+
     /// `silent`: the receivers' apps do not notify.
     #[allow(clippy::too_many_arguments)]
     pub fn send_text_with(

@@ -89,7 +89,7 @@ class TreeNav {
 @Composable
 fun TreeUi(model: AppModel, platform: TreePlatform, nav: TreeNav, dark: Boolean? = null) {
     val state by model.state.collectAsState()
-    TreeTheme(dark = dark ?: androidx.compose.foundation.isSystemInDarkTheme()) {
+    TreeTheme(dark = dark ?: androidx.compose.foundation.isSystemInDarkTheme(), font = platform.font) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             Box(Modifier.fillMaxSize()) {
                 if (!state.signedIn) Onboarding(model, platform) else Signed(model, platform, nav, state)

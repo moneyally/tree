@@ -80,12 +80,24 @@ class DesktopPlatform(private val model: AppModel, private val scope: CoroutineS
         if (d.file != null) scope.launch { model.saveFile(msgId, File(d.directory, d.file)) }
     }
 
-    override fun decodeImage(bytes: ByteArray): ImageBitmap? =
-        runCatching { org.jetbrains.skia.Image.makeFromEncoded(bytes).toComposeImageBitmap() }.getOrNull()
+    override fun decodeImage(bytes: ByteArray, maxPx: Int): ImageBitmap? = runCatching {
+        val img = org.jetbrains.skia.Image.makeFromEncoded(bytes)
+        val longer = maxOf(img.width, img.height)
+        if (maxPx <= 0 || longer <= maxPx) return@runCatching img.toComposeImageBitmap()
+        // Scaled down once here, so the cache holds what is drawn, not the original.
+        val s = maxPx.toFloat() / longer
+        val w = (img.width * s).toInt().coerceAtLeast(1)
+        val h = (img.height * s).toInt().coerceAtLeast(1)
+        val surface = org.jetbrains.skia.Surface.makeRasterN32Premul(w, h)
+        surface.canvas.drawImageRect(img, org.jetbrains.skia.Rect.makeWH(img.width.toFloat(), img.height.toFloat()), org.jetbrains.skia.Rect.makeWH(w.toFloat(), h.toFloat()), org.jetbrains.skia.SamplingMode.LINEAR, null, true)
+        surface.makeImageSnapshot().toComposeImageBitmap().also { img.close(); surface.close() }
+    }.getOrNull()
 
     override fun copy(text: String) {
         runCatching { Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection(text), null) }
     }
+
+    override val font = Fonts.pretendard
 
     override val extraScreens = listOf(
         "bots" to t("봇 만들기", "Bot factory"),
@@ -104,5 +116,18 @@ class DesktopPlatform(private val model: AppModel, private val scope: CoroutineS
                 }
             }
         }
+    }
+}
+
+/** The bundled font, from the classpath (apps/ui/res). */
+object Fonts {
+    val pretendard: androidx.compose.ui.text.font.FontFamily by lazy {
+        fun f(name: String, w: androidx.compose.ui.text.font.FontWeight) = androidx.compose.ui.text.platform.Font("font/pretendard_$name.otf", w)
+        androidx.compose.ui.text.font.FontFamily(
+            f("regular", androidx.compose.ui.text.font.FontWeight.Normal),
+            f("medium", androidx.compose.ui.text.font.FontWeight.Medium),
+            f("semibold", androidx.compose.ui.text.font.FontWeight.SemiBold),
+            f("bold", androidx.compose.ui.text.font.FontWeight.Bold),
+        )
     }
 }

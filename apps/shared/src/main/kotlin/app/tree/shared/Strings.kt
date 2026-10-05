@@ -9,6 +9,7 @@ object Strings {
 
     private val ko = mapOf(
         "app" to "트리",
+        "someone" to "누군가",
         "create" to "새 계정 만들기",
         "open" to "열기",
         "name" to "이름",
@@ -166,6 +167,7 @@ object Strings {
 
     private val en = mapOf(
         "app" to "Tree",
+        "someone" to "Someone",
         "create" to "Create account",
         "open" to "Open",
         "name" to "Name",

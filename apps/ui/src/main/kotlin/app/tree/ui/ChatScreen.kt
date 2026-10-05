@@ -85,128 +85,590 @@ import app.tree.shared.pinChoices
 import app.tree.shared.pinMessage
 import app.tree.shared.unpinMessage
 import app.tree.shared.vote
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material.icons.automirrored.rounded.Reply
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.EmojiEmotions
+import androidx.compose.material.icons.rounded.Keyboard
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.NotificationsOff
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.sp
+import app.tree.shared.RichState
+import app.tree.shared.typersIn
 import kotlinx.coroutines.launch
 import uniffi.tree_ffi.Message
 
 private val QUICK_REACTIONS = listOf("👍", "❤️", "😂", "😮", "😢", "🙏")
+private val QUICK_EMOJI = listOf("😀", "😂", "🥹", "😍", "😎", "🤔", "😭", "😡", "👍", "👏", "🙏", "🔥", "🎉", "❤️", "💯", "✅", "🌱", "🌳")
 
 @Composable
 fun ChatScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state: UiState, chat: Chat) {
     val scope = rememberCoroutineScope()
+    val media by model.rich.state.collectAsState()
+    val density = LocalDensity.current
     val me = model.session?.memberId()
     val isNotes = chat.id == state.notes
     val group = chat.others > 1 || chat.channel
-    Column(Modifier.fillMaxSize().background(extra.chatBackground).let { if (platform.isPhone) it.statusBarsPadding() else it }) {
-        ChatTopBar(platform, nav, state, chat, isNotes, group)
-        state.rich.pins.firstOrNull()?.let { p ->
-            Row(
-                Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(horizontal = 16.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Box(Modifier.width(3.dp).height(32.dp).clip(RoundedCornerShape(2.dp)).background(MaterialTheme.colorScheme.primary))
-                Spacer(Modifier.width(10.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(t("고정된 메시지", "Pinned message"), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
-                    Text(p.text ?: "", maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
-                }
-                Icon(Icons.Rounded.PushPin, null, tint = extra.muted, modifier = Modifier.size(18.dp))
-            }
-        }
-        if (chat.status == "request") RequestBanner(model, chat)
-        val listState = rememberLazyListState()
-        val msgs = state.messages
-        LaunchedEffect(msgs.size) { if (msgs.isNotEmpty()) listState.scrollToItem(0) }
+    val msgs = state.messages
+    val byId = remember(msgs) { msgs.associateBy { it.id } }
+    val replies = remember(msgs) { msgs.mapNotNull { it.replyTo }.groupingBy { it }.eachCount() }
+    // How many were unread when the chat opened: the "unread" line stays there while it is open.
+    val unreadAtOpen = remember(chat.id) { chat.unread }
+    var replyTo by remember(chat.id) { mutableStateOf<Message?>(null) }
+    var headerPx by remember { mutableStateOf(0) }
+    var footerPx by remember { mutableStateOf(0) }
+    val listState = rememberLazyListState()
+    val now = rememberNow(state.typingIn[chat.id] != null)
+    val typers = state.typersIn(chat.id, now)
+
+    // New messages: follow them when already at the bottom, or when they are mine.
+    LaunchedEffect(msgs.lastOrNull()?.id) {
+        val last = msgs.lastOrNull() ?: return@LaunchedEffect
+        if (listState.firstVisibleItemIndex <= 2 || last.sender == me) listState.animateScrollToItem(0)
+    }
+    Box(Modifier.fillMaxSize().treeWallpaper(extra.chatBackground, extra.wallpaperInk)) {
         LazyColumn(
-            Modifier.weight(1f).fillMaxWidth(), state = listState, reverseLayout = true,
-            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
+            Modifier.fillMaxSize(), state = listState, reverseLayout = true,
+            contentPadding = PaddingValues(
+                start = 8.dp, end = 8.dp,
+                top = with(density) { headerPx.toDp() } + 6.dp,
+                bottom = with(density) { footerPx.toDp() } + 6.dp,
+            ),
         ) {
             val rev = msgs.asReversed()
-            items(rev.size, key = { rev[it].id }) { i ->
+            items(rev.size, key = { rev[it].id }, contentType = { if (isSystem(rev[it])) 1 else 0 }) { i ->
                 val m = rev[i]
                 val older = rev.getOrNull(i + 1)
                 val newer = rev.getOrNull(i - 1)
-                val firstOfRun = older == null || older.sender != m.sender || m.receivedAt - older.receivedAt > 300 || isSystem(older)
-                val lastOfRun = newer == null || newer.sender != m.sender || newer.receivedAt - m.receivedAt > 300 || isSystem(newer)
+                val firstOfRun = older == null || older.sender != m.sender || m.receivedAt - older.receivedAt > 300 || isSystem(older) || i == unreadAtOpen - 1
+                val lastOfRun = newer == null || newer.sender != m.sender || newer.receivedAt - m.receivedAt > 300 || isSystem(newer) || i == unreadAtOpen
                 Column {
                     if (older == null || !Format.sameDay(older.receivedAt, m.receivedAt)) DaySeparator(m.receivedAt)
+                    if (unreadAtOpen > 0 && i == unreadAtOpen - 1) UnreadLine()
                     if (isSystem(m)) SystemLine(Format.preview(m))
-                    else MessageBubble(model, platform, state, chat, m, mine = m.sender == me, group = group && !isNotes, firstOfRun = firstOfRun, lastOfRun = lastOfRun)
+                    else MessageBubble(
+                        model, platform, state, media, chat, m, byId, replies[m.id] ?: 0,
+                        mine = m.sender == me, group = group && !isNotes, firstOfRun = firstOfRun, lastOfRun = lastOfRun,
+                        onReply = { replyTo = m },
+                    )
                 }
             }
-            if (msgs.isEmpty()) {
-                item {
-                    Box(Modifier.fillMaxWidth().padding(top = 80.dp), contentAlignment = Alignment.Center) {
-                        Column(
-                            Modifier.clip(RoundedCornerShape(20.dp)).background(MaterialTheme.colorScheme.surface.copy(alpha = 0.85f)).padding(22.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp),
-                        ) {
-                            Icon(if (isNotes) Icons.Rounded.Bookmark else Icons.Rounded.Lock, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(34.dp))
-                            Text(
-                                if (isNotes) t("나에게 보내는 메모", "Notes to yourself") else t("끝단 암호화된 대화", "End-to-end encrypted"),
-                                style = MaterialTheme.typography.titleSmall,
-                            )
-                            Text(
-                                if (isNotes) t("생각, 링크, 파일을 여기에 모아 두세요.\n내 기기들끼리만 보여요.", "Keep thoughts, links and files here.\nOnly your devices see them.")
-                                else t("이 대화는 나와 상대의 기기만 읽을 수 있어요.\n서버도 내용을 볼 수 없어요.", "Only your devices and theirs can read this chat.\nNot even the server."),
-                                style = MaterialTheme.typography.bodySmall, color = extra.muted, textAlign = TextAlign.Center,
-                            )
-                        }
-                    }
-                }
+            if (msgs.isEmpty()) item { EmptyChat(isNotes) }
+        }
+
+        // The floating bars on top of the messages.
+        Column(
+            Modifier.align(Alignment.TopCenter).fillMaxWidth().let { if (platform.isPhone) it.statusBarsPadding() else it }
+                .onSizeChanged { headerPx = it.height }.padding(top = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            ChatTopBar(platform, nav, state, media, chat, isNotes, group, typers)
+            if (state.rich.pins.isNotEmpty()) PinnedBar(state, listState, msgs)
+            if (chat.status == "request") RequestBanner(model, chat)
+        }
+
+        // Back to the newest message, with how many are below.
+        val below by remember { derivedStateOf { listState.firstVisibleItemIndex } }
+        androidx.compose.animation.AnimatedVisibility(
+            visible = below > 2,
+            enter = androidx.compose.animation.fadeIn() + androidx.compose.animation.scaleIn(),
+            exit = androidx.compose.animation.fadeOut() + androidx.compose.animation.scaleOut(),
+            modifier = Modifier.align(Alignment.BottomEnd).padding(end = 14.dp, bottom = with(density) { footerPx.toDp() } + 12.dp),
+        ) {
+            Box {
+                Box(
+                    Modifier.padding(top = 12.dp).size(46.dp).shadow(6.dp, CircleShape).clip(CircleShape).background(extra.floating)
+                        .clickable { scope.launch { listState.animateScrollToItem(0) } },
+                    contentAlignment = Alignment.Center,
+                ) { Icon(Icons.Rounded.KeyboardArrowDown, t("맨 아래로", "To the newest"), modifier = Modifier.size(28.dp)) }
+                Box(Modifier.align(Alignment.TopCenter)) { CountBadge(below, false) }
             }
         }
-        if (state.typing.isNotEmpty()) {
-            Text(
-                state.typing.joinToString(", ") { state.names[it] ?: "" } + t(" 입력 중…", " typing…"),
-                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(start = 20.dp, bottom = 4.dp),
-            )
+
+        if (chat.status != "request") {
+            Column(
+                Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                    .let { if (platform.isPhone) it.navigationBarsPadding().imePadding() else it }
+                    .onSizeChanged { footerPx = it.height },
+            ) {
+                Composer(model, platform, state, media, chat, replyTo, byId) { replyTo = null }
+            }
         }
-        if (chat.status != "request") Composer(model, platform, chat)
     }
 }
 
 private fun isSystem(m: Message) = m.kind == "left" || m.kind == "removed" || m.kind == "welcome"
 
 @Composable
-private fun ChatTopBar(platform: TreePlatform, nav: TreeNav, state: UiState, chat: Chat, isNotes: Boolean, group: Boolean) {
-    Row(
-        Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(start = 4.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (platform.isPhone) IconButton(onClick = { nav.pop() }) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, t("뒤로", "Back")) }
-        else Spacer(Modifier.width(12.dp))
+private fun EmptyChat(isNotes: Boolean) {
+    Box(Modifier.fillMaxWidth().padding(top = 60.dp, bottom = 60.dp), contentAlignment = Alignment.Center) {
+        Column(
+            Modifier.clip(RoundedCornerShape(22.dp)).background(extra.floating).padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Icon(if (isNotes) Icons.Rounded.Bookmark else Icons.Rounded.Lock, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(34.dp))
+            Text(if (isNotes) t("나에게 보내는 메모", "Notes to yourself") else t("끝단 암호화된 대화", "End-to-end encrypted"), style = MaterialTheme.typography.titleSmall)
+            Text(
+                if (isNotes) t("생각, 링크, 파일을 여기에 모아 두세요.\n내 기기들끼리만 보여요.", "Keep thoughts, links and files here.\nOnly your devices see them.")
+                else t("이 대화는 나와 상대의 기기만 읽을 수 있어요.\n서버도 내용을 볼 수 없어요.", "Only your devices and theirs can read this chat.\nNot even the server."),
+                style = MaterialTheme.typography.bodySmall, color = extra.muted, textAlign = TextAlign.Center,
+            )
+        }
+    }
+}
+
+/** Back, the chat's name and state in a floating pill, and the menu. */
+@Composable
+private fun ChatTopBar(platform: TreePlatform, nav: TreeNav, state: UiState, media: RichState, chat: Chat, isNotes: Boolean, group: Boolean, typers: List<String>) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        if (platform.isPhone) {
+            RoundButton(Icons.AutoMirrored.Rounded.ArrowBack, t("뒤로", "Back")) { nav.pop() }
+            Spacer(Modifier.width(8.dp))
+        }
         Row(
-            Modifier.weight(1f).clip(RoundedCornerShape(12.dp)).clickable(enabled = !isNotes) { nav.push(Route.ChatInfo(chat.id)) }.padding(vertical = 4.dp),
+            Modifier.weight(1f).height(56.dp).shadow(4.dp, RoundedCornerShape(28.dp)).clip(RoundedCornerShape(28.dp)).background(extra.floating)
+                .clickable(enabled = !isNotes) { nav.push(Route.ChatInfo(chat.id)) }.padding(horizontal = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             if (isNotes) {
                 Box(Modifier.size(42.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary), contentAlignment = Alignment.Center) {
                     Icon(Icons.Rounded.Bookmark, null, tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(22.dp))
                 }
-            } else Avatar(chat.title, chat.id, 42.dp)
-            Spacer(Modifier.width(12.dp))
-            Column {
-                Text(chat.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                val sub = when {
-                    isNotes -> t("내 기기에만 보여요", "Only on your devices")
-                    state.typing.isNotEmpty() -> t("입력 중…", "typing…")
-                    chat.channel -> t("채널 · 구독자 ${chat.others + 1}명", "Channel · ${chat.others + 1} subscribers")
-                    group -> t("멤버 ${chat.others + 1}명", "${chat.others + 1} members")
-                    chat.labels.contains("not_contact") -> t("연락처에 없는 사람", "Not in your contacts")
-                    else -> t("끝단 암호화", "End-to-end encrypted")
+            } else Avatar(chat.title, chat.peer ?: chat.id, 42.dp, image = rememberPhoto(platform, chat.id, media.chatPhotos[chat.id]?.bytes))
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(chat.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                    if (chat.muted) { Spacer(Modifier.width(4.dp)); Icon(Icons.Rounded.NotificationsOff, t("알림 꺼짐", "Muted"), tint = extra.muted, modifier = Modifier.size(15.dp)) }
                 }
-                Text(sub, style = MaterialTheme.typography.bodySmall, color = if (state.typing.isNotEmpty()) MaterialTheme.colorScheme.primary else extra.muted, maxLines = 1)
+                if (typers.isNotEmpty() && !isNotes) {
+                    TypingLine(if (group) typers else emptyList())
+                } else {
+                    val sub = when {
+                        isNotes -> t("내 기기에만 보여요", "Only on your devices")
+                        chat.channel -> t("채널 · 구독자 ${chat.others + 1}명", "Channel · ${chat.others + 1} subscribers")
+                        group -> t("멤버 ${chat.others + 1}명", "${chat.others + 1} members")
+                        chat.labels.contains("not_contact") -> t("연락처에 없는 사람", "Not in your contacts")
+                        else -> t("끝단 암호화", "End-to-end encrypted")
+                    }
+                    Text(sub, style = MaterialTheme.typography.bodySmall, color = extra.muted, maxLines = 1)
+                }
             }
         }
-        if (!isNotes) IconButton(onClick = { nav.push(Route.ChatInfo(chat.id)) }) { Icon(Icons.Rounded.MoreVert, t("대화 정보", "Chat info")) }
+        if (!isNotes) {
+            Spacer(Modifier.width(8.dp))
+            RoundButton(Icons.Rounded.MoreVert, t("대화 정보", "Chat info")) { nav.push(Route.ChatInfo(chat.id)) }
+        }
     }
+}
+
+@Composable
+private fun RoundButton(icon: ImageVector, label: String, onClick: () -> Unit) {
+    Box(
+        Modifier.size(50.dp).shadow(4.dp, CircleShape).clip(CircleShape).background(extra.floating).clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) { Icon(icon, label) }
+}
+
+/** The pinned messages: the one shown, tap for the next and jump to it. */
+@Composable
+private fun PinnedBar(state: UiState, listState: androidx.compose.foundation.lazy.LazyListState, msgs: List<Message>) {
+    val scope = rememberCoroutineScope()
+    val pins = state.rich.pins
+    var at by remember(pins.size) { mutableStateOf(0) }
+    val p = pins[at.coerceIn(0, pins.lastIndex)]
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 10.dp).shadow(3.dp, RoundedCornerShape(20.dp)).clip(RoundedCornerShape(20.dp))
+            .background(extra.floating).clickable {
+                val idx = msgs.asReversed().indexOfFirst { it.id == p.messageId }
+                if (idx >= 0) scope.launch { listState.animateScrollToItem(idx) }
+                at = (at + 1) % pins.size
+            }.padding(horizontal = 14.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // One segment per pin; the shown one is bright.
+        Column(Modifier.height(36.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            pins.take(4).indices.forEach { i ->
+                Box(Modifier.width(3.dp).weight(1f).clip(RoundedCornerShape(2.dp))
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = if (i == at.coerceAtMost(3)) 1f else 0.35f)))
+            }
+        }
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                if (pins.size > 1) t("고정된 메시지 ${at + 1}/${pins.size}", "Pinned ${at + 1}/${pins.size}") else t("고정된 메시지", "Pinned message"),
+                color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge,
+            )
+            Text(p.text ?: t("메시지", "Message"), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
+        }
+        Icon(Icons.Rounded.PushPin, null, tint = extra.muted, modifier = Modifier.size(18.dp))
+    }
+}
+
+@Composable
+private fun UnreadLine() {
+    Box(Modifier.fillMaxWidth().padding(vertical = 8.dp).background(Color(0x55000000)).padding(vertical = 6.dp), contentAlignment = Alignment.Center) {
+        Text(t("안 읽은 메시지", "Unread messages"), color = Color.White, style = MaterialTheme.typography.labelLarge)
+    }
+}
+
+/** A colour per member for names in groups. */
+private fun nameColor(id: String): Color = TreeColors.Avatars[(id.hashCode() and 0x7fffffff) % TreeColors.Avatars.size]
+
+private fun roleColor(hex: String, fallback: Color): Color =
+    runCatching { Color(("FF" + hex.removePrefix("#")).toLong(16)) }.getOrDefault(fallback)
+
+/** One to three emoji and nothing else: shown large, without a bubble. */
+internal fun bigEmoji(text: String?): Boolean {
+    if (text == null || text.isBlank() || text.length > 16) return false
+    var count = 0
+    var i = 0
+    while (i < text.length) {
+        val cp = text.codePointAt(i)
+        i += Character.charCount(cp)
+        when {
+            cp == 0x200D || cp in 0xFE00..0xFE0F || cp in 0x1F3FB..0x1F3FF || cp in 0xE0020..0xE007F -> {}
+            cp in 0x1F000..0x1FAFF || cp in 0x2600..0x27BF || cp in 0x2B00..0x2BFF || cp in 0x2190..0x21FF || cp in 0x1F1E6..0x1F1FF -> count++
+            cp == ' '.code -> {}
+            else -> return false
+        }
+    }
+    return count in 1..3
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun MessageBubble(
+    model: AppModel, platform: TreePlatform, state: UiState, media: RichState, chat: Chat, m: Message,
+    byId: Map<String, Message>, replyCount: Int,
+    mine: Boolean, group: Boolean, firstOfRun: Boolean, lastOfRun: Boolean, onReply: () -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    var menu by remember { mutableStateOf(false) }
+    var editing by remember { mutableStateOf(false) }
+    val sticker = if (m.kind == "sticker" && !m.deleted) media.stickers[m.id] else null
+    val bare = sticker != null || (m.kind == "text" && !m.deleted && m.replyTo == null && bigEmoji(m.text))
+    val bubble = if (mine) extra.bubbleMine else extra.bubbleTheirs
+    val textColor = if (mine) extra.bubbleMineText else extra.bubbleTheirsText
+    val r = 20.dp
+    val joined = 6.dp
+    val shape = if (mine) RoundedCornerShape(r, if (firstOfRun) r else joined, if (lastOfRun) r else joined, r)
+    else RoundedCornerShape(if (firstOfRun) r else joined, r, r, if (lastOfRun) r else joined)
+    val member = state.members.firstOrNull { it.id == m.sender }
+    val senderName = state.names[m.sender] ?: member?.name ?: m.sender.take(6)
+    Row(
+        Modifier.fillMaxWidth().padding(top = if (firstOfRun) 6.dp else 2.dp),
+        horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start,
+        verticalAlignment = Alignment.Bottom,
+    ) {
+        if (group && !mine) {
+            if (lastOfRun) Avatar(senderName, member?.account ?: m.sender, 38.dp, image = rememberPhoto(platform, "m:" + m.sender, media.photos[m.sender]?.bytes, 128))
+            else Spacer(Modifier.width(38.dp))
+            Spacer(Modifier.width(6.dp))
+        }
+        Box {
+            val click = Modifier.combinedClickable(onClick = {}, onDoubleClick = onReply, onLongClick = { menu = true })
+            if (bare) {
+                Column(click.padding(4.dp), horizontalAlignment = if (mine) Alignment.End else Alignment.Start) {
+                    if (group && !mine && firstOfRun) Text(senderName, color = nameColor(m.sender), style = MaterialTheme.typography.labelLarge)
+                    if (sticker != null) StickerImage(model, platform, sticker.pack, sticker.index.toInt(), m.text, 150.dp)
+                    else Text(m.text ?: "", fontSize = 46.sp, lineHeight = 54.sp)
+                    MetaPill(m, mine, state, replyCount)
+                }
+            } else {
+                Column(Modifier.widthIn(min = 64.dp, max = 330.dp).clip(shape).background(bubble).then(click).padding(horizontal = 12.dp, vertical = 7.dp)) {
+                    if (group && !mine && firstOfRun) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(senderName, color = nameColor(m.sender), style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                            val role = member?.roles?.firstOrNull()
+                            val tag = role?.name ?: if (member?.admin == true) t("관리자", "Admin") else null
+                            if (member?.bot != null) { Spacer(Modifier.width(6.dp)); RoleTag(t("봇", "Bot"), extra.botBadge) }
+                            if (tag != null) { Spacer(Modifier.width(8.dp)); RoleTag(tag, role?.let { roleColor(it.color, MaterialTheme.colorScheme.primary) } ?: MaterialTheme.colorScheme.primary) }
+                        }
+                        Spacer(Modifier.height(1.dp))
+                    }
+                    if (m.forwarded) Text(t("전달된 메시지", "Forwarded"), style = MaterialTheme.typography.labelMedium, color = extra.bubbleMeta)
+                    m.sharedBy?.let { Text(t("$it 님이 공유", "Shared by $it"), style = MaterialTheme.typography.labelMedium, color = extra.bubbleMeta) }
+                    m.replyTo?.let { id -> ReplyQuote(byId[id], state, mine) }
+                    when {
+                        m.deleted -> TextWithMeta(t("삭제된 메시지입니다", "This message was deleted"), extra.bubbleMeta, m, mine, state, replyCount)
+                        m.kind == "file" -> { FileContent(model, platform, state, m, textColor); MetaRow(m, mine, state, replyCount, Modifier.align(Alignment.End)) }
+                        m.kind == "poll" -> { state.rich.polls[m.id]?.let { PollContent(model, chat.id, it, textColor) } ?: Text(Format.preview(m), color = textColor); MetaRow(m, mine, state, replyCount, Modifier.align(Alignment.End)) }
+                        else -> TextWithMeta(m.text ?: Format.preview(m), textColor, m, mine, state, replyCount)
+                    }
+                }
+            }
+            DropdownMenu(menu, { menu = false }) {
+                Row(Modifier.padding(horizontal = 10.dp, vertical = 4.dp)) {
+                    QUICK_REACTIONS.forEach { e ->
+                        Text(e, style = MaterialTheme.typography.titleLarge, modifier = Modifier.clip(CircleShape).clickable { menu = false; scope.launch { model.react(chat.id, m.id, e) } }.padding(6.dp))
+                    }
+                }
+                HorizontalDivider()
+                if (!m.deleted && chat.status != "request") DropdownMenuItem({ Text(t("답장", "Reply")) }, leadingIcon = { Icon(Icons.AutoMirrored.Rounded.Reply, null) }, onClick = { menu = false; onReply() })
+                if (m.kind == "text" && state.rich.forwardingAllowed) DropdownMenuItem({ Text(t("복사", "Copy")) }, leadingIcon = { Icon(Icons.Rounded.ContentCopy, null) }, onClick = { menu = false; platform.copy(m.text ?: ""); model.notice(t("복사했어요", "Copied")) })
+                if (state.rich.mayPin) DropdownMenuItem({ Text(if (state.rich.pins.any { it.messageId == m.id }) t("고정 해제", "Unpin") else t("고정", "Pin")) }, leadingIcon = { Icon(Icons.Rounded.PushPin, null) }, onClick = {
+                    menu = false
+                    scope.launch { if (state.rich.pins.any { it.messageId == m.id }) model.unpinMessage(chat.id, m.id) else model.pinMessage(chat.id, m.id, model.pinChoices().firstOrNull()?.second) }
+                })
+                if (mine && m.kind == "text" && !m.deleted) DropdownMenuItem({ Text(t("수정", "Edit")) }, leadingIcon = { Icon(Icons.Rounded.Edit, null) }, onClick = { menu = false; editing = true })
+                if (mine && m.status == "failed") DropdownMenuItem({ Text(t("다시 보내기", "Retry")) }, leadingIcon = { Icon(Icons.Rounded.Refresh, null) }, onClick = { menu = false; scope.launch { model.retrySend(m.id) } })
+                if (mine && !m.deleted) DropdownMenuItem({ Text(t("모두에게서 삭제", "Delete for everyone"), color = extra.danger) }, leadingIcon = { Icon(Icons.Rounded.Delete, null, tint = extra.danger) }, onClick = {
+                    menu = false
+                    scope.launch { if (m.status == "failed" || m.status == "pending") model.cancelSend(m.id) else model.deleteForAll(chat.id, m.id) }
+                })
+                if (!mine) DropdownMenuItem({ Text(t("신고", "Report"), color = extra.danger) }, leadingIcon = { Icon(Icons.Rounded.Flag, null, tint = extra.danger) }, onClick = {
+                    menu = false
+                    scope.launch { if (model.report(chat.id, listOf(m.id), "user report") != null) model.notice(t("신고했어요. 운영팀이 확인해요.", "Reported. The team will review it.")) }
+                })
+            }
+        }
+    }
+    if (m.reactions.isNotEmpty()) {
+        Row(
+            Modifier.fillMaxWidth().padding(top = 3.dp, start = if (group && !mine) 44.dp else 0.dp),
+            horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start,
+        ) {
+            m.reactions.forEach { rx ->
+                val own = model.session?.memberId() in rx.members
+                Row(
+                    Modifier.padding(end = 4.dp).clip(RoundedCornerShape(14.dp))
+                        .background(if (own) MaterialTheme.colorScheme.primary.copy(alpha = 0.30f) else extra.floating)
+                        .clickable { scope.launch { model.react(chat.id, m.id, rx.emoji, remove = own) } }.padding(horizontal = 9.dp, vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(rx.emoji)
+                    if (rx.members.size > 1) { Spacer(Modifier.width(3.dp)); Text(rx.members.size.toString(), style = MaterialTheme.typography.labelMedium) }
+                }
+            }
+        }
+    }
+    if (editing) EditDialog(m.text ?: "", onClose = { editing = false }) { text -> scope.launch { model.edit(chat.id, m.id, text) }; editing = false }
+}
+
+@Composable
+private fun RoleTag(text: String, color: Color) {
+    Text(
+        text, color = color, style = MaterialTheme.typography.labelMedium, maxLines = 1,
+        modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(color.copy(alpha = 0.16f)).padding(horizontal = 7.dp, vertical = 1.dp),
+    )
+}
+
+/** The answered message, quoted above the reply. */
+@Composable
+private fun ReplyQuote(original: Message?, state: UiState, mine: Boolean) {
+    val accent = if (original != null) nameColor(original.sender) else extra.bubbleMeta
+    Row(
+        Modifier.padding(top = 2.dp, bottom = 4.dp).clip(RoundedCornerShape(8.dp)).background(accent.copy(alpha = if (mine) 0.20f else 0.14f)),
+    ) {
+        Box(Modifier.width(3.dp).height(40.dp).background(accent))
+        Column(Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) {
+            Text(original?.let { state.names[it.sender] ?: it.sender.take(6) } ?: t("메시지", "Message"), color = accent, style = MaterialTheme.typography.labelLarge, maxLines = 1)
+            Text(original?.let { if (it.deleted) t("삭제된 메시지", "Deleted message") else Format.preview(it) } ?: t("이전 메시지", "Earlier message"),
+                style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis, color = extra.bubbleMeta)
+        }
+    }
+}
+
+/**
+ * The text with the time tucked into its last line: an invisible copy of the
+ * time at the end reserves the room, so the real one sits beside short
+ * lines and drops below only when the line is full.
+ */
+@Composable
+private fun TextWithMeta(text: String, color: Color, m: Message, mine: Boolean, state: UiState, replyCount: Int) {
+    val reserve = metaText(m, replyCount) + if (mine) "    " else ""
+    Box {
+        Text(
+            buildAnnotatedString {
+                append(text)
+                withStyle(SpanStyle(color = Color.Transparent, fontSize = 12.sp)) { append("  $reserve") }
+            },
+            color = color, style = MaterialTheme.typography.bodyLarge,
+        )
+        MetaRow(m, mine, state, replyCount, Modifier.align(Alignment.BottomEnd))
+    }
+}
+
+private fun metaText(m: Message, replyCount: Int): String =
+    (if (replyCount > 0) "↩ $replyCount  " else "") + (if (m.edited) t("수정됨 ", "edited ") else "") + Format.clock(m.receivedAt)
+
+@Composable
+private fun MetaRow(m: Message, mine: Boolean, state: UiState, replyCount: Int, modifier: Modifier = Modifier, color: Color = extra.bubbleMeta) {
+    Row(modifier.padding(top = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+        if (replyCount > 0) {
+            Icon(Icons.AutoMirrored.Rounded.Reply, t("답장", "Replies"), tint = color, modifier = Modifier.size(13.dp))
+            Text(" $replyCount  ", style = MaterialTheme.typography.labelSmall, color = color)
+        }
+        if (m.edited) Text(t("수정됨 ", "edited "), style = MaterialTheme.typography.labelSmall, color = color)
+        Text(Format.clock(m.receivedAt), style = MaterialTheme.typography.labelSmall, color = color)
+        if (mine) {
+            Spacer(Modifier.width(3.dp))
+            when (m.status) {
+                "pending" -> Icon(Icons.Rounded.Schedule, t("보내는 중", "Sending"), tint = color, modifier = Modifier.size(14.dp))
+                "failed" -> Icon(Icons.Rounded.ErrorOutline, t("보내지 못함", "Not sent"), tint = extra.danger, modifier = Modifier.size(14.dp))
+                else -> Icon(if (m.id in state.readMine) Icons.Rounded.DoneAll else Icons.Rounded.Done, if (m.id in state.readMine) t("읽음", "Read") else t("보냄", "Sent"),
+                    tint = if (m.id in state.readMine) MaterialTheme.colorScheme.primary else color, modifier = Modifier.size(15.dp))
+            }
+        }
+    }
+}
+
+/** Time on its own small pill (stickers and big emoji have no bubble). */
+@Composable
+private fun MetaPill(m: Message, mine: Boolean, state: UiState, replyCount: Int) {
+    Box(Modifier.padding(top = 2.dp).clip(RoundedCornerShape(10.dp)).background(Color(0x66000000)).padding(horizontal = 7.dp, vertical = 1.dp)) {
+        MetaRow(m, mine, state, replyCount, color = Color.White)
+    }
+}
+
+/** A sticker picture, from the shared cache; its emoji while it loads or if it cannot. */
+@Composable
+private fun StickerImage(model: AppModel, platform: TreePlatform, pack: String, index: Int, emoji: String?, size: androidx.compose.ui.unit.Dp) {
+    val px = with(LocalDensity.current) { size.roundToPx() }
+    val img by rememberImage(platform, "sticker:$pack:$index", px) { model.rich.stickerImage(pack, index) }
+    Box(Modifier.size(size), contentAlignment = Alignment.Center) {
+        val b = img
+        if (b != null) Image(b, emoji, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+        else Text(emoji ?: "🙂", fontSize = (size.value * 0.45f).sp)
+    }
+}
+
+/** The floating composer: emoji and stickers, the field, attach, send. */
+@Composable
+private fun Composer(model: AppModel, platform: TreePlatform, state: UiState, media: RichState, chat: Chat, replyTo: Message?, byId: Map<String, Message>, clearReply: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    var text by remember(chat.id) { mutableStateOf(chat.draft ?: "") }
+    var attach by remember { mutableStateOf(false) }
+    var panel by remember { mutableStateOf(false) }
+    if (state.channel.isChannel && !state.channel.mayPost) {
+        Box(Modifier.fillMaxWidth().padding(10.dp).clip(RoundedCornerShape(26.dp)).background(extra.floating).padding(16.dp), contentAlignment = Alignment.Center) {
+            Text(t("관리자만 글을 쓸 수 있는 채널이에요", "Only admins post in this channel"), color = extra.muted, style = MaterialTheme.typography.bodyMedium)
+        }
+        return
+    }
+    Column(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp)) {
+        Column(Modifier.fillMaxWidth().shadow(6.dp, RoundedCornerShape(28.dp)).clip(RoundedCornerShape(28.dp)).background(extra.floating)) {
+            replyTo?.let { r ->
+                Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 6.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.AutoMirrored.Rounded.Reply, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(t("${state.names[r.sender] ?: "나"}에게 답장", "Reply to ${state.names[r.sender] ?: "yourself"}"), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge, maxLines = 1)
+                        Text(Format.preview(r), style = MaterialTheme.typography.bodySmall, color = extra.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    IconButton(onClick = clearReply) { Icon(Icons.Rounded.Close, t("답장 취소", "Cancel reply"), tint = extra.muted) }
+                }
+            }
+            Row(Modifier.fillMaxWidth().padding(4.dp), verticalAlignment = Alignment.Bottom) {
+                IconButton(onClick = { panel = !panel }) {
+                    Icon(if (panel) Icons.Rounded.Keyboard else Icons.Rounded.EmojiEmotions, t("이모지와 스티커", "Emoji and stickers"), tint = extra.muted)
+                }
+                Box(Modifier.weight(1f).heightIn(min = 48.dp).padding(vertical = 13.dp)) {
+                    if (text.isEmpty()) Text(t("메시지", "Message"), color = extra.muted, style = MaterialTheme.typography.bodyLarge)
+                    BasicTextField(
+                        text, { v ->
+                            val was = text.isNotEmpty()
+                            text = v
+                            scope.launch { model.saveDraft(chat.id, v); if (was != v.isNotEmpty()) model.typing(chat.id, v.isNotEmpty()) }
+                        },
+                        textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
+                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary), maxLines = 6,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                Box {
+                    IconButton(onClick = { attach = true }) { Icon(Icons.Rounded.AttachFile, t("첨부", "Attach"), tint = extra.muted) }
+                    DropdownMenu(attach, { attach = false }) {
+                        DropdownMenuItem({ Text(t("사진", "Photo")) }, leadingIcon = { Icon(Icons.Rounded.Image, null) }, onClick = { attach = false; platform.pickAndSend(chat.id, AttachKind.PHOTO) })
+                        DropdownMenuItem({ Text(t("파일", "File")) }, leadingIcon = { Icon(Icons.Rounded.InsertDriveFile, null) }, onClick = { attach = false; platform.pickAndSend(chat.id, AttachKind.FILE) })
+                    }
+                }
+                val canSend = text.isNotBlank()
+                Box(
+                    Modifier.padding(start = 2.dp, end = 2.dp, bottom = 2.dp).size(46.dp).clip(CircleShape)
+                        .background(if (canSend) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
+                        .clickable(enabled = canSend) {
+                            val v = text.trim()
+                            val r = replyTo
+                            text = ""
+                            clearReply()
+                            scope.launch {
+                                if (r != null) model.reply(chat.id, v, r.id) else model.send(chat.id, v)
+                                model.typing(chat.id, false)
+                                model.saveDraft(chat.id, "")
+                            }
+                        },
+                    contentAlignment = Alignment.Center,
+                ) { Icon(Icons.AutoMirrored.Rounded.Send, t("보내기", "Send"), tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(21.dp)) }
+            }
+            if (panel) StickerPanel(model, platform, media, chat) { e -> text += e }
+        }
+    }
+}
+
+/** Emoji to type, and the installed sticker packs (a recycling grid: only what is on screen is held). */
+@Composable
+private fun StickerPanel(model: AppModel, platform: TreePlatform, media: RichState, chat: Chat, onEmoji: (String) -> Unit) {
+    val scope = rememberCoroutineScope()
+    val packs = media.packs.filter { !it.emojiPack }
+    var tab by remember { mutableStateOf(0) }
+    Column(Modifier.fillMaxWidth().height(290.dp)) {
+        HorizontalDivider(color = extra.divider)
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            PanelTab(t("이모지", "Emoji"), tab == 0) { tab = 0 }
+            packs.forEachIndexed { i, p -> PanelTab(p.title, tab == i + 1) { tab = i + 1 } }
+        }
+        if (tab == 0) {
+            LazyVerticalGrid(GridCells.Adaptive(48.dp), Modifier.fillMaxSize(), contentPadding = PaddingValues(8.dp)) {
+                items(QUICK_EMOJI.size) { i ->
+                    Box(Modifier.size(48.dp).clip(CircleShape).clickable { onEmoji(QUICK_EMOJI[i]) }, contentAlignment = Alignment.Center) { Text(QUICK_EMOJI[i], fontSize = 26.sp) }
+                }
+            }
+        } else {
+            val p = packs.getOrNull(tab - 1)
+            if (p == null) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text(t("스티커 팩이 없어요", "No sticker packs"), color = extra.muted) }
+            } else {
+                LazyVerticalGrid(GridCells.Adaptive(84.dp), Modifier.fillMaxSize(), contentPadding = PaddingValues(8.dp)) {
+                    items(p.items.size, key = { "${p.id}:$it" }) { i ->
+                        Box(Modifier.padding(4.dp).clip(RoundedCornerShape(14.dp)).clickable { scope.launch { model.rich.sendSticker(chat.id, p.id, i) } }.padding(4.dp)) {
+                            StickerImage(model, platform, p.id, i, p.items[i].emoji, 72.dp)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PanelTab(label: String, selected: Boolean, onClick: () -> Unit) {
+    Text(
+        label, style = MaterialTheme.typography.labelLarge, maxLines = 1,
+        color = if (selected) MaterialTheme.colorScheme.primary else extra.muted,
+        modifier = Modifier.clip(RoundedCornerShape(14.dp))
+            .background(if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f) else Color.Transparent)
+            .clickable(onClick = onClick).padding(horizontal = 12.dp, vertical = 6.dp),
+    )
 }
 
 @Composable
 private fun RequestBanner(model: AppModel, chat: Chat) {
     val scope = rememberCoroutineScope()
-    Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 10.dp).clip(RoundedCornerShape(22.dp)).background(extra.floating).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text(t("메시지 요청", "Message request"), style = MaterialTheme.typography.titleSmall)
         val labels = chat.labels.map {
             when (it) {
@@ -244,112 +706,6 @@ private fun SystemLine(text: String) {
         Text(text, style = MaterialTheme.typography.labelMedium, color = extra.muted,
             modifier = Modifier.clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surface.copy(alpha = 0.8f)).padding(horizontal = 12.dp, vertical = 5.dp))
     }
-}
-
-/** A colour per member for names in groups. */
-private fun nameColor(id: String): Color = TreeColors.Avatars[(id.hashCode() and 0x7fffffff) % TreeColors.Avatars.size]
-
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun MessageBubble(
-    model: AppModel, platform: TreePlatform, state: UiState, chat: Chat, m: Message,
-    mine: Boolean, group: Boolean, firstOfRun: Boolean, lastOfRun: Boolean,
-) {
-    val scope = rememberCoroutineScope()
-    var menu by remember { mutableStateOf(false) }
-    var editing by remember { mutableStateOf(false) }
-    val bubble = if (mine) extra.bubbleMine else extra.bubbleTheirs
-    val textColor = if (mine) extra.bubbleMineText else extra.bubbleTheirsText
-    val r = 18.dp
-    val tail = 5.dp
-    val shape = if (mine) RoundedCornerShape(r, if (firstOfRun) r else tail, if (lastOfRun) tail else tail, r)
-    else RoundedCornerShape(if (firstOfRun) r else tail, r, r, if (lastOfRun) tail else tail)
-    Row(
-        Modifier.fillMaxWidth().padding(top = if (firstOfRun) 6.dp else 2.dp),
-        horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start,
-        verticalAlignment = Alignment.Bottom,
-    ) {
-        if (group && !mine) {
-            if (lastOfRun) Avatar(state.names[m.sender] ?: "?", m.sender, 34.dp) else Spacer(Modifier.width(34.dp))
-            Spacer(Modifier.width(6.dp))
-        }
-        Box {
-            Column(
-                Modifier.widthIn(max = 320.dp).clip(shape).background(bubble)
-                    .combinedClickable(onClick = {}, onLongClick = { menu = true })
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-            ) {
-                if (group && !mine && firstOfRun) {
-                    Text(state.names[m.sender] ?: m.sender.take(6), color = nameColor(m.sender), style = MaterialTheme.typography.labelLarge)
-                    Spacer(Modifier.height(2.dp))
-                }
-                if (m.forwarded) Text(t("전달된 메시지", "Forwarded"), style = MaterialTheme.typography.labelMedium, color = extra.bubbleMeta)
-                m.sharedBy?.let { Text(t("$it 님이 공유", "Shared by $it"), style = MaterialTheme.typography.labelMedium, color = extra.bubbleMeta) }
-                when {
-                    m.deleted -> Text(t("삭제된 메시지입니다", "This message was deleted"), color = extra.bubbleMeta, style = MaterialTheme.typography.bodyMedium)
-                    m.kind == "file" -> FileContent(model, platform, state, m, textColor)
-                    m.kind == "poll" -> state.rich.polls[m.id]?.let { PollContent(model, chat.id, it, textColor) } ?: Text(Format.preview(m), color = textColor)
-                    else -> Text(m.text ?: Format.preview(m), color = textColor, style = MaterialTheme.typography.bodyLarge)
-                }
-                Row(Modifier.align(Alignment.End).padding(top = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                    if (m.edited) Text(t("수정됨 ", "edited "), style = MaterialTheme.typography.labelSmall, color = extra.bubbleMeta)
-                    Text(Format.clock(m.receivedAt), style = MaterialTheme.typography.labelSmall, color = extra.bubbleMeta)
-                    if (mine) {
-                        Spacer(Modifier.width(3.dp))
-                        when (m.status) {
-                            "pending" -> Icon(Icons.Rounded.Schedule, t("보내는 중", "Sending"), tint = extra.bubbleMeta, modifier = Modifier.size(14.dp))
-                            "failed" -> Icon(Icons.Rounded.ErrorOutline, t("보내지 못함", "Not sent"), tint = extra.danger, modifier = Modifier.size(14.dp))
-                            else -> Icon(if (m.id in state.readMine) Icons.Rounded.DoneAll else Icons.Rounded.Done, null,
-                                tint = if (m.id in state.readMine) MaterialTheme.colorScheme.primary else extra.bubbleMeta, modifier = Modifier.size(15.dp))
-                        }
-                    }
-                }
-            }
-            DropdownMenu(menu, { menu = false }) {
-                Row(Modifier.padding(horizontal = 10.dp, vertical = 4.dp)) {
-                    QUICK_REACTIONS.forEach { e ->
-                        Text(e, style = MaterialTheme.typography.titleLarge, modifier = Modifier.clip(CircleShape).clickable { menu = false; scope.launch { model.react(chat.id, m.id, e) } }.padding(6.dp))
-                    }
-                }
-                HorizontalDivider()
-                if (m.kind == "text" && state.rich.forwardingAllowed) DropdownMenuItem({ Text(t("복사", "Copy")) }, leadingIcon = { Icon(Icons.Rounded.ContentCopy, null) }, onClick = { menu = false; platform.copy(m.text ?: "") })
-                if (state.rich.mayPin) DropdownMenuItem({ Text(t("고정", "Pin")) }, leadingIcon = { Icon(Icons.Rounded.PushPin, null) }, onClick = {
-                    menu = false
-                    scope.launch { if (state.rich.pins.any { it.messageId == m.id }) model.unpinMessage(chat.id, m.id) else model.pinMessage(chat.id, m.id, model.pinChoices().firstOrNull()?.second) }
-                })
-                if (mine && m.kind == "text" && !m.deleted) DropdownMenuItem({ Text(t("수정", "Edit")) }, leadingIcon = { Icon(Icons.Rounded.Edit, null) }, onClick = { menu = false; editing = true })
-                if (mine && m.status == "failed") DropdownMenuItem({ Text(t("다시 보내기", "Retry")) }, leadingIcon = { Icon(Icons.Rounded.Refresh, null) }, onClick = { menu = false; scope.launch { model.retrySend(m.id) } })
-                if (mine && !m.deleted) DropdownMenuItem({ Text(t("모두에게서 삭제", "Delete for everyone"), color = extra.danger) }, leadingIcon = { Icon(Icons.Rounded.Delete, null, tint = extra.danger) }, onClick = {
-                    menu = false
-                    scope.launch { if (m.status == "failed" || m.status == "pending") model.cancelSend(m.id) else model.deleteForAll(chat.id, m.id) }
-                })
-                if (!mine) DropdownMenuItem({ Text(t("신고", "Report"), color = extra.danger) }, leadingIcon = { Icon(Icons.Rounded.Flag, null, tint = extra.danger) }, onClick = {
-                    menu = false
-                    scope.launch { if (model.report(chat.id, listOf(m.id), "user report") != null) model.notice(t("신고했어요. 운영팀이 확인해요.", "Reported. The team will review it.")) }
-                })
-            }
-        }
-    }
-    if (m.reactions.isNotEmpty()) {
-        Row(
-            Modifier.fillMaxWidth().padding(top = 2.dp, start = if (group && !mine) 40.dp else 0.dp),
-            horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start,
-        ) {
-            m.reactions.forEach { rx ->
-                val own = model.session?.memberId() in rx.members
-                Row(
-                    Modifier.padding(end = 4.dp).clip(RoundedCornerShape(12.dp))
-                        .background(if (own) MaterialTheme.colorScheme.primary.copy(alpha = 0.25f) else MaterialTheme.colorScheme.surface)
-                        .clickable { scope.launch { model.react(chat.id, m.id, rx.emoji, remove = own) } }.padding(horizontal = 8.dp, vertical = 2.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(rx.emoji)
-                    if (rx.members.size > 1) { Spacer(Modifier.width(3.dp)); Text(rx.members.size.toString(), style = MaterialTheme.typography.labelMedium) }
-                }
-            }
-        }
-    }
-    if (editing) EditDialog(m.text ?: "", onClose = { editing = false }) { text -> scope.launch { model.edit(chat.id, m.id, text) }; editing = false }
 }
 
 @Composable
@@ -406,48 +762,6 @@ private fun PollContent(model: AppModel, group: String, p: uniffi.tree_ffi.PollI
                 LinearProgressIndicator(progress = { n.toFloat() / total }, modifier = Modifier.fillMaxWidth().padding(top = 3.dp).height(5.dp).clip(RoundedCornerShape(3.dp)))
             }
         }
-    }
-}
-
-@Composable
-private fun Composer(model: AppModel, platform: TreePlatform, chat: Chat) {
-    val scope = rememberCoroutineScope()
-    var text by remember(chat.id) { mutableStateOf(chat.draft ?: "") }
-    var attach by remember { mutableStateOf(false) }
-    Row(
-        Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).let { if (platform.isPhone) it.navigationBarsPadding().imePadding() else it }
-            .padding(horizontal = 8.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.Bottom,
-    ) {
-        Box {
-            IconButton(onClick = { attach = true }) { Icon(Icons.Rounded.AttachFile, t("첨부", "Attach"), tint = extra.muted) }
-            DropdownMenu(attach, { attach = false }) {
-                DropdownMenuItem({ Text(t("사진", "Photo")) }, leadingIcon = { Icon(Icons.Rounded.Image, null) }, onClick = { attach = false; platform.pickAndSend(chat.id, AttachKind.PHOTO) })
-                DropdownMenuItem({ Text(t("파일", "File")) }, leadingIcon = { Icon(Icons.Rounded.InsertDriveFile, null) }, onClick = { attach = false; platform.pickAndSend(chat.id, AttachKind.FILE) })
-            }
-        }
-        Box(
-            Modifier.weight(1f).heightIn(min = 44.dp).clip(RoundedCornerShape(22.dp)).background(extra.chatBackground).padding(horizontal = 16.dp, vertical = 11.dp),
-        ) {
-            if (text.isEmpty()) Text(t("메시지", "Message"), color = extra.muted, style = MaterialTheme.typography.bodyLarge)
-            BasicTextField(
-                text, { v -> text = v; scope.launch { model.saveDraft(chat.id, v); model.typing(chat.id, v.isNotEmpty()) } },
-                textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
-                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary), maxLines = 6,
-                modifier = Modifier.fillMaxWidth(),
-            )
-        }
-        Spacer(Modifier.width(6.dp))
-        val canSend = text.isNotBlank()
-        Box(
-            Modifier.size(44.dp).clip(CircleShape).background(if (canSend) MaterialTheme.colorScheme.primary else extra.card)
-                .clickable(enabled = canSend) {
-                    val v = text
-                    text = ""
-                    scope.launch { model.send(chat.id, v.trim()); model.typing(chat.id, false) }
-                },
-            contentAlignment = Alignment.Center,
-        ) { Icon(Icons.AutoMirrored.Rounded.Send, t("보내기", "Send"), tint = if (canSend) MaterialTheme.colorScheme.onPrimary else extra.muted, modifier = Modifier.size(21.dp)) }
     }
 }
 

@@ -67,6 +67,7 @@ import androidx.compose.ui.unit.dp
 import app.tree.shared.AppModel
 import app.tree.shared.Chat
 import app.tree.shared.UiState
+import app.tree.shared.typersIn
 import app.tree.shared.qr.CodeKind
 import kotlinx.coroutines.launch
 
@@ -126,7 +127,7 @@ fun ChatListScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state:
                         }
                     }
                 }
-                items(list, key = { it.id }) { c -> ChatRow(model, nav, state, c) }
+                items(list, key = { it.id }) { c -> ChatRow(model, platform, nav, state, c) }
                 if (list.isEmpty() && requests.isEmpty()) {
                     item {
                         EmptyState(
@@ -200,7 +201,7 @@ private fun RequestsBanner(count: Int, onOpen: () -> Unit) {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ChatRow(model: AppModel, nav: TreeNav, state: UiState, c: Chat) {
+private fun ChatRow(model: AppModel, platform: TreePlatform, nav: TreeNav, state: UiState, c: Chat) {
     val scope = rememberCoroutineScope()
     var menu by remember { mutableStateOf(false) }
     val me = model.session?.memberId()
@@ -219,15 +220,17 @@ private fun ChatRow(model: AppModel, nav: TreeNav, state: UiState, c: Chat) {
                     Icon(Icons.Rounded.Bookmark, null, tint = MaterialTheme.colorScheme.onPrimary)
                 }
             } else {
-                Avatar(c.title, c.id, 56.dp)
+                Avatar(c.title, c.peer ?: c.id, 56.dp, image = rememberPhoto(platform, c.id, model.rich.state.collectAsState().value.chatPhotos[c.id]?.bytes))
             }
             Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(c.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-                    if (c.channel) { Spacer(Modifier.width(6.dp)); Tag(t("채널", "Channel"), MaterialTheme.colorScheme.primary) }
-                    if (c.muted) { Spacer(Modifier.width(4.dp)); Icon(Icons.Rounded.NotificationsOff, t("알림 꺼짐", "Muted"), tint = extra.muted, modifier = Modifier.size(15.dp)) }
-                    Spacer(Modifier.weight(1f))
+                    Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                        Text(c.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                        if (c.channel) { Spacer(Modifier.width(6.dp)); Tag(t("채널", "Channel"), MaterialTheme.colorScheme.primary) }
+                        if (c.muted) { Spacer(Modifier.width(4.dp)); Icon(Icons.Rounded.NotificationsOff, t("알림 꺼짐", "Muted"), tint = extra.muted, modifier = Modifier.size(15.dp)) }
+                    }
+                    Spacer(Modifier.width(8.dp))
                     if (last != null && last.sender == me) {
                         val tick = when (last.status) {
                             "pending" -> Icons.Rounded.Schedule
@@ -242,7 +245,10 @@ private fun ChatRow(model: AppModel, nav: TreeNav, state: UiState, c: Chat) {
                 }
                 Spacer(Modifier.height(3.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    val now = rememberNow(state.typingIn[c.id] != null)
+                    val typers = state.typersIn(c.id, now)
                     val preview = when {
+                        typers.isNotEmpty() -> null
                         c.draft?.isNotBlank() == true -> null
                         last == null -> t("대화를 시작해 보세요", "Say hello")
                         else -> {
@@ -250,7 +256,9 @@ private fun ChatRow(model: AppModel, nav: TreeNav, state: UiState, c: Chat) {
                             who + Format.preview(last)
                         }
                     }
-                    if (preview == null) {
+                    if (typers.isNotEmpty()) {
+                        TypingLine(if (c.others > 1) typers else emptyList(), Modifier.weight(1f))
+                    } else if (preview == null) {
                         Text(t("임시 저장: ", "Draft: "), color = extra.danger, style = MaterialTheme.typography.bodyMedium)
                         Text(c.draft ?: "", color = extra.muted, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                     } else {

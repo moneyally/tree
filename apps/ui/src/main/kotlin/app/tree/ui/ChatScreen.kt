@@ -362,10 +362,8 @@ private fun MessageBubble(
     val bare = sticker != null || (m.kind == "text" && !m.deleted && m.replyTo == null && bigEmoji(m.text))
     val bubble = if (mine) extra.bubbleMine else extra.bubbleTheirs
     val textColor = if (mine) extra.bubbleMineText else extra.bubbleTheirsText
-    val r = 20.dp
-    val joined = 6.dp
-    val shape = if (mine) RoundedCornerShape(r, if (firstOfRun) r else joined, if (lastOfRun) r else joined, r)
-    else RoundedCornerShape(if (firstOfRun) r else joined, r, r, if (lastOfRun) r else joined)
+    val shape = remember(mine, firstOfRun, lastOfRun) { BubbleShape(mine, firstOfRun, lastOfRun) }
+    val tail = shape.tail
     val member = state.members.firstOrNull { it.id == m.sender }
     val senderName = state.names[m.sender] ?: member?.name ?: m.sender.take(6)
     Row(
@@ -376,7 +374,7 @@ private fun MessageBubble(
         if (group && !mine) {
             if (lastOfRun) Avatar(senderName, member?.account ?: m.sender, 38.dp, image = rememberPhoto(platform, "m:" + m.sender, media.photos[m.sender]?.bytes, 128))
             else Spacer(Modifier.width(38.dp))
-            Spacer(Modifier.width(6.dp))
+            Spacer(Modifier.width(2.dp))
         }
         Box {
             val click = Modifier.combinedClickable(onClick = {}, onDoubleClick = onReply, onLongClick = { menu = true })
@@ -388,7 +386,10 @@ private fun MessageBubble(
                     MetaPill(m, mine, state, replyCount)
                 }
             } else {
-                Column(Modifier.widthIn(min = 64.dp, max = 330.dp).clip(shape).background(bubble).then(click).padding(horizontal = 12.dp, vertical = 7.dp)) {
+                Column(
+                    Modifier.widthIn(min = 64.dp, max = 336.dp).clip(shape).background(bubble).then(click)
+                        .padding(start = 12.dp + if (mine) 0.dp else tail, end = 12.dp + if (mine) tail else 0.dp, top = 7.dp, bottom = 7.dp),
+                ) {
                     if (group && !mine && firstOfRun) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(senderName, color = nameColor(m.sender), style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))

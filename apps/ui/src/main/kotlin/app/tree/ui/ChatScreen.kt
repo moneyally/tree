@@ -116,11 +116,37 @@ import app.tree.shared.RichState
 import app.tree.shared.typersIn
 import app.tree.shared.sendInTopic
 import app.tree.shared.deleteAsModerator
+import app.tree.shared.Look
+import app.tree.shared.Looks
+import app.tree.shared.forward
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animate
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
+import androidx.compose.foundation.layout.offset
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.AddReaction
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.unit.IntOffset
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import uniffi.tree_ffi.Message
+import kotlin.math.roundToInt
 
 private val QUICK_REACTIONS = listOf("👍", "❤️", "😂", "😮", "😢", "🙏")
-private val QUICK_EMOJI = listOf("😀", "😂", "🥹", "😍", "😎", "🤔", "😭", "😡", "👍", "👏", "🙏", "🔥", "🎉", "❤️", "💯", "✅", "🌱", "🌳")
 
 @Composable
 fun ChatScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state: UiState, chat: Chat) {
@@ -150,6 +176,17 @@ fun ChatScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state: UiS
     val listState = rememberLazyListState()
     val now = rememberNow(state.typingIn[chat.id] != null)
     val typers = state.typersIn(chat.id, now)
+    val look by Looks.state.collectAsState()
+    // The message just jumped to glows for a moment.
+    var flash by remember(chat.id) { mutableStateOf<String?>(null) }
+    LaunchedEffect(flash) { if (flash != null) { delay(1600); flash = null } }
+    fun jumpTo(id: String) {
+        val idx = msgs.asReversed().indexOfFirst { it.id == id }
+        if (idx < 0) { model.notice(t("원래 메시지를 찾을 수 없어요", "The original message isn't here")); return }
+        scope.launch { listState.animateScrollToItem(idx) }
+        flash = id
+    }
+    val notes = state.notes?.takeIf { it != chat.id && state.rich.forwardingAllowed }
 
     // New messages: follow them when already at the bottom, or when they are mine.
     LaunchedEffect(msgs.lastOrNull()?.id) {
@@ -160,9 +197,13 @@ fun ChatScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state: UiS
     LaunchedEffect(nav.focusMessage, msgs.size) {
         val id = nav.focusMessage ?: return@LaunchedEffect
         val idx = msgs.asReversed().indexOfFirst { it.id == id }
-        if (idx >= 0) { listState.animateScrollToItem(idx); nav.focusMessage = null }
+        if (idx >= 0) { listState.animateScrollToItem(idx); flash = id; nav.focusMessage = null }
     }
-    Box(Modifier.fillMaxSize().treeWallpaper(extra.chatBackground, extra.wallpaperInk)) {
+    // While scrolling: the day of the oldest message on screen, at the top.
+    var showDay by remember { mutableStateOf(false) }
+    LaunchedEffect(listState.isScrollInProgress) { if (listState.isScrollInProgress) showDay = true else { delay(1200); showDay = false } }
+    val topDay by remember(msgs) { derivedStateOf { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index?.let { msgs.asReversed().getOrNull(it)?.receivedAt } } }
+    Box(Modifier.fillMaxSize().let { if (look.wallpaper) it.treeWallpaper(extra.chatBackground, extra.wallpaperInk) else it.background(extra.chatBackground) }) {
         LazyColumn(
             Modifier.fillMaxSize(), state = listState, reverseLayout = true,
             contentPadding = PaddingValues(
@@ -189,6 +230,8 @@ fun ChatScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state: UiS
                         selecting = selected.isNotEmpty(), isSelected = m.id in selected,
                         onSelect = { selected = if (m.id in selected) selected - m.id else selected + m.id },
                         onForward = { forwarding = listOf(m.id) },
+                        look = look, highlighted = flash == m.id, onJump = ::jumpTo,
+                        onSaveToNotes = notes?.let { n -> { scope.launch { if (model.forward(chat.id, m.id, n) != null) model.notice(t("내 메모에 저장했어요", "Saved to your notes")) } } },
                     )
                     if (m.buttons.isNotEmpty() && state.members.any { it.id == m.sender && it.bot != null }) BotButtons(model, chat.id, m)
                     if (state.channel.isChannel && !isSystem(m)) CommentsLink(state, nav, chat, m, m.sender == me)
@@ -226,6 +269,11 @@ fun ChatScreen(model: AppModel, platform: TreePlatform, nav: TreeNav, state: UiS
             ScheduledBar(model, state)
             if (chat.status == "request") RequestBanner(model, chat)
         }
+
+        AnimatedVisibility(
+            visible = showDay && topDay != null, enter = fadeIn(), exit = fadeOut(),
+            modifier = Modifier.align(Alignment.TopCenter).padding(top = with(density) { headerPx.toDp() } + 4.dp),
+        ) { topDay?.let { DayChip(it) } }
 
         // Back to the newest message, with how many are below.
         val below by remember { derivedStateOf { listState.firstVisibleItemIndex } }
@@ -326,7 +374,10 @@ private fun ChatTopBar(platform: TreePlatform, nav: TreeNav, state: UiState, med
                 }
             }
         }
-        if (!isNotes) {
+        Spacer(Modifier.width(8.dp))
+        RoundButton(Icons.Rounded.Search, t("대화에서 찾기", "Search in chat")) { nav.push(Route.ChatSearch(chat.id)) }
+        // On a phone the name pill already opens the chat info: no room for both.
+        if (!isNotes && !platform.isPhone) {
             Spacer(Modifier.width(8.dp))
             RoundButton(Icons.Rounded.MoreVert, t("대화 정보", "Chat info")) { nav.push(Route.ChatInfo(chat.id)) }
         }
@@ -414,6 +465,7 @@ private fun MessageBubble(
     byId: Map<String, Message>, replyCount: Int,
     mine: Boolean, group: Boolean, firstOfRun: Boolean, lastOfRun: Boolean, onReply: () -> Unit,
     selecting: Boolean = false, isSelected: Boolean = false, onSelect: () -> Unit = {}, onForward: () -> Unit = {},
+    look: Look = Look(), highlighted: Boolean = false, onJump: (String) -> Unit = {}, onSaveToNotes: (() -> Unit)? = null,
 ) {
     val scope = rememberCoroutineScope()
     var menu by remember { mutableStateOf(false) }
@@ -421,19 +473,46 @@ private fun MessageBubble(
     var reminding by remember { mutableStateOf(false) }
     if (reminding) RemindDialog(model, chat, m.id) { reminding = false }
     var editing by remember { mutableStateOf(false) }
+    var picking by remember { mutableStateOf(false) }
+    var whoReacted by remember { mutableStateOf(false) }
     val sticker = if (m.kind == "sticker" && !m.deleted) media.stickers[m.id] else null
-    val bare = sticker != null || (m.kind == "text" && !m.deleted && m.replyTo == null && bigEmoji(m.text))
+    val bare = sticker != null || (look.bigEmoji && m.kind == "text" && !m.deleted && m.replyTo == null && bigEmoji(m.text))
     val bubble = if (mine) extra.bubbleMine else extra.bubbleTheirs
     val textColor = if (mine) extra.bubbleMineText else extra.bubbleTheirsText
     val shape = remember(mine, firstOfRun, lastOfRun) { BubbleShape(mine, firstOfRun, lastOfRun) }
     val tail = shape.tail
     val member = state.members.firstOrNull { it.id == m.sender }
     val senderName = state.names[m.sender] ?: member?.name ?: m.sender.take(6)
+    val glow by animateColorAsState(
+        when {
+            isSelected -> MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+            highlighted -> MaterialTheme.colorScheme.primary.copy(alpha = 0.24f)
+            else -> Color.Transparent
+        },
+    )
+    // Swipe right to answer: the bubble follows the finger, a reply arrow shows behind it.
+    val swipeOk = look.swipeReply && !selecting && !m.deleted && chat.status != "request"
+    val reach = with(LocalDensity.current) { 72.dp.toPx() }
+    var dx by remember(m.id) { mutableFloatStateOf(0f) }
+    Box(Modifier.fillMaxWidth()) {
+    if (dx > 0f) Box(
+        Modifier.align(Alignment.CenterStart).padding(start = 10.dp).size(34.dp).alpha((dx / reach).coerceIn(0f, 1f))
+            .clip(CircleShape).background(extra.floating),
+        contentAlignment = Alignment.Center,
+    ) { Icon(Icons.AutoMirrored.Rounded.Reply, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp)) }
     Row(
         Modifier.fillMaxWidth()
-            .background(if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f) else Color.Transparent)
+            .offset { IntOffset(dx.roundToInt(), 0) }
+            .draggable(
+                rememberDraggableState { d -> dx = (dx + d).coerceIn(0f, reach) }, Orientation.Horizontal, enabled = swipeOk,
+                onDragStopped = {
+                    if (dx >= reach * 0.8f) onReply()
+                    animate(dx, 0f) { v, _ -> dx = v }
+                },
+            )
+            .background(glow)
             .let { if (selecting) it.clickable(onClick = onSelect) else it }
-            .padding(top = if (firstOfRun) 6.dp else 2.dp),
+            .padding(top = if (firstOfRun) (if (look.compact) 3.dp else 6.dp) else (if (look.compact) 1.dp else 2.dp)),
         horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start,
         verticalAlignment = Alignment.Bottom,
     ) {
@@ -455,7 +534,7 @@ private fun MessageBubble(
             } else {
                 Column(
                     Modifier.widthIn(min = 64.dp, max = 336.dp).clip(shape).background(bubble).then(click)
-                        .padding(start = 12.dp + if (mine) 0.dp else tail, end = 12.dp + if (mine) tail else 0.dp, top = 7.dp, bottom = 7.dp),
+                        .padding(start = 12.dp + if (mine) 0.dp else tail, end = 12.dp + if (mine) tail else 0.dp, top = if (look.compact) 5.dp else 7.dp, bottom = if (look.compact) 5.dp else 7.dp),
                 ) {
                     if (group && !mine && firstOfRun) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -469,7 +548,7 @@ private fun MessageBubble(
                     }
                     if (m.forwarded) Text(t("전달된 메시지", "Forwarded"), style = MaterialTheme.typography.labelMedium, color = extra.bubbleMeta)
                     m.sharedBy?.let { Text(t("$it 님이 공유", "Shared by $it"), style = MaterialTheme.typography.labelMedium, color = extra.bubbleMeta) }
-                    m.replyTo?.let { id -> ReplyQuote(byId[id], state, mine) }
+                    m.replyTo?.let { id -> ReplyQuote(byId[id], state, mine) { if (!selecting) onJump(id) } }
                     when {
                         m.deleted -> TextWithMeta(AnnotatedString(t("삭제된 메시지입니다", "This message was deleted")), extra.bubbleMeta, m, mine, state, replyCount)
                         m.kind == "file" && (m.file?.viewOnce == true || (m.file == null && state.files[m.id] == null && m.text == null)) -> { ViewOnceContent(model, platform, m, mine, textColor); MetaRow(m, mine, state, replyCount, Modifier.align(Alignment.End)) }
@@ -490,12 +569,17 @@ private fun MessageBubble(
                 }
             }
             DropdownMenu(menu, { menu = false }) {
-                Row(Modifier.padding(horizontal = 10.dp, vertical = 4.dp)) {
-                    QUICK_REACTIONS.forEach { e ->
-                        Text(e, style = MaterialTheme.typography.titleLarge, modifier = Modifier.clip(CircleShape).clickable { menu = false; scope.launch { model.react(chat.id, m.id, e) } }.padding(6.dp))
+                Row(Modifier.padding(horizontal = 10.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    // Recent ones first, then the usual six.
+                    (look.recentEmoji + QUICK_REACTIONS).distinct().take(6).forEach { e ->
+                        Text(e, style = MaterialTheme.typography.titleLarge, modifier = Modifier.clip(CircleShape).clickable {
+                            menu = false; Looks.update { it.usedEmoji(e) }; scope.launch { model.react(chat.id, m.id, e) }
+                        }.padding(6.dp))
                     }
+                    IconButton(onClick = { menu = false; picking = true }) { Icon(Icons.Rounded.AddReaction, t("다른 반응", "More reactions"), tint = extra.muted) }
                 }
                 HorizontalDivider()
+                if (!m.deleted && onSaveToNotes != null) DropdownMenuItem({ Text(t("내 메모에 저장", "Save to notes")) }, leadingIcon = { Icon(Icons.Rounded.Bookmark, null) }, onClick = { menu = false; onSaveToNotes() })
                 if (!m.deleted && chat.status != "request") DropdownMenuItem({ Text(t("답장", "Reply")) }, leadingIcon = { Icon(Icons.AutoMirrored.Rounded.Reply, null) }, onClick = { menu = false; onReply() })
                 if (!m.deleted && state.rich.forwardingAllowed) DropdownMenuItem({ Text(t("전달", "Forward")) }, leadingIcon = { Icon(Icons.AutoMirrored.Rounded.Forward, null) }, onClick = { menu = false; onForward() })
                 DropdownMenuItem({ Text(t("선택", "Select")) }, leadingIcon = { Icon(Icons.Rounded.CheckCircle, null) }, onClick = { menu = false; onSelect() })
@@ -522,6 +606,15 @@ private fun MessageBubble(
             }
         }
     }
+    }
+    if (picking) androidx.compose.material3.AlertDialog(
+        onDismissRequest = { picking = false },
+        title = { Text(t("반응 고르기", "Pick a reaction")) },
+        text = { EmojiGrid(Modifier.fillMaxWidth().height(320.dp)) { e -> picking = false; scope.launch { model.react(chat.id, m.id, e) } } },
+        confirmButton = {},
+        dismissButton = { androidx.compose.material3.TextButton(onClick = { picking = false }) { Text(t("닫기", "Close")) } },
+    )
+    if (whoReacted) WhoReactedDialog(state, m, model.session?.memberId()) { whoReacted = false }
     if (m.reactions.isNotEmpty()) {
         Row(
             Modifier.fillMaxWidth().padding(top = 3.dp, start = if (group && !mine) 44.dp else 0.dp),
@@ -532,7 +625,9 @@ private fun MessageBubble(
                 Row(
                     Modifier.padding(end = 4.dp).clip(RoundedCornerShape(14.dp))
                         .background(if (own) MaterialTheme.colorScheme.primary.copy(alpha = 0.30f) else extra.floating)
-                        .clickable { scope.launch { model.react(chat.id, m.id, rx.emoji, remove = own) } }.padding(horizontal = 9.dp, vertical = 3.dp),
+                        // Tap: add or take back mine. Hold: who reacted.
+                        .combinedClickable(onLongClick = { whoReacted = true }) { scope.launch { model.react(chat.id, m.id, rx.emoji, remove = own) } }
+                        .padding(horizontal = 9.dp, vertical = 3.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(rx.emoji)
@@ -552,12 +647,36 @@ private fun RoleTag(text: String, color: Color) {
     )
 }
 
-/** The answered message, quoted above the reply. */
+/** Each reaction and who gave it. */
 @Composable
-private fun ReplyQuote(original: Message?, state: UiState, mine: Boolean) {
+private fun WhoReactedDialog(state: UiState, m: Message, me: String?, onClose: () -> Unit) {
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text(t("반응한 사람", "Reactions")) },
+        text = {
+            Column(Modifier.heightIn(max = 380.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                m.reactions.forEach { rx ->
+                    Row(verticalAlignment = Alignment.Top) {
+                        Text(rx.emoji, fontSize = 22.sp, modifier = Modifier.width(40.dp))
+                        Text(
+                            rx.members.joinToString(", ") { id -> if (id == me) t("나", "You") else state.names[id] ?: state.members.firstOrNull { it.id == id }?.name ?: id.take(6) },
+                            style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 3.dp),
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = { androidx.compose.material3.TextButton(onClick = onClose) { Text(t("닫기", "Close")) } },
+    )
+}
+
+/** The answered message, quoted above the reply; tap to go to it. */
+@Composable
+private fun ReplyQuote(original: Message?, state: UiState, mine: Boolean, onClick: () -> Unit) {
     val accent = if (original != null) nameColor(original.sender) else extra.bubbleMeta
     Row(
-        Modifier.padding(top = 2.dp, bottom = 4.dp).clip(RoundedCornerShape(8.dp)).background(accent.copy(alpha = if (mine) 0.20f else 0.14f)),
+        Modifier.padding(top = 2.dp, bottom = 4.dp).clip(RoundedCornerShape(8.dp)).background(accent.copy(alpha = if (mine) 0.20f else 0.14f))
+            .clickable(enabled = original != null, onClick = onClick),
     ) {
         Box(Modifier.width(3.dp).height(40.dp).background(accent))
         Column(Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) {
@@ -664,6 +783,23 @@ private fun Composer(model: AppModel, platform: TreePlatform, state: UiState, me
             if (chat.others > 1) mentionQuery(text)?.let { q ->
                 MentionBar(state, q) { name -> text = text.substring(0, text.lastIndexOf('@')) + "@" + name + " " }
             }
+            fun send(silent: Boolean) {
+                val v = text.trim()
+                if (v.isEmpty()) return
+                val r = replyTo
+                text = ""
+                clearReply()
+                // Markup only where the chat allows it; mentions by the names shown here.
+                val formatted = hasMarkup(v) && state.chatFeatures.none { it.key == "chat.formatting" && !it.applied }
+                val (mentions, all) = if (chat.others > 1) mentionsIn(v, state.names) else emptyList<String>() to false
+                scope.launch {
+                    if (state.groups.topic != null) model.sendInTopic(chat.id, v)
+                    else model.send(chat.id, v, silent = silent, formatted = formatted, mentions = mentions, all = all, replyTo = r?.id)
+                    model.typing(chat.id, false)
+                    model.saveDraft(chat.id, "")
+                }
+            }
+            val enterSends = Looks.state.collectAsState().value.enterSends
             Row(Modifier.fillMaxWidth().padding(4.dp), verticalAlignment = Alignment.Bottom) {
                 IconButton(onClick = { panel = !panel; attach = false }) {
                     Icon(if (panel) Icons.Rounded.Keyboard else Icons.Rounded.EmojiEmotions, t("이모지와 스티커", "Emoji and stickers"), tint = extra.muted)
@@ -680,7 +816,15 @@ private fun Composer(model: AppModel, platform: TreePlatform, state: UiState, me
                         },
                         textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
                         cursorBrush = SolidColor(MaterialTheme.colorScheme.primary), maxLines = 6,
-                        modifier = Modifier.fillMaxWidth(),
+                        // Computer: Enter sends and Shift+Enter breaks the line (or Ctrl+Enter sends, per 대화 설정).
+                        modifier = Modifier.fillMaxWidth().let { mod ->
+                            if (platform.isPhone) mod else mod.onPreviewKeyEvent { e ->
+                                if (e.key != Key.Enter && e.key != Key.NumPadEnter) return@onPreviewKeyEvent false
+                                val sends = if (enterSends) !e.isShiftPressed && !e.isCtrlPressed else (e.isCtrlPressed || e.isMetaPressed)
+                                if (sends && e.type == KeyEventType.KeyDown) send(false)
+                                sends
+                            }
+                        },
                     )
                 }
                 if (recordingSince == null) IconButton(onClick = { attach = !attach; panel = false }) { Icon(Icons.Rounded.AttachFile, t("첨부", "Attach"), tint = if (attach) MaterialTheme.colorScheme.primary else extra.muted) }
@@ -688,21 +832,6 @@ private fun Composer(model: AppModel, platform: TreePlatform, state: UiState, me
                 val mic = text.isBlank() && voiceOk && recordingSince == null
                 val canSend = text.isNotBlank() || mic || recordingSince != null
                 var sendMenu by remember { mutableStateOf(false) }
-                fun send(silent: Boolean) {
-                    val v = text.trim()
-                    val r = replyTo
-                    text = ""
-                    clearReply()
-                    // Markup only where the chat allows it; mentions by the names shown here.
-                    val formatted = hasMarkup(v) && state.chatFeatures.none { it.key == "chat.formatting" && !it.applied }
-                    val (mentions, all) = if (chat.others > 1) mentionsIn(v, state.names) else emptyList<String>() to false
-                    scope.launch {
-                        if (state.groups.topic != null) model.sendInTopic(chat.id, v)
-                        else model.send(chat.id, v, silent = silent, formatted = formatted, mentions = mentions, all = all, replyTo = r?.id)
-                        model.typing(chat.id, false)
-                        model.saveDraft(chat.id, "")
-                    }
-                }
                 Box {
                     Box(
                         Modifier.padding(start = 2.dp, end = 2.dp, bottom = 2.dp).size(46.dp).clip(CircleShape)
@@ -765,11 +894,7 @@ private fun StickerPanel(model: AppModel, platform: TreePlatform, media: RichSta
             PanelTab("+", tab == "packs") { tab = "packs" }
         }
         when (tab) {
-            "emoji" -> LazyVerticalGrid(GridCells.Adaptive(48.dp), Modifier.fillMaxSize(), contentPadding = PaddingValues(8.dp)) {
-                items(QUICK_EMOJI.size) { i ->
-                    Box(Modifier.size(48.dp).clip(CircleShape).clickable { onEmoji(QUICK_EMOJI[i]) }, contentAlignment = Alignment.Center) { Text(QUICK_EMOJI[i], fontSize = 26.sp) }
-                }
-            }
+            "emoji" -> EmojiGrid(Modifier.fillMaxSize(), onPick = onEmoji)
             "gif" -> GifTab(model, platform, media, chat)
             "packs" -> Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 GardenerAvatar(56.dp)
@@ -849,12 +974,15 @@ private fun RequestBanner(model: AppModel, chat: Chat) {
 
 @Composable
 private fun DaySeparator(at: Long) {
-    Box(Modifier.fillMaxWidth().padding(vertical = 10.dp), contentAlignment = Alignment.Center) {
-        Text(
-            Format.day(at), style = MaterialTheme.typography.labelMedium, color = Color.White,
-            modifier = Modifier.clip(RoundedCornerShape(12.dp)).background(Color(0x66000000)).padding(horizontal = 12.dp, vertical = 4.dp),
-        )
-    }
+    Box(Modifier.fillMaxWidth().padding(vertical = 10.dp), contentAlignment = Alignment.Center) { DayChip(at) }
+}
+
+@Composable
+private fun DayChip(at: Long) {
+    Text(
+        Format.day(at), style = MaterialTheme.typography.labelMedium, color = Color.White,
+        modifier = Modifier.clip(RoundedCornerShape(12.dp)).background(Color(0x66000000)).padding(horizontal = 12.dp, vertical = 4.dp),
+    )
 }
 
 @Composable

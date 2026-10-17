@@ -54,6 +54,7 @@ import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.SmartToy
 import androidx.compose.material.icons.rounded.Park
+import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Storage
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.Visibility
@@ -143,6 +144,7 @@ private fun title(p: String) = when (p) {
     "devices" -> t("기기", "Devices")
     "account" -> t("내 계정", "My account")
     "language" -> t("언어", "Language")
+    "look" -> t("화면", "Appearance")
     "advanced" -> t("고급: 모든 설정", "Advanced: all settings")
     else -> p
 }
@@ -165,7 +167,8 @@ fun SettingsHome(model: AppModel, platform: TreePlatform, nav: TreeNav, state: U
         }
         CardGroup {
             SettingsRow(t("내 계정", "My account"), t("아이디, 복구 문구, 계정 삭제", "Username, recovery phrase, delete"), Icons.Rounded.Person, TreeColors.TileBlue, onClick = { nav.push(Route.Settings("account")) })
-            SettingsRow(t("대화 설정", "Chat settings"), t("링크 미리보기, 임시 저장, 검색", "Link previews, drafts, search"), Icons.Rounded.ChatBubble, TreeColors.TileAmber, onClick = { nav.push(Route.Settings("chats")) })
+            SettingsRow(t("화면", "Appearance"), t("테마, 글자 크기, 대화 배경", "Theme, text size, chat background"), Icons.Rounded.Palette, TreeColors.TilePink, onClick = { nav.push(Route.Settings("look")) })
+            SettingsRow(t("대화 설정", "Chat settings"), t("링크 미리보기, 밀어서 답장, 임시 저장", "Link previews, swipe to reply, drafts"), Icons.Rounded.ChatBubble, TreeColors.TileAmber, onClick = { nav.push(Route.Settings("chats")) })
             SettingsRow(t("개인정보", "Privacy"), t("읽음 표시, 마지막 접속, 아이디 찾기", "Read receipts, last seen, finding you"), Icons.Rounded.Key, TreeColors.TileGreen, onClick = { nav.push(Route.Settings("privacy")) })
             SettingsRow(t("보안", "Security"), t("앱 잠금, 화면 보호, 키보드", "App lock, screen protection, keyboard"), Icons.Rounded.Shield, TreeColors.TileTeal, onClick = { nav.push(Route.Settings("security")) })
             SettingsRow(t("알림", "Notifications"), t("알림에 보일 내용", "What notifications show"), Icons.Rounded.Notifications, TreeColors.TileRed, onClick = { nav.push(Route.Settings("notifications")) })
@@ -194,6 +197,7 @@ fun SettingsPage(model: AppModel, platform: TreePlatform, nav: TreeNav, state: U
                 "account" -> AccountPage(model, nav, state)
                 "devices" -> DevicesPage(model, nav, state)
                 "language" -> LanguagePage(model)
+                "look" -> LookPage()
                 "advanced" -> CardGroup {
                     state.features.filter { it.key.startsWith("user.") }.forEach { f -> FeatureRow(model, f) }
                 }
@@ -218,6 +222,7 @@ fun SettingsPage(model: AppModel, platform: TreePlatform, nav: TreeNav, state: U
                     PAGES[page]?.forEach { k -> state.features.firstOrNull { it.key == k }?.let { FeatureRow(model, it) } }
                 }
             }
+            if (page == "chats") ChatHandlingCard(platform)
             if (page == "folders") FoldersCard(model, state)
             if (page == "data") {
                 CardGroup {
@@ -397,6 +402,7 @@ private fun LanguagePage(model: AppModel) {
         listOf(Lang.KO to "한국어", Lang.EN to "English").forEach { (l, label) ->
             SettingsRow(label, null, trailing = { if (Strings.lang == l) Icon(Icons.Rounded.DoneAll, null, tint = MaterialTheme.colorScheme.primary) }, onClick = {
                 Strings.lang = l
+                app.tree.shared.Looks.update { it.copy(lang = if (l == Lang.KO) "ko" else "en") }
                 scope.launch { model.refresh() }
             })
         }

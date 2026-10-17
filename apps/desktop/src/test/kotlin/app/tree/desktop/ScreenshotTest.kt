@@ -28,7 +28,7 @@ class ScreenshotTest {
     private val out = File(System.getenv("TREE_SHOTS") ?: "build/screenshots").apply { mkdirs() }
 
     /** The computer's platform shown in the phone layout. */
-    private class Phone(d: DesktopPlatform) : TreePlatform by d {
+    private class Phone(d: DesktopPlatform, override val profilePath: String) : TreePlatform by d {
         override val isPhone = true
     }
 
@@ -52,7 +52,8 @@ class ScreenshotTest {
         Strings.lang = Lang.KO
         val dir = Files.createTempDirectory("tree-shots").toString()
         val scope = CoroutineScope(Dispatchers.IO)
-        fun phone(m: AppModel) = Phone(DesktopPlatform(m, scope))
+        // Screen settings (Looks) go to a file beside this test's profiles, not the real one.
+        fun phone(m: AppModel) = Phone(DesktopPlatform(m, scope), "$dir/phone.db")
 
         val fresh = AppModel(this, Dispatchers.IO)
         shot("01-welcome", fresh, phone(fresh), TreeNav(), dark = true)
@@ -153,6 +154,17 @@ class ScreenshotTest {
         shot("21-gardener-dark", alice, pa, TreeNav().apply { push(Route.Gardener) }, dark = true)
         shot("22-gardener-light", alice, pa, TreeNav().apply { push(Route.Gardener) }, dark = false)
         shot("23-chats-gardener", alice, pa, TreeNav(), dark = true)
+
+        // 화면 settings, and the group chat in a bigger text size, then compact on a plain background.
+        shot("24-look-dark", alice, pa, TreeNav().apply { tab = Tab.SETTINGS; push(Route.Settings("look")) }, dark = true)
+        Looks.update { it.copy(textScale = 1.3f) }
+        shot("25-look-large-light", alice, pa, TreeNav().apply { tab = Tab.SETTINGS; push(Route.Settings("look")) }, dark = false)
+        shot("26-group-large-text", alice, pa, TreeNav().apply { push(Route.Chat(g)) }, dark = true)
+        Looks.update { it.copy(textScale = 1f, compact = true, wallpaper = false) }
+        shot("27-group-compact-plain", alice, pa, TreeNav().apply { push(Route.Chat(g)) }, dark = false)
+        assertTrue(File("$dir/phone.db.look").readText().contains("compact=true"))
+        Looks.update { Look() }
+        shot("28-chat-settings", alice, pa, TreeNav().apply { tab = Tab.SETTINGS; push(Route.Settings("chats")) }, dark = true)
 
         alice.openChat(g)
         shot("12-desktop-light", alice, DesktopPlatform(alice, scope), TreeNav().apply { push(Route.Chat(g)) }, dark = false, phone = false)

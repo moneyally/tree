@@ -97,11 +97,20 @@ class TreeNav {
 @Composable
 fun TreeUi(model: AppModel, platform: TreePlatform, nav: TreeNav, dark: Boolean? = null) {
     val state by model.state.collectAsState()
-    TreeTheme(dark = dark ?: androidx.compose.foundation.isSystemInDarkTheme(), font = platform.font) {
-        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-            Box(Modifier.fillMaxSize()) {
-                if (!state.signedIn) Onboarding(model, platform) else Signed(model, platform, nav, state)
-                Toast(model, state)
+    remember(platform.profilePath) { app.tree.shared.Looks.open(platform.profilePath) }
+    val look by app.tree.shared.Looks.state.collectAsState()
+    val system = androidx.compose.foundation.isSystemInDarkTheme()
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    // Text size from 화면 settings, on top of the system's own.
+    androidx.compose.runtime.CompositionLocalProvider(
+        androidx.compose.ui.platform.LocalDensity provides androidx.compose.ui.unit.Density(density.density, density.fontScale * look.textScale),
+    ) {
+        TreeTheme(dark = dark ?: when (look.theme) { "dark" -> true; "light" -> false; else -> system }, font = platform.font) {
+            Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                Box(Modifier.fillMaxSize()) {
+                    if (!state.signedIn) Onboarding(model, platform) else Signed(model, platform, nav, state)
+                    Toast(model, state)
+                }
             }
         }
     }
